@@ -164,7 +164,7 @@ If you use this environment in your research, please cite:
 @software{wedm_learning_environment,
   author = {Gonzalez Sanchez, Eduardo},
   title = {Wire EDM Learning Environment},
-  year = {2024},
+  year = {2025},
   url = {https://github.com/geduardo/SPARC}
 }
 ```
