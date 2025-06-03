@@ -1,0 +1,11 @@
+{
+  "brass": {
+    "density": 8400,
+    "specific_heat": 377,
+    "thermal_conductivity": 120,
+    "electrical_resistivity": 6.4e-8,
+    "temperature_coefficient": 0.0039,
+    "melting_point": 1173,
+    "breaking_temperature": 1500
+  }
+} 

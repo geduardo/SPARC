@@ -1,0 +1,22 @@
+{
+    "I1": { "Current": 30, "Units": "A" },
+    "I2": { "Current": 35, "Units": "A" },
+    "I3": { "Current": 40, "Units": "A" },
+    "I4": { "Current": 50, "Units": "A" },
+    "I5": { "Current": 60, "Units": "A" },
+    "I6": { "Current": 68, "Units": "A" },
+    "I7": { "Current": 80, "Units": "A" },
+    "I8": { "Current": 95, "Units": "A" },
+    "I9": { "Current": 110, "Units": "A" },
+    "I10": { "Current": 130, "Units": "A" },
+    "I11": { "Current": 155, "Units": "A" },
+    "I12": { "Current": 180, "Units": "A" },
+    "I13": { "Current": 215, "Units": "A" },
+    "I14": { "Current": 255, "Units": "A" },
+    "I15": { "Current": 305, "Units": "A" },
+    "I16": { "Current": 360, "Units": "A" },
+    "I17": { "Current": 425, "Units": "A" },
+    "I18": { "Current": 500, "Units": "A" },
+    "I19": { "Current": 600, "Units": "A" }
+  }
+  

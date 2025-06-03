@@ -1,0 +1,37 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Python files
+*.py text
+*.pyw text
+*.pyx text
+*.pyi text
+
+# Jupyter notebooks
+*.ipynb text
+
+# Data files
+*.json text
+*.csv text
+*.tsv text
+
+# Documentation
+*.md text
+*.rst text
+*.txt text
+
+# Config files
+*.yml text
+*.yaml text
+*.toml text
+*.ini text
+*.cfg text
+
+# Shell scripts
+*.sh text
+*.bash text
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
