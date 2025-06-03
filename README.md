@@ -175,4 +175,4 @@ This project is licensed under the MIT License - see the [LICENSE](./LICENSE.md)
 
 ## Acknowledgments
 
-This work was developed as part of research on applying reinforcement learning to manufacturing processes.
+This work was developed as part of research on applying reinforcement learning during the PhD Thesis of Eduardo Gonzalez Sanchez at ETH Zurich.
