@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package that implements a simplified stochastic simulation of a 1D Wire Electrical Discharge Machining (Wire EDM) process, designed for reinforcement learning research.
+SPARC (Simulation Platform for Advanced Rough-Cut Control) is a Python package that implements a simplified stochastic simulation of a 1D Wire Electrical Discharge Machining (Wire EDM) process, designed for reinforcement learning research.
 
 This environment is compatible with the [Gymnasium](https://gymnasium.farama.org/) library (formerly OpenAI Gym), facilitating the efficient testing of reinforcement learning algorithms and various control strategies specific to the Wire EDM process.
 
