@@ -65,7 +65,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-wedm = ["data/*.json", "modules/data/*.json"]
+wedm = ["data/*.json", "modules/*.json"]
 
 [tool.black]
 line-length = 88
