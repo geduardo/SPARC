@@ -26,45 +26,45 @@ The state transitions follow this sequence:
 Mathematically, these transitions can be represented as:
 
 For Idle to ON transition (stochastic ignition):
-\[
+$$
 P(\text{Idle} \rightarrow \text{ON}) = P_{ignite} = \lambda(gap)
-\]
+$$
 
 For ON to OFF transition (deterministic):
-\[
+$$
 \text{If } t_{spark} \geq t_{ON} \text{ then } \text{ON} \rightarrow \text{OFF}
-\]
+$$
 
 For OFF to Idle transition (deterministic):
-\[
+$$
 \text{If } t_{total} \geq (t_{ON} + t_{OFF}) \text{ then } \text{OFF} \rightarrow \text{Idle}
-\]
+$$
 
 Where:
-- \(P_{ignite}\): Probability of ignition
-- \(\lambda(gap)\): Gap-dependent ignition probability function
-- \(t_{spark}\): Duration of the current spark
-- \(t_{total}\): Total duration since spark initiation (ON + OFF time elapsed)
-- \(t_{ON}\): ON time setting
-- \(t_{OFF}\): OFF time setting
+- $P_{ignite}$: Probability of ignition
+- $\lambda(gap)$: Gap-dependent ignition probability function
+- $t_{spark}$: Duration of the current spark
+- $t_{total}$: Total duration since spark initiation (ON + OFF time elapsed)
+- $t_{ON}$: ON time setting
+- $t_{OFF}$: OFF time setting
 
 ## Ignition Probability Model
 
-The probability of a spark ignition during the idle state is calculated using a gap-dependent function \(\lambda(gap)\). This function represents the ignition probability per time step and is derived from empirical data.
+The probability of a spark ignition during the idle state is calculated using a gap-dependent function $\lambda(gap)$. This function represents the ignition probability per time step and is derived from empirical data.
 
-\[
+$$
 \lambda(gap) = \frac{\ln(2)}{0.48 \cdot gap^2 - 3.69 \cdot gap + 14.05}
-\]
+$$
 
 Where:
-- \(gap\): Distance between the wire and workpiece (mm)
-- \(\ln(2)\): Natural logarithm of 2, used to normalize the probability
+- $gap$: Distance between the wire and workpiece (mm)
+- $\ln(2)$: Natural logarithm of 2, used to normalize the probability
 
-For computational efficiency, the module caches the calculated \(\lambda\) values for different gap sizes.
+For computational efficiency, the module caches the calculated $\lambda$ values for different gap sizes.
 
 ## Short Circuit Handling
 
-A short circuit occurs when the wire touches the workpiece (\(gap \leq 0\)). The module handles short circuits with special logic:
+A short circuit occurs when the wire touches the workpiece ($gap \leq 0$). The module handles short circuits with special logic:
 
 1. If the system is in the idle state (0) and a short circuit occurs, it immediately transitions to the ON state (1) with full current and zero voltage.
 2. During short circuit conditions, the ignition probability calculation is skipped (returns 0) to prevent mathematical errors due to non-positive gap values.
@@ -74,40 +74,40 @@ A short circuit occurs when the wire touches the workpiece (\(gap \leq 0\)). The
 During different states, the electrical parameters are set as follows:
 
 ### Idle State (0):
-- Current: \(I = 0\)
-- Voltage: \(V = V_{target}\) (if not shorted), \(V = 0\) (if shorted)
+- Current: $I = 0$
+- Voltage: $V = V_{target}$ (if not shorted), $V = 0$ (if shorted)
 
 ### ON State (1):
-- Current: \(I = I_{peak}\)
-- Voltage: \(V = 0.3 \cdot V_{target}\) (if not shorted), \(V = 0\) (if shorted)
+- Current: $I = I_{peak}$
+- Voltage: $V = 0.3 \cdot V_{target}$ (if not shorted), $V = 0$ (if shorted)
 
 ### OFF State (-2):
-- Current: \(I = 0\)
-- Voltage: \(V = 0\)
+- Current: $I = 0$
+- Voltage: $V = 0$
 
 Where:
-- \(I_{peak}\): Peak current setting (default: 300A)
-- \(V_{target}\): Target voltage setting (default: 80V)
+- $I_{peak}$: Peak current setting (default: 300A)
+- $V_{target}$: Target voltage setting (default: 80V)
 
 ## Stochastic Ignition Process
 
 For each time step in the idle state, the module:
 
-1. Calculates the ignition probability \(P_{ignite}\) based on the current gap
-2. Generates a random number \(r \in [0,1]\)
-3. If \(r < P_{ignite}\), a spark is initiated:
+1. Calculates the ignition probability $P_{ignite}$ based on the current gap
+2. Generates a random number $r \in [0,1]$
+3. If $r < P_{ignite}$, a spark is initiated:
    - A random spark location along the workpiece height is chosen
    - The system transitions to the ON state
    - The electrical parameters are updated accordingly
 
 Mathematically:
-\[
+$$
 \text{If } r < \lambda(gap) \text{ then initiate spark at random location}
-\]
+$$
 
 ## Implementation Details
 
-- The module caches \(\lambda\) values for efficiency using a dictionary `lambda_cache`
+- The module caches $\lambda$ values for efficiency using a dictionary `lambda_cache`
 - The primary `update` method handles the state machine transitions and updates the electrical parameters
 - The `_cond_prob` method calculates the conditional probability of ignition based on the current gap
 - The `get_lambda` method computes the gap-dependent ignition probability function

@@ -19,42 +19,42 @@ In WEDM, material removal occurs through the following physical process:
 
 ### Crater Volume Model
 
-The module models crater volumes using empirical distributions based on discharge current. Each crater volume \(V_c\) is sampled from a Gaussian distribution:
+The module models crater volumes using empirical distributions based on discharge current. Each crater volume $V_c$ is sampled from a Gaussian distribution:
 
-\[
+$$
 V_c \sim \mathcal{N}(\mu_I, \sigma_I^2)
-\]
+$$
 
 Where:
-- \(\mu_I\): Mean crater volume for current \(I\) (μm³)
-- \(\sigma_I\): Standard deviation of crater volume for current \(I\) (μm³)
-- \(I\): Discharge current (A)
+- $\mu_I$: Mean crater volume for current $I$ (μm³)
+- $\sigma_I$: Standard deviation of crater volume for current $I$ (μm³)
+- $I$: Discharge current (A)
 
-The empirical parameters \(\mu_I\) and \(\sigma_I\) are derived from experimental measurements and stored in the crater volume database.
+The empirical parameters $\mu_I$ and $\sigma_I$ are derived from experimental measurements and stored in the crater volume database.
 
 ### Workpiece Position Calculation
 
-The workpiece position increment \(\Delta X_w\) for each crater is calculated using the relationship:
+The workpiece position increment $\Delta X_w$ for each crater is calculated using the relationship:
 
-\[
+$$
 \Delta X_w = \frac{V_c}{k \cdot h_w}
-\]
+$$
 
 Where:
-- \(V_c\): Crater volume (mm³)
-- \(k\): Kerf width (mm)
-- \(h_w\): Workpiece height (mm)
+- $V_c$: Crater volume (mm³)
+- $k$: Kerf width (mm)
+- $h_w$: Workpiece height (mm)
 
-The kerf width \(k\) is a critical parameter and is determined by the wire diameter, a base overcut, and the depth of the discharge crater. It is calculated as:
+The kerf width $k$ is a critical parameter and is determined by the wire diameter, a base overcut, and the depth of the discharge crater. It is calculated as:
 
-\[
+$$
 k = D_w + k_{base} + \frac{d_{crater,μm}}{1000}
-\]
+$$
 
 Where:
-- \(D_w\): Wire diameter (mm)
-- \(k_{base} = 0.12\) mm: Base overcut, representing the minimum symmetrical discharge gap around the wire (0.06 mm per side)
-- \(d_{crater,μm}\): Crater depth for the current discharge setting (μm), obtained from empirical data
+- $D_w$: Wire diameter (mm)
+- $k_{base} = 0.12$ mm: Base overcut, representing the minimum symmetrical discharge gap around the wire (0.06 mm per side)
+- $d_{crater,μm}$: Crater depth for the current discharge setting (μm), obtained from empirical data
 
 This formulation provides a physically grounded kerf width that incorporates the fixed dimension of the wire, a minimum operational overcut, and a dynamic component related to the discharge energy (via crater depth).
 
@@ -78,15 +78,15 @@ The WEDM machine operates with predefined current modes (I1 through I19) that co
 
 The empirical crater data is available for specific current levels: [1, 3, 5, 7, 9, 11, 13, 15, 17] A. To map machine currents to available crater data, the module uses a scaling approach:
 
-\[
+$$
 I_{crater} = I_{available}[\lfloor r \cdot (N-1) \rfloor]
-\]
+$$
 
 Where:
-- \(r = \frac{I_{machine} - I_{min}}{I_{max} - I_{min}}\): Relative position in machine current range
-- \(I_{min} = 30\) A, \(I_{max} = 600\) A: Machine current range
-- \(I_{available}\): Array of available crater data currents
-- \(N = 9\): Number of available crater data points
+- $r = \frac{I_{machine} - I_{min}}{I_{max} - I_{min}}$: Relative position in machine current range
+- $I_{min} = 30$ A, $I_{max} = 600$ A: Machine current range
+- $I_{available}$: Array of available crater data currents
+- $N = 9$: Number of available crater data points
 
 ## Empirical Crater Data
 
@@ -104,11 +104,11 @@ The crater volume data contains the following parameters for each current level:
 
 The module uses the half-ellipsoid volume model, which provides realistic crater volumes based on experimental observations:
 
-\[
+$$
 V_{ellipsoid\_half} = \frac{2}{3} \pi \cdot a \cdot b \cdot c
-\]
+$$
 
-Where \(a\), \(b\), and \(c\) are the semi-axes of the ellipsoid derived from the crater area and depth measurements.
+Where $a$, $b$, and $c$ are the semi-axes of the ellipsoid derived from the crater area and depth measurements.
 
 ### Current-Volume Relationship
 
@@ -152,38 +152,38 @@ The module handles multiple unit systems with appropriate conversion factors:
 - **Position increments**: Converted from mm (calculation) to μm (state)
 
 The conversion factors are:
-- μm³ to mm³: divide by \(10^9\)
-- μm to mm: divide by \(10^3\)
-- mm to μm: multiply by \(10^3\)
+- μm³ to mm³: divide by $10^9$
+- μm to mm: divide by $10^3$
+- mm to μm: multiply by $10^3$
 
 ## Mathematical Formulation Summary
 
 The complete material removal process can be summarized as:
 
 1. **Current Mapping**:
-   \[
+   $$
    I_{crater} = f_{map}(I_{machine})
-   \]
+   $$
 
 2. **Crater Volume Sampling**:
-   \[
+   $$
    V_c \sim \mathcal{N}(\mu_{I_{crater}}, \sigma_{I_{crater}}^2)
-   \]
+   $$
 
 3. **Kerf Width Calculation**:
-   \[
+   $$
    k = D_w + k_{base} + \frac{d_{crater,μm}}{1000}
-   \]
+   $$
 
 4. **Position Increment**:
-   \[
+   $$
    \Delta X_w = \frac{V_c \cdot 10^{-9}}{k \cdot h_w} \cdot 1000
-   \]
+   $$
 
 5. **Workpiece Position Update**:
-   \[
+   $$
    X_{w,new} = X_{w,old} + \Delta X_w
-   \]
+   $$
 
 ## Key Variables
 
