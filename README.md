@@ -19,8 +19,6 @@ This environment is compatible with the [Gymnasium](https://gymnasium.farama.org
 
 ## Installation
 
-```
-
 ### From Source
 ```bash
 # Clone the repository
