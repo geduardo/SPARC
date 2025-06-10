@@ -28,7 +28,7 @@ pip install wedm-learning-environment
 ```bash
 # Clone the repository
 git clone https://github.com/geduardo/SPARC.git
-cd WEDM-Learning-Environment
+cd SPARC
 
 # Install in development mode
 pip install -e .

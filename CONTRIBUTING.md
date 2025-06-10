@@ -16,7 +16,7 @@ Thank you for your interest in contributing to the Wire EDM Learning Environment
 ```bash
 # Clone the repository
 git clone https://github.com/geduardo/WEDM-Learning-Environment.git
-cd WEDM-Learning-Environment
+cd SPARC
 
 # Install in development mode with dev dependencies
 pip install -e ".[dev,visualization]"
