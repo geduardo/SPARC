@@ -1,4 +1,4 @@
-![Wire EDM Simulation](https://github.com/geduardo/SPARC/img/sparc_logo.png)
+![Wire EDM Simulation](./img/sparc_logo.png)
 
 # SPARC - Wire EDM Learning Environment
 
