@@ -19,9 +19,6 @@ This environment is compatible with the [Gymnasium](https://gymnasium.farama.org
 
 ## Installation
 
-### From PyPI (coming soon)
-```bash
-pip install wedm-learning-environment
 ```
 
 ### From Source
