@@ -28,9 +28,11 @@ class TestWireEDMEnv:
         """Test environment step with random action."""
         env = WireEDMEnv()
         env.reset()
+        initial_time = env.state.time
 
         action = env.action_space.sample()
         obs, reward, terminated, truncated, info = env.step(action)
+        assert env.state.time > initial_time
 
         assert isinstance(reward, (int, float))
         assert isinstance(terminated, bool)
