@@ -14,7 +14,7 @@ This environment is compatible with the [Gymnasium](https://gymnasium.farama.org
 - **Gymnasium-compatible environment** for Wire EDM simulation
 - **Modular architecture** with separate physics modules (ignition, wire heating, material removal, etc.)
 - **Configurable parameters** for different wire materials and cutting conditions
-- **Real-time visualization** using pygame (coming soon)
+- **Real-time visualization** (coming soon)
 - **Comprehensive logging** capabilities for analysis
 
 ## Installation
