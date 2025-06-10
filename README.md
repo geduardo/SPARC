@@ -1,4 +1,4 @@
-![Wire EDM Simulation](https://github.com/geduardo/WEDM-minimal-simulation/assets/48300381/042f8ab7-87b2-430e-9d5a-143c95bf69e3)
+![Wire EDM Simulation](https://github.com/geduardo/SPARC/img/sparc_logo.png)
 
 # SPARC - Wire EDM Learning Environment
 
