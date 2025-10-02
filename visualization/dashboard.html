@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPARC - Wire EDM Visualization Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        #container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 10px;
+            gap: 10px;
+        }
+
+        /* Header with controls */
+        #controls {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+
+        #controls h1 {
+            font-size: 1.2rem;
+            margin-right: auto;
+            color: #00ff88;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            background: #3a3a3a;
+            border: none;
+            color: #ffffff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #4a4a4a;
+        }
+
+        button:active {
+            background: #2a2a2a;
+        }
+
+        #timeline {
+            flex: 1;
+            min-width: 200px;
+            cursor: pointer;
+        }
+
+        #timeDisplay {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            min-width: 120px;
+            color: #00ff88;
+        }
+
+        #loadData {
+            background: #00ff88;
+            color: #1a1a1a;
+            font-weight: bold;
+        }
+
+        #loadData:hover {
+            background: #00dd77;
+        }
+
+        /* Dashboard grid */
+        #dashboard {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 10px;
+            min-height: 0;
+        }
+
+        .panel {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #3a3a3a;
+        }
+
+        .panel-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #00ff88;
+        }
+
+        .panel-info {
+            font-size: 0.75rem;
+            color: #888;
+        }
+
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            border-radius: 4px;
+        }
+
+        /* Loading overlay */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        #loadingOverlay.hidden {
+            display: none;
+        }
+
+        .loading-content {
+            text-align: center;
+        }
+
+        .spinner {
+            border: 4px solid #3a3a3a;
+            border-top: 4px solid #00ff88;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #fileInput {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <!-- Controls Bar -->
+        <div id="controls">
+            <h1>⚡ SPARC Dashboard</h1>
+
+            <button id="loadData">📁 Load Data</button>
+            <input type="file" id="fileInput" accept=".json">
+
+            <div class="control-group">
+                <button id="playPause">▶ Play</button>
+                <button id="reset">↻ Reset</button>
+            </div>
+
+            <input type="range" id="timeline" min="0" max="100" value="0">
+
+            <div id="timeDisplay">00:00.000 / 00:00.000</div>
+        </div>
+
+        <!-- Dashboard Grid -->
+        <div id="dashboard">
+            <!-- Panel 1: Side View -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Side View</span>
+                    <span class="panel-info" id="sideViewInfo">Wire + Workpiece</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="sideViewCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Panel 2: Oscilloscope -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Virtual Oscilloscope</span>
+                    <span class="panel-info" id="oscilloscopeInfo">Voltage / Current</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="oscilloscopeCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Panel 3: Top View -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Top View</span>
+                    <span class="panel-info" id="topViewInfo">Debris Concentration</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="topViewCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Panel 4: Thermal Profile -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Wire Thermal Profile</span>
+                    <span class="panel-info" id="thermalInfo">Temperature Distribution</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="thermalCanvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="hidden">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p>Loading simulation data...</p>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

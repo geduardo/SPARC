@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict, Union
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
+import json  # Added for JSON backend
 
 if TYPE_CHECKING:
     from ..core.state import EDMState
@@ -40,8 +41,14 @@ class BackendNumpy(TypedDict):
     compress: bool  # Whether to use compressed format np.savez_compressed
 
 
+class BackendJSON(TypedDict):
+    type: Literal["json"]
+    filepath: str  # Path to save .json file
+    indent: int  # Indentation for pretty printing (0 for compact)
+
+
 # We'll add more backends like numpy, csv, hdf5 later
-BackendConfig = Union[BackendMemory, BackendNumpy]  # Added BackendNumpy
+BackendConfig = Union[BackendMemory, BackendNumpy, BackendJSON]  # Added BackendJSON
 
 
 class LoggerConfig(TypedDict):
@@ -81,7 +88,7 @@ class SimulationLogger:
             raise ValueError("LoggerConfig: 'backend' must be provided.")
 
         backend_type = self.config["backend"]["type"]
-        if backend_type not in ["memory", "numpy"]:
+        if backend_type not in ["memory", "numpy", "json"]:
             raise NotImplementedError(
                 f"Backend type '{backend_type}' is not yet implemented."
             )
@@ -100,6 +107,18 @@ class SimulationLogger:
                 "compress" not in self.config["backend"]
             ):  # Default compress to False if not specified
                 self.config["backend"]["compress"] = False
+
+        if backend_type == "json":
+            if "filepath" not in self.config["backend"]:
+                raise ValueError(
+                    "LoggerConfig: 'filepath' must be provided for 'json' backend."
+                )
+            if not isinstance(self.config["backend"]["filepath"], str):
+                raise ValueError(
+                    "LoggerConfig: 'filepath' for 'json' backend must be a string."
+                )
+            if "indent" not in self.config["backend"]:
+                self.config["backend"]["indent"] = 2  # Default to pretty print
 
     def _prepare_signal_accessors(self):
         """
@@ -154,6 +173,9 @@ class SimulationLogger:
                     elif self.config["backend"]["type"] == "numpy":
                         # For numpy, we also append to lists first, convert to np.array in finalize
                         self.log_data[signal_name].append(processed_value)
+                    elif self.config["backend"]["type"] == "json":
+                        # For JSON, we append to lists, will serialize in finalize
+                        self.log_data[signal_name].append(processed_value)
                     else:
                         # Logic for other backends would go here
                         pass
@@ -171,6 +193,8 @@ class SimulationLogger:
         if self.config["backend"]["type"] == "memory":
             # print("Memory logger finalized. Data available via get_data().")
             pass
+        elif self.config["backend"]["type"] == "json":
+            self._finalize_json()
         elif self.config["backend"]["type"] == "numpy":
             filepath_str = self.config["backend"]["filepath"]
             should_compress = self.config["backend"].get("compress", False)
@@ -212,20 +236,76 @@ class SimulationLogger:
             except Exception as e:
                 print(f"Error saving data to {output_path}: {e}")
 
+    def _finalize_json(self):
+        """
+        Saves logged data as JSON file for web dashboard consumption.
+        """
+        filepath_str = self.config["backend"]["filepath"]
+        indent = self.config["backend"].get("indent", 2)
+
+        if not self.log_data:
+            print("No data collected, skipping .json file creation.")
+            return
+
+        # Convert numpy arrays and other types to JSON-serializable format
+        json_data = {}
+        for signal_name, data_list in self.log_data.items():
+            try:
+                # Convert each value in the list
+                serializable_list = []
+                for value in data_list:
+                    if isinstance(value, np.ndarray):
+                        serializable_list.append(value.tolist())
+                    elif isinstance(value, (np.integer, np.floating)):
+                        serializable_list.append(value.item())
+                    elif isinstance(value, list):
+                        # Handle nested lists with numpy elements
+                        serializable_list.append(
+                            [
+                                v.item() if isinstance(v, (np.integer, np.floating)) else v
+                                for v in value
+                            ]
+                        )
+                    else:
+                        serializable_list.append(value)
+
+                json_data[signal_name] = serializable_list
+            except Exception as e:
+                print(
+                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. Skipping this signal."
+                )
+
+        if not json_data:
+            print("No signals could be serialized to JSON, skipping .json file creation.")
+            return
+
+        output_path = pathlib.Path(filepath_str)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(output_path, 'w') as f:
+                if indent == 0:
+                    json.dump(json_data, f, separators=(',', ':'))  # Compact
+                else:
+                    json.dump(json_data, f, indent=indent)
+            print(f"Logged data saved to {output_path}")
+        except Exception as e:
+            print(f"Error saving data to {output_path}: {e}")
+
     def get_data(self) -> Dict[str, List[Any]] | str | None:
         """
         Retrieves the logged data or its location.
 
         Returns:
             - A dictionary (signal -> list of values) if backend is "memory".
-            - A string (filepath) if backend is "numpy" and successful.
+            - A string (filepath) if backend is "numpy" or "json" and successful.
             - None otherwise or if data hasn't been finalized for file backends.
         """
         if self.config["backend"]["type"] == "memory":
             return self.log_data
-        elif self.config["backend"]["type"] == "numpy":
+        elif self.config["backend"]["type"] in ["numpy", "json"]:
             # Return the filepath, assuming finalize has been called.
-            # User is responsible for loading the .npz file.
+            # User is responsible for loading the file.
             return self.config["backend"].get("filepath")
         return None
 

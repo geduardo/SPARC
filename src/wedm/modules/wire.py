@@ -252,7 +252,7 @@ class WireModule(EDMModule):
         )
 
         print(
-            f"🔌 Electrical contacts: segments {self.contact_bottom_idx} to {self.contact_top_idx}"
+            f"[+] Electrical contacts: segments {self.contact_bottom_idx} to {self.contact_top_idx}"
         )
         print(f"   Workpiece zone: segments {self.zone_start} to {self.zone_end}")
 
