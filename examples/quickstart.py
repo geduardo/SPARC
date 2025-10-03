@@ -121,7 +121,7 @@ def main():
     spark_count = 0
 
     print("Running simulation...")
-    for i in range(200000):
+    for i in range(3000000):
         obs, reward, terminated, truncated, info = env.step(action)
 
         # Log simulation data
