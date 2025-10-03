@@ -8,7 +8,8 @@ class DashboardController {
         this.currentFrame = 0;
         this.isPlaying = false;
         this.animationId = null;
-        this.playbackSpeed = 1.0;
+        this.playbackSpeed = 60; // microseconds per second (default 60 µs/s)
+        this.lastFrameTime = 0; // For timing playback
 
         // Panel instances
         this.panels = {
@@ -33,7 +34,8 @@ class DashboardController {
             timeline: document.getElementById('timeline'),
             frameCounter: document.getElementById('frameCounter'),
             timeDisplay: document.getElementById('timeDisplay'),
-            loadingOverlay: document.getElementById('loadingOverlay')
+            loadingOverlay: document.getElementById('loadingOverlay'),
+            speedControl: document.getElementById('speedControl')
         };
 
         // Setup event listeners
@@ -44,6 +46,7 @@ class DashboardController {
         this.elements.prevFrame.addEventListener('click', () => this.previousFrame());
         this.elements.nextFrame.addEventListener('click', () => this.nextFrame());
         this.elements.timeline.addEventListener('input', (e) => this.seekTo(parseInt(e.target.value)));
+        this.elements.speedControl.addEventListener('change', (e) => this.setPlaybackSpeed(parseInt(e.target.value)));
 
         // Initialize panels
         this.initializePanels();
@@ -100,9 +103,24 @@ class DashboardController {
         if (!file) return;
 
         this.showLoading(true);
+        console.log(`Loading file: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`);
 
         try {
-            const text = await file.text();
+            // For large files, use FileReader with better error handling
+            const text = await this.readLargeFile(file);
+            console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
+
+            // Check if file is too large (> 500MB of text)
+            if (text.length > 500 * 1024 * 1024) {
+                const proceed = confirm(
+                    `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
+                    `Loading it may crash your browser. Continue anyway?`
+                );
+                if (!proceed) {
+                    throw new Error('Load cancelled by user');
+                }
+            }
+
             this.data = JSON.parse(text);
 
             console.log('Data loaded:', this.data);
@@ -137,6 +155,30 @@ class DashboardController {
         }
     }
 
+    readLargeFile(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                resolve(e.target.result);
+            };
+
+            reader.onerror = (e) => {
+                reject(new Error(`File read error: ${e.target.error.message || 'Unknown error'}`));
+            };
+
+            reader.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = ((e.loaded / e.total) * 100).toFixed(1);
+                    console.log(`Reading file: ${percent}% (${(e.loaded / (1024*1024)).toFixed(2)} MB / ${(e.total / (1024*1024)).toFixed(2)} MB)`);
+                }
+            };
+
+            // Read as text with UTF-8 encoding
+            reader.readAsText(file, 'UTF-8');
+        });
+    }
+
     togglePlayPause() {
         if (!this.data) {
             alert('Please load data first');
@@ -154,23 +196,44 @@ class DashboardController {
     }
 
     play() {
-        const animate = () => {
+        this.lastFrameTime = performance.now();
+
+        const animate = (currentTime) => {
             if (!this.isPlaying) return;
 
-            this.currentFrame++;
-            if (this.currentFrame >= this.data.time.length) {
-                this.currentFrame = 0; // Loop
-            }
+            const deltaTime = currentTime - this.lastFrameTime; // milliseconds elapsed
+            this.lastFrameTime = currentTime;
 
-            this.drawFrame(this.currentFrame);
-            this.updateTimeDisplay();
-            this.elements.timeline.value = this.currentFrame;
+            // Calculate how many frames to advance based on playback speed
+            // playbackSpeed is in µs/s (microseconds per second)
+            // Each frame represents 1 µs of simulation time
+            // deltaTime is in milliseconds (real time)
+            const framesToAdvance = Math.round((deltaTime / 1000) * this.playbackSpeed);
+
+            if (framesToAdvance > 0) {
+                const oldFrame = this.currentFrame;
+                this.currentFrame += framesToAdvance;
+
+                if (this.currentFrame >= this.data.time.length) {
+                    this.currentFrame = 0; // Loop
+                }
+
+                // Draw frame with accumulated sparks from skipped frames
+                this.drawFrameWithAccumulatedSparks(oldFrame, this.currentFrame);
+                this.updateTimeDisplay();
+                this.elements.timeline.value = this.currentFrame;
+            }
 
             // Request next frame (60 FPS max)
             this.animationId = requestAnimationFrame(animate);
         };
 
-        animate();
+        this.animationId = requestAnimationFrame(animate);
+    }
+
+    setPlaybackSpeed(speed) {
+        this.playbackSpeed = speed;
+        console.log(`Playback speed set to ${speed} µs/s`);
     }
 
     pause() {
@@ -189,16 +252,20 @@ class DashboardController {
 
     previousFrame() {
         if (!this.data) return;
-        const prevFrame = Math.max(this.currentFrame - 1, 0);
-        console.log('Previous frame:', this.currentFrame, '->', prevFrame);
-        this.seekTo(prevFrame);
+        // Calculate frame step based on playback speed (at 60 FPS, how many frames we'd advance per render frame)
+        const frameStep = Math.max(1, Math.round(this.playbackSpeed / 60));
+        const prevFrame = Math.max(this.currentFrame - frameStep, 0);
+        console.log('Previous frame:', this.currentFrame, '->', prevFrame, `(step: ${frameStep})`);
+        this.seekToWithAccumulation(prevFrame);
     }
 
     nextFrame() {
         if (!this.data) return;
-        const nextFrame = Math.min(this.currentFrame + 1, this.data.time.length - 1);
-        console.log('Next frame:', this.currentFrame, '->', nextFrame);
-        this.seekTo(nextFrame);
+        // Calculate frame step based on playback speed (at 60 FPS, how many frames we'd advance per render frame)
+        const frameStep = Math.max(1, Math.round(this.playbackSpeed / 60));
+        const nextFrame = Math.min(this.currentFrame + frameStep, this.data.time.length - 1);
+        console.log('Next frame:', this.currentFrame, '->', nextFrame, `(step: ${frameStep})`);
+        this.seekToWithAccumulation(nextFrame);
     }
 
     seekTo(frame) {
@@ -210,6 +277,23 @@ class DashboardController {
         this.updateTimeDisplay();
     }
 
+    seekToWithAccumulation(targetFrame) {
+        if (!this.data) return;
+
+        const oldFrame = this.currentFrame;
+        this.currentFrame = Math.max(0, Math.min(targetFrame, this.data.time.length - 1));
+        this.elements.timeline.value = this.currentFrame;
+
+        // If moving forward, accumulate sparks; otherwise just draw the frame
+        if (this.currentFrame > oldFrame) {
+            this.drawFrameWithAccumulatedSparks(oldFrame, this.currentFrame);
+        } else {
+            this.drawFrame(this.currentFrame);
+        }
+
+        this.updateTimeDisplay();
+    }
+
     drawFrame(frameIndex) {
         if (!this.data) return;
 
@@ -218,6 +302,34 @@ class DashboardController {
         // Update all panels
         Object.values(this.panels).forEach(panel => {
             panel.draw(frameData, frameIndex);
+        });
+    }
+
+    drawFrameWithAccumulatedSparks(startFrame, endFrame) {
+        if (!this.data) return;
+
+        // Collect all sparks that occurred between startFrame and endFrame
+        const accumulatedSparks = [];
+
+        for (let f = startFrame + 1; f <= endFrame; f++) {
+            const frameData = this.getFrameData(f);
+            if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+                accumulatedSparks.push({
+                    locationMM: frameData.spark_status[1],
+                    frameIndex: f
+                });
+            }
+        }
+
+        // Get the final frame data
+        const finalFrameData = this.getFrameData(endFrame);
+
+        // Add accumulated sparks to frame data
+        finalFrameData.accumulatedSparks = accumulatedSparks;
+
+        // Update all panels with accumulated sparks
+        Object.values(this.panels).forEach(panel => {
+            panel.draw(finalFrameData, endFrame);
         });
     }
 
@@ -361,7 +473,7 @@ class SideViewPanel extends BasePanel {
         
         // Spark persistence tracking
         this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
-        this.sparkPersistenceFrames = 10; // Number of frames sparks remain visible
+        this.baseSparkPersistenceFrames = 10; // Base number of frames sparks remain visible
         this.lastFrameIndex = -1; // Track frame changes for detecting backward seeks
 
         // Setup controls
@@ -503,7 +615,19 @@ class SideViewPanel extends BasePanel {
         }
         this.lastFrameIndex = frameIndex;
 
-        // Update spark persistence tracking
+        // Handle accumulated sparks from skipped frames
+        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
+            // Add all accumulated sparks to the active sparks list
+            frameData.accumulatedSparks.forEach(spark => {
+                this.activeSparks.push({
+                    locationMM: spark.locationMM,
+                    startFrame: spark.frameIndex,
+                    intensity: 1.0
+                });
+            });
+        }
+
+        // Update spark persistence tracking for current frame
         if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
             const sparkLocationMM = frameData.spark_status[1]; // y position on wire (mm)
             // Add new spark to active sparks list
@@ -514,16 +638,25 @@ class SideViewPanel extends BasePanel {
             });
         }
 
+        // Calculate dynamic spark persistence based on playback speed
+        // Goal: sparks should be visible for ~200ms of real time
+        // At 60 FPS display, that's ~12 display frames
+        // But we need to account for how many simulation frames pass per display frame
+        const playbackSpeed = this.controller ? this.controller.playbackSpeed : 60;
+        const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / 60));
+        // Scale persistence so sparks are visible for approximately the same real-time duration
+        const sparkPersistenceFrames = Math.max(this.baseSparkPersistenceFrames, framesPerDisplayFrame * 12);
+
         // Remove old sparks (older than persistence time)
         this.activeSparks = this.activeSparks.filter(
-            spark => (frameIndex - spark.startFrame) < this.sparkPersistenceFrames
+            spark => (frameIndex - spark.startFrame) < sparkPersistenceFrames
         );
 
         // Draw all active sparks with decay
         const gap = (frameData.workpiece_position || 0) - (frameData.wire_position || 0); // Gap in µm
         this.activeSparks.forEach(spark => {
             const age = frameIndex - spark.startFrame;
-            const decayFactor = 1.0 - (age / this.sparkPersistenceFrames); // Linear decay from 1.0 to 0
+            const decayFactor = 1.0 - (age / sparkPersistenceFrames); // Linear decay from 1.0 to 0
             this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, spark.locationMM, gap, decayFactor);
         });
 
@@ -846,7 +979,11 @@ class TopViewPanel extends BasePanel {
         
         // Spark persistence tracking
         this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
-        this.sparkPersistenceFrames = 10; // Number of frames sparks remain visible
+        this.baseSparkPersistenceFrames = 10; // Base number of frames sparks remain visible
+        this.lastFrameIndex = -1; // Track frame changes for detecting backward seeks
+
+        // Spark angle map (precomputed on data load)
+        this.sparkAngles = new Map();
 
         // Setup mouse controls
         this.setupControls();
@@ -929,9 +1066,57 @@ class TopViewPanel extends BasePanel {
                 // Fallback to 20mm (default from env_config)
                 this.workpieceHeightMM = 20.0;
             }
-            
+
             console.log('TopViewPanel setData - workpieceHeightMM:', this.workpieceHeightMM, 'mm');
         }
+
+        // Pre-calculate radial angles for all sparks using the provided distribution
+        // p(θ) = k * e^(-k|θ|) / (2(1 - e^(-kπ/2))) for θ ∈ [-π/2, π/2]
+        this.precomputeSparkAngles(data);
+    }
+
+    precomputeSparkAngles(data) {
+        // Initialize spark angle map
+        this.sparkAngles = new Map();
+
+        if (!data || !data.spark_status) return;
+
+        // Distribution parameter k (controls concentration towards center)
+        const k = 5.0; // Higher k = more concentration at center
+
+        // Inverse CDF sampling function with HARD constraint: θ ∈ (-π/2, π/2)
+        const sampleAngle = () => {
+            const u = Math.random(); // Uniform [0, 1]
+
+            // For the symmetric exponential distribution on [-π/2, π/2]:
+            // We use inverse transform sampling
+
+            let angle;
+            if (u < 0.5) {
+                // Negative side
+                angle = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+            } else {
+                // Positive side
+                angle = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+            }
+
+            // HARD CONSTRAINT: angles MUST be strictly between -90° and +90°
+            // Clamp with small epsilon to avoid exactly ±90°
+            angle = Math.max(-Math.PI/2 + 0.001, Math.min(Math.PI/2 - 0.001, angle));
+
+            return angle;
+        };
+
+        // Pre-calculate angle for each spark event
+        data.spark_status.forEach((status, frameIndex) => {
+            if (status && status[0] === 1 && status[1] !== null) {
+                // Sample angle from distribution
+                const angle = sampleAngle();
+                this.sparkAngles.set(frameIndex, angle);
+            }
+        });
+
+        console.log(`Precomputed ${this.sparkAngles.size} spark angles`);
     }
 
     draw(frameData, frameIndex) {
@@ -1003,19 +1188,27 @@ class TopViewPanel extends BasePanel {
         this.ctx.translate(w / 2, h / 2);
         this.ctx.translate(-this.cameraX * this.scale, 0);
 
-        // Draw workpiece (fills entire area with cut trail behind wire)
-        this.drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius);
+        // Handle spark persistence tracking (same as side view)
+        // Detect backward seek and clear sparks
+        if (frameIndex < this.lastFrameIndex) {
+            this.activeSparks = [];
+        }
+        this.lastFrameIndex = frameIndex;
 
-        // Draw kerf (gap region)
-        this.drawKerf(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
+        // Handle accumulated sparks from skipped frames
+        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
+            frameData.accumulatedSparks.forEach(spark => {
+                this.activeSparks.push({
+                    locationMM: spark.locationMM,
+                    startFrame: spark.frameIndex,
+                    intensity: 1.0
+                });
+            });
+        }
 
-        // Draw wire (at wireCenterX position)
-        this.drawWire(wireCenterX, wireRadius, frameData);
-
-        // Update spark persistence tracking
-        if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            const sparkLocationMM = frameData.spark_status[1]; // y position on wire (mm, from 0 to workpiece_height)
-            // Add new spark to active sparks list
+        // Update spark persistence tracking for current frame
+        if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const sparkLocationMM = frameData.spark_status[1];
             this.activeSparks.push({
                 locationMM: sparkLocationMM,
                 startFrame: frameIndex,
@@ -1023,17 +1216,32 @@ class TopViewPanel extends BasePanel {
             });
         }
 
-        // Remove old sparks (older than persistence time)
+        // Calculate dynamic spark persistence
+        const playbackSpeed = this.controller ? this.controller.playbackSpeed : 60;
+        const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / 60));
+        const sparkPersistenceFrames = Math.max(this.baseSparkPersistenceFrames, framesPerDisplayFrame * 12);
+
+        // Remove old sparks
         this.activeSparks = this.activeSparks.filter(
-            spark => (frameIndex - spark.startFrame) < this.sparkPersistenceFrames
+            spark => (frameIndex - spark.startFrame) < sparkPersistenceFrames
         );
 
-        // Draw all active sparks with decay
-        this.activeSparks.forEach(spark => {
-            const age = frameIndex - spark.startFrame;
-            const decayFactor = 1.0 - (age / this.sparkPersistenceFrames); // Linear decay from 1.0 to 0
-            this.drawSpark(wireCenterX, wireRadius, frontierCenterX, frontierRadius, spark.locationMM, gapUM, decayFactor);
-        });
+        // Layer 1 (bottom): Draw blue dielectric/water background
+        this.drawKerf(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
+                // Layer 4 (top): Draw all active sparks with decay
+                this.activeSparks.forEach(spark => {
+                    const age = frameIndex - spark.startFrame;
+                    const decayFactor = 1.0 - (age / sparkPersistenceFrames);
+                    this.drawSpark(wireCenterX, wireRadius, spark.locationMM, gapUM, decayFactor, spark.startFrame);
+                });
+
+        // Layer 2: Draw workpiece blocks
+        this.drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius);
+
+        // Layer 3: Draw wire
+        this.drawWire(wireCenterX, wireRadius, frameData);
+
+
 
         // Restore context
         this.ctx.restore();
@@ -1081,8 +1289,24 @@ class TopViewPanel extends BasePanel {
     }
 
     drawKerf(wireX, wireRadius, frontierCenterX, frontierRadius) {
-        // Kerf region - removed shading, will be added later with debris
-        // For now, just clean empty space between wire and frontier
+        // Draw blue dielectric/water background in the gap region
+        const frontierCenterXPx = frontierCenterX * this.scale;
+        const frontierRadiusPx = frontierRadius * this.scale;
+
+        const w = this.canvas.width / window.devicePixelRatio;
+        const h = this.canvas.height / window.devicePixelRatio;
+        const maxDim = Math.max(w, h) * 2;
+
+        const cutChannelHalfHeight = frontierRadiusPx;
+
+        // Draw water/dielectric background in cut channel
+        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.35)'; // Gruvbox blue
+        this.ctx.fillRect(
+            -maxDim,
+            -cutChannelHalfHeight,
+            frontierCenterXPx + maxDim + maxDim,
+            cutChannelHalfHeight * 2
+        );
     }
 
     drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius) {
@@ -1096,15 +1320,6 @@ class TopViewPanel extends BasePanel {
 
         const cutChannelHalfHeight = frontierRadiusPx;
         const blockThickness = maxDim;
-
-        // === Draw water background in cut channel ===
-        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.35)'; // More visible blue (Gruvbox blue)
-        this.ctx.fillRect(
-            -maxDim,
-            -cutChannelHalfHeight,
-            frontierCenterXPx + maxDim + maxDim,
-            cutChannelHalfHeight * 2
-        );
 
         // === Draw simple rectangular workpiece block ===
         this.ctx.fillStyle = '#bdae93'; // Gruvbox gray workpiece
@@ -1174,73 +1389,75 @@ class TopViewPanel extends BasePanel {
         }
     }
 
-    drawSpark(wireX, wireRadius, frontierCenterX, frontierRadius, sparkLocationMM, gapUM, decayFactor) {
+    drawSpark(wireX, wireRadius, sparkLocationMM, gapUM, decayFactor, sparkFrameIndex) {
         const wireCenterXPx = wireX * this.scale;
-        const frontierCenterXPx = frontierCenterX * this.scale;
         const wireRadiusPx = wireRadius * this.scale;
-        const frontierRadiusPx = frontierRadius * this.scale;
 
-        // Ensure minimum spark length of 50µm for visibility
-        const minSparkLengthUM = 50.0; // µm
-        const actualGapMM = gapUM / 1000.0; // Convert gap to mm
-        const minSparkLengthMM = minSparkLengthUM / 1000.0; // Convert to mm
-        const sparkLengthMM = Math.max(actualGapMM, minSparkLengthMM);
-        const sparkLengthPx = sparkLengthMM * this.scale;
+        // Get precomputed angle for this spark (or fallback to 0 if not found)
+        const angle = this.sparkAngles.get(sparkFrameIndex) || 0;
 
-        // Spark position: use sparkLocationMM to determine angle
-        // sparkLocationMM ranges from 0 to workpiece_height (mm)
-        // Map this to an angle around the wire facing the workpiece
-        // Normalize by actual workpiece height from metadata (fallback 20mm)
-        const heightMM = this.workpieceHeightMM || 20.0;
-        const normalizedPos = (sparkLocationMM / heightMM) % 1.0; // Normalize to 0-1
-        const angle = (normalizedPos - 0.5) * Math.PI; // Map to ±90° from center (facing workpiece)
-        const sparkStartX = wireCenterXPx + wireRadiusPx * Math.cos(angle);
-        const sparkStartY = wireRadiusPx * Math.sin(angle);
+        // Draw LONGER cylinders that extend beyond wire and workpiece
+        // This way we only see the middle portion, avoiding cylinder end caps
+        const extensionFactor = 0.4; // Extend 60% beyond each end (5x shorter than before)
 
-        const sparkEndX = sparkStartX + sparkLengthPx * Math.cos(angle);
-        const sparkEndY = sparkStartY + sparkLengthPx * Math.sin(angle);
+        // Spark starts INSIDE the wire (negative extension)
+        const sparkStartRadiusMM = -wireRadius * extensionFactor;
+        // Spark ends BEYOND the workpiece
+        const gapMM = gapUM / 1000.0; // Convert gap to mm
+        const sparkEndRadiusMM = wireRadius + gapMM + wireRadius * extensionFactor;
+
+        // Calculate start and end positions
+        const sparkStartX = wireCenterXPx + (sparkStartRadiusMM * this.scale) * Math.cos(angle);
+        const sparkStartY = (sparkStartRadiusMM * this.scale) * Math.sin(angle);
+
+        const sparkEndX = wireCenterXPx + (sparkEndRadiusMM * this.scale) * Math.cos(angle);
+        const sparkEndY = (sparkEndRadiusMM * this.scale) * Math.sin(angle);
+
+        // Spark diameter: 60 µm = 0.06 mm
+        const sparkDiameter = 0.04; // mm
+        const sparkRadiusPx = (sparkDiameter / 2) * this.scale;
 
         // Spark appearance with decay
         const brightness = decayFactor; // 1.0 when new, fades to 0
         const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
-        
-        // Draw bright spark with multiple layers for visibility
+
+        // Draw cylinder (line in 2D top view) - same color as side view
+        // Use 'butt' lineCap since the ends are hidden anyway
+        this.ctx.lineCap = 'butt';
+
         // Layer 1: Wide outer glow
-        const gradient = this.ctx.createRadialGradient(
-            sparkStartX, sparkStartY, 0,
-            sparkStartX, sparkStartY, sparkLengthPx * 1.5
-        );
-        gradient.addColorStop(0, `rgba(184, 187, 38, ${alpha * 0.8})`); // Gruvbox yellow bright
-        gradient.addColorStop(0.3, `rgba(250, 189, 47, ${alpha * 0.4})`); // Gruvbox yellow/orange
-        gradient.addColorStop(1, `rgba(250, 189, 47, 0)`);
-
-        this.ctx.fillStyle = gradient;
-        this.ctx.beginPath();
-        this.ctx.arc(sparkStartX, sparkStartY, sparkLengthPx * 1.5, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        // Layer 2: Spark arc/lightning
-        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
-        this.ctx.lineWidth = 3.0;
+        this.ctx.strokeStyle = `rgba(184, 187, 38, ${alpha * 0.3})`; // Gruvbox bright yellow
+        this.ctx.lineWidth = sparkRadiusPx * 2 * 3.0;
         this.ctx.shadowBlur = 15;
-        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
-
+        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha * 0.8})`;
         this.ctx.beginPath();
         this.ctx.moveTo(sparkStartX, sparkStartY);
-
-        // Jagged line
-        const steps = 3;
-        for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            const x = sparkStartX + (sparkEndX - sparkStartX) * t;
-            const y = sparkStartY + (sparkEndY - sparkStartY) * t;
-            const jitter = (Math.random() - 0.5) * sparkLengthPx * 0.3;
-            this.ctx.lineTo(x + jitter, y + jitter * 0.5);
-        }
         this.ctx.lineTo(sparkEndX, sparkEndY);
         this.ctx.stroke();
 
+        // Layer 2: Medium glow
+        this.ctx.strokeStyle = `rgba(250, 189, 47, ${alpha * 0.6})`; // Gruvbox yellow
+        this.ctx.lineWidth = sparkRadiusPx * 2 * 2.0;
+        this.ctx.shadowBlur = 10;
+        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
+        this.ctx.beginPath();
+        this.ctx.moveTo(sparkStartX, sparkStartY);
+        this.ctx.lineTo(sparkEndX, sparkEndY);
+        this.ctx.stroke();
+
+        // Layer 3: Bright core (60µm diameter)
+        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
+        this.ctx.lineWidth = sparkRadiusPx * 2;
+        this.ctx.shadowBlur = 5;
+        this.ctx.shadowColor = `rgba(255, 255, 255, ${alpha})`;
+        this.ctx.beginPath();
+        this.ctx.moveTo(sparkStartX, sparkStartY);
+        this.ctx.lineTo(sparkEndX, sparkEndY);
+        this.ctx.stroke();
+
+        // Reset shadow and lineCap
         this.ctx.shadowBlur = 0;
+        this.ctx.lineCap = 'round';
     }
 
     drawInfoOverlay(w, h, gap, wirePos, workpiecePos, frontierRadius, frameData) {

@@ -213,6 +213,22 @@
                 <button id="nextFrame">Next ▶</button>
             </div>
 
+            <div class="control-group">
+                <label for="speedControl" style="font-size: 0.85rem; color: #7c6f64;">Speed:</label>
+                <select id="speedControl" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
+                    <option value="1">1 µs/s</option>
+                    <option value="30">30 µs/s</option>
+                    <option value="60" selected>60 µs/s</option>
+                    <option value="120">120 µs/s</option>
+                    <option value="240">240 µs/s</option>
+                    <option value="480">480 µs/s</option>
+                    <option value="1000">1000 µs/s</option>
+                    <option value="10000">10,000 µs/s</option>
+                    <option value="100000">100,000 µs/s</option>
+                    <option value="1000000">1,000,000 µs/s</option>
+                </select>
+            </div>
+
             <input type="range" id="timeline" min="0" max="100" value="0">
 
             <div id="frameCounter">Frame: 0 / 0</div>
