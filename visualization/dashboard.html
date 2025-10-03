@@ -214,6 +214,10 @@
             </div>
 
             <div class="control-group">
+                <button id="linkViews">🔗 Linked Views</button>
+            </div>
+
+            <div class="control-group">
                 <label for="speedControl" style="font-size: 0.85rem; color: #7c6f64;">Speed:</label>
                 <select id="speedControl" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
                     <option value="1">1 µs/s</option>
@@ -241,6 +245,7 @@
             <div class="panel">
                 <div class="panel-header">
                     <span class="panel-title">Side View</span>
+                    <button id="toggleSideViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
                     <span class="panel-info" id="sideViewInfo">Wire + Workpiece</span>
                 </div>
                 <div class="canvas-container">
@@ -263,6 +268,7 @@
             <div class="panel">
                 <div class="panel-header">
                     <span class="panel-title">Top View</span>
+                    <button id="toggleTopViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
                     <span class="panel-info" id="topViewInfo">Debris Concentration</span>
                 </div>
                 <div class="canvas-container">

@@ -10,6 +10,7 @@ class DashboardController {
         this.animationId = null;
         this.playbackSpeed = 60; // microseconds per second (default 60 µs/s)
         this.lastFrameTime = 0; // For timing playback
+        this.viewsLinked = true; // Link/unlink top and side views
 
         // Panel instances
         this.panels = {
@@ -35,7 +36,10 @@ class DashboardController {
             frameCounter: document.getElementById('frameCounter'),
             timeDisplay: document.getElementById('timeDisplay'),
             loadingOverlay: document.getElementById('loadingOverlay'),
-            speedControl: document.getElementById('speedControl')
+            speedControl: document.getElementById('speedControl'),
+            linkViews: document.getElementById('linkViews'),
+            toggleSideViewSparks: document.getElementById('toggleSideViewSparks'),
+            toggleTopViewSparks: document.getElementById('toggleTopViewSparks')
         };
 
         // Setup event listeners
@@ -47,6 +51,9 @@ class DashboardController {
         this.elements.nextFrame.addEventListener('click', () => this.nextFrame());
         this.elements.timeline.addEventListener('input', (e) => this.seekTo(parseInt(e.target.value)));
         this.elements.speedControl.addEventListener('change', (e) => this.setPlaybackSpeed(parseInt(e.target.value)));
+        this.elements.linkViews.addEventListener('click', () => this.toggleViewsLink());
+        this.elements.toggleSideViewSparks.addEventListener('click', () => this.toggleSideViewSparks());
+        this.elements.toggleTopViewSparks.addEventListener('click', () => this.toggleTopViewSparks());
 
         // Initialize panels
         this.initializePanels();
@@ -96,6 +103,48 @@ class DashboardController {
             panel.controller = this;
             panel.init();
         });
+    }
+
+    toggleViewsLink() {
+        this.viewsLinked = !this.viewsLinked;
+        this.elements.linkViews.textContent = this.viewsLinked ? '🔗 Linked Views' : '🔓 Unlinked Views';
+
+        if (!this.viewsLinked) {
+            // When unlinking, give each view its own independent camera
+            this.panels.sideView.useIndependentCamera = true;
+            this.panels.sideView.independentZoomLevel = this.panels.topView.zoomLevel;
+            this.panels.sideView.independentCameraX = this.panels.topView.cameraX;
+        } else {
+            // When linking, revert to shared camera
+            this.panels.sideView.useIndependentCamera = false;
+        }
+
+        // Redraw current frame
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
+    }
+
+    toggleSideViewSparks() {
+        this.panels.sideView.showSparks = !this.panels.sideView.showSparks;
+        this.elements.toggleSideViewSparks.textContent = this.panels.sideView.showSparks ? '⚡ Sparks ON' : '⚡ Sparks OFF';
+        this.elements.toggleSideViewSparks.style.background = this.panels.sideView.showSparks ? '#8ec07c' : '#d65d0e';
+
+        // Redraw current frame
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
+    }
+
+    toggleTopViewSparks() {
+        this.panels.topView.showSparks = !this.panels.topView.showSparks;
+        this.elements.toggleTopViewSparks.textContent = this.panels.topView.showSparks ? '⚡ Sparks ON' : '⚡ Sparks OFF';
+        this.elements.toggleTopViewSparks.style.background = this.panels.topView.showSparks ? '#8ec07c' : '#d65d0e';
+
+        // Redraw current frame
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
     }
 
     async loadDataFile(event) {
@@ -464,17 +513,26 @@ class SideViewPanel extends BasePanel {
         // Shared camera with TopView (will be set by DashboardController)
         this.sharedCamera = null;
 
+        // Independent camera for unlinked mode
+        this.useIndependentCamera = false;
+        this.independentZoomLevel = 3.0;
+        this.independentCameraX = 0; // mm
+
         // Vertical camera offset (independent from TopView)
         this.cameraY = 0; // mm
 
         // Mouse interaction state
         this.isDragging = false;
+        this.lastMouseX = 0;
         this.lastMouseY = 0;
-        
+
         // Spark persistence tracking
         this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
         this.baseSparkPersistenceFrames = 10; // Base number of frames sparks remain visible
         this.lastFrameIndex = -1; // Track frame changes for detecting backward seeks
+
+        // Spark visibility toggle
+        this.showSparks = true;
 
         // Setup controls
         this.setupControls();
@@ -503,25 +561,52 @@ class SideViewPanel extends BasePanel {
     }
 
     setupControls() {
-        // Mouse drag for vertical pan
+        // Mouse wheel for zoom (when in independent mode)
+        this.canvas.addEventListener('wheel', (e) => {
+            if (!this.useIndependentCamera) return;
+
+            e.preventDefault();
+            const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
+            this.independentZoomLevel *= zoomDelta;
+            this.independentZoomLevel = Math.max(0.5, Math.min(100, this.independentZoomLevel));
+
+            // Trigger redraw
+            if (this.controller && this.controller.data) {
+                this.controller.drawFrame(this.controller.currentFrame);
+            }
+        });
+
+        // Mouse drag for pan
         this.canvas.addEventListener('mousedown', (e) => {
             this.isDragging = true;
+            this.lastMouseX = e.offsetX;
             this.lastMouseY = e.offsetY;
             this.canvas.style.cursor = 'grabbing';
         });
 
         this.canvas.addEventListener('mousemove', (e) => {
             if (this.isDragging) {
+                const dx = e.offsetX - this.lastMouseX;
                 const dy = e.offsetY - this.lastMouseY;
-                // Get scale from shared camera
-                const zoomLevel = this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0;
+
+                // Get scale
+                const zoomLevel = this.useIndependentCamera ? this.independentZoomLevel :
+                                 (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
                 const w = this.canvas.width / window.devicePixelRatio;
                 const viewWidth = this.wireDiameter * zoomLevel;
                 const scale = (w * 0.8) / viewWidth;
 
-                this.cameraY -= dy / scale; // Convert screen pixels to world space
+                // Vertical pan (always available)
+                this.cameraY -= dy / scale;
+
+                // Horizontal pan (only in independent mode)
+                if (this.useIndependentCamera) {
+                    this.independentCameraX -= dx / scale;
+                }
+
+                this.lastMouseX = e.offsetX;
                 this.lastMouseY = e.offsetY;
-                
+
                 // Trigger redraw
                 if (this.controller && this.controller.data) {
                     this.controller.drawFrame(this.controller.currentFrame);
@@ -539,10 +624,14 @@ class SideViewPanel extends BasePanel {
             this.canvas.style.cursor = 'default';
         });
 
-        // Double-click to reset vertical position
+        // Double-click to reset position
         this.canvas.addEventListener('dblclick', () => {
             this.cameraY = 0;
-            
+            if (this.useIndependentCamera) {
+                this.independentCameraX = 0;
+                this.independentZoomLevel = 3.0;
+            }
+
             // Trigger redraw
             if (this.controller && this.controller.data) {
                 this.controller.drawFrame(this.controller.currentFrame);
@@ -570,11 +659,13 @@ class SideViewPanel extends BasePanel {
             return;
         }
 
-        // Get camera position from shared camera (TopView)
-        const cameraX = this.sharedCamera ? this.sharedCamera.cameraX : 0;
-        const zoomLevel = this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0;
+        // Get camera position (either from shared camera or independent)
+        const cameraX = this.useIndependentCamera ? this.independentCameraX :
+                       (this.sharedCamera ? this.sharedCamera.cameraX : 0);
+        const zoomLevel = this.useIndependentCamera ? this.independentZoomLevel :
+                         (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
 
-        // Scale calculation (match horizontal scale with TopView)
+        // Scale calculation
         const viewWidth = this.wireDiameter * zoomLevel;
         const scale = (w * 0.8) / viewWidth;
 
@@ -652,13 +743,15 @@ class SideViewPanel extends BasePanel {
             spark => (frameIndex - spark.startFrame) < sparkPersistenceFrames
         );
 
-        // Draw all active sparks with decay
-        const gap = (frameData.workpiece_position || 0) - (frameData.wire_position || 0); // Gap in µm
-        this.activeSparks.forEach(spark => {
-            const age = frameIndex - spark.startFrame;
-            const decayFactor = 1.0 - (age / sparkPersistenceFrames); // Linear decay from 1.0 to 0
-            this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, spark.locationMM, gap, decayFactor);
-        });
+        // Draw all active sparks with decay (if enabled)
+        if (this.showSparks) {
+            const gap = (frameData.workpiece_position || 0) - (frameData.wire_position || 0); // Gap in µm
+            this.activeSparks.forEach(spark => {
+                const age = frameIndex - spark.startFrame;
+                const decayFactor = 1.0 - (age / sparkPersistenceFrames); // Linear decay from 1.0 to 0
+                this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, spark.locationMM, gap, decayFactor);
+            });
+        }
 
         // Restore context
         this.ctx.restore();
@@ -976,7 +1069,7 @@ class TopViewPanel extends BasePanel {
         this.isDragging = false;
         this.lastMouseX = 0;
         this.lastMouseY = 0;
-        
+
         // Spark persistence tracking
         this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
         this.baseSparkPersistenceFrames = 10; // Base number of frames sparks remain visible
@@ -984,6 +1077,9 @@ class TopViewPanel extends BasePanel {
 
         // Spark angle map (precomputed on data load)
         this.sparkAngles = new Map();
+
+        // Spark visibility toggle
+        this.showSparks = true;
 
         // Setup mouse controls
         this.setupControls();
@@ -1228,12 +1324,15 @@ class TopViewPanel extends BasePanel {
 
         // Layer 1 (bottom): Draw blue dielectric/water background
         this.drawKerf(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
-                // Layer 4 (top): Draw all active sparks with decay
-                this.activeSparks.forEach(spark => {
-                    const age = frameIndex - spark.startFrame;
-                    const decayFactor = 1.0 - (age / sparkPersistenceFrames);
-                    this.drawSpark(wireCenterX, wireRadius, spark.locationMM, gapUM, decayFactor, spark.startFrame);
-                });
+
+        // Layer 4 (top): Draw all active sparks with decay (if enabled)
+        if (this.showSparks) {
+            this.activeSparks.forEach(spark => {
+                const age = frameIndex - spark.startFrame;
+                const decayFactor = 1.0 - (age / sparkPersistenceFrames);
+                this.drawSpark(wireCenterX, wireRadius, spark.locationMM, gapUM, decayFactor, spark.startFrame);
+            });
+        }
 
         // Layer 2: Draw workpiece blocks
         this.drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius);
