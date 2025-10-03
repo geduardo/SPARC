@@ -28,7 +28,10 @@ class DashboardController {
             fileInput: document.getElementById('fileInput'),
             playPause: document.getElementById('playPause'),
             reset: document.getElementById('reset'),
+            prevFrame: document.getElementById('prevFrame'),
+            nextFrame: document.getElementById('nextFrame'),
             timeline: document.getElementById('timeline'),
+            frameCounter: document.getElementById('frameCounter'),
             timeDisplay: document.getElementById('timeDisplay'),
             loadingOverlay: document.getElementById('loadingOverlay')
         };
@@ -38,6 +41,8 @@ class DashboardController {
         this.elements.fileInput.addEventListener('change', (e) => this.loadDataFile(e));
         this.elements.playPause.addEventListener('click', () => this.togglePlayPause());
         this.elements.reset.addEventListener('click', () => this.resetTimeline());
+        this.elements.prevFrame.addEventListener('click', () => this.previousFrame());
+        this.elements.nextFrame.addEventListener('click', () => this.nextFrame());
         this.elements.timeline.addEventListener('input', (e) => this.seekTo(parseInt(e.target.value)));
 
         // Initialize panels
@@ -46,7 +51,31 @@ class DashboardController {
         // Handle window resize
         window.addEventListener('resize', () => this.handleResize());
 
+        // Setup keyboard controls
+        this.setupKeyboardControls();
+
         console.log('Dashboard initialized. Load a simulation data file to begin.');
+    }
+
+    setupKeyboardControls() {
+        window.addEventListener('keydown', (e) => {
+            console.log('Key pressed:', e.key, 'Data loaded:', !!this.data);
+            
+            if (!this.data) return;
+
+            // Arrow right: next frame
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                console.log('Arrow Right - calling nextFrame()');
+                this.nextFrame();
+            }
+            // Arrow left: previous frame
+            else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                console.log('Arrow Left - calling previousFrame()');
+                this.previousFrame();
+            }
+        });
     }
 
     initializePanels() {
@@ -59,8 +88,11 @@ class DashboardController {
         // Set up shared camera between TopView and SideView
         this.panels.sideView.sharedCamera = this.panels.topView;
 
-        // Initialize all panels
-        Object.values(this.panels).forEach(panel => panel.init());
+        // Pass controller reference to panels for triggering redraws
+        Object.values(this.panels).forEach(panel => {
+            panel.controller = this;
+            panel.init();
+        });
     }
 
     async loadDataFile(event) {
@@ -155,10 +187,25 @@ class DashboardController {
         this.seekTo(0);
     }
 
+    previousFrame() {
+        if (!this.data) return;
+        const prevFrame = Math.max(this.currentFrame - 1, 0);
+        console.log('Previous frame:', this.currentFrame, '->', prevFrame);
+        this.seekTo(prevFrame);
+    }
+
+    nextFrame() {
+        if (!this.data) return;
+        const nextFrame = Math.min(this.currentFrame + 1, this.data.time.length - 1);
+        console.log('Next frame:', this.currentFrame, '->', nextFrame);
+        this.seekTo(nextFrame);
+    }
+
     seekTo(frame) {
         if (!this.data) return;
 
         this.currentFrame = Math.max(0, Math.min(frame, this.data.time.length - 1));
+        this.elements.timeline.value = this.currentFrame;
         this.drawFrame(this.currentFrame);
         this.updateTimeDisplay();
     }
@@ -204,6 +251,11 @@ class DashboardController {
             return `${String(seconds).padStart(2, '0')}:${String(milliseconds).padStart(3, '0')}`;
         };
 
+        // Update frame counter
+        this.elements.frameCounter.textContent = 
+            `Frame: ${this.currentFrame + 1} / ${this.data.time.length}`;
+
+        // Update time display
         this.elements.timeDisplay.textContent =
             `${formatTime(currentTime)} / ${formatTime(totalTime)}`;
     }
@@ -299,6 +351,91 @@ class SideViewPanel extends BasePanel {
 
         // Shared camera with TopView (will be set by DashboardController)
         this.sharedCamera = null;
+
+        // Vertical camera offset (independent from TopView)
+        this.cameraY = 0; // mm
+
+        // Mouse interaction state
+        this.isDragging = false;
+        this.lastMouseY = 0;
+        
+        // Spark persistence tracking
+        this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
+        this.sparkPersistenceFrames = 10; // Number of frames sparks remain visible
+        this.lastFrameIndex = -1; // Track frame changes for detecting backward seeks
+
+        // Setup controls
+        this.setupControls();
+    }
+
+    setData(data) {
+        super.setData(data);
+
+        // Extract metadata if available
+        if (data && data.metadata) {
+            if (data.metadata.wire_diameter !== undefined) {
+                this.wireDiameter = data.metadata.wire_diameter;
+            }
+            if (data.metadata.initial_gap !== undefined) {
+                this.initialGap = data.metadata.initial_gap;
+            }
+            // Workpiece height/thickness in mm (directly from env_config)
+            if (data.metadata.workpiece_height_mm !== undefined) {
+                this.workpieceThickness = data.metadata.workpiece_height_mm;
+            } else if (data.metadata.workpiece_height !== undefined) {
+                this.workpieceThickness = data.metadata.workpiece_height;
+            }
+        }
+        
+        console.log('SideViewPanel setData - workpieceThickness:', this.workpieceThickness, 'mm');
+    }
+
+    setupControls() {
+        // Mouse drag for vertical pan
+        this.canvas.addEventListener('mousedown', (e) => {
+            this.isDragging = true;
+            this.lastMouseY = e.offsetY;
+            this.canvas.style.cursor = 'grabbing';
+        });
+
+        this.canvas.addEventListener('mousemove', (e) => {
+            if (this.isDragging) {
+                const dy = e.offsetY - this.lastMouseY;
+                // Get scale from shared camera
+                const zoomLevel = this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0;
+                const w = this.canvas.width / window.devicePixelRatio;
+                const viewWidth = this.wireDiameter * zoomLevel;
+                const scale = (w * 0.8) / viewWidth;
+
+                this.cameraY -= dy / scale; // Convert screen pixels to world space
+                this.lastMouseY = e.offsetY;
+                
+                // Trigger redraw
+                if (this.controller && this.controller.data) {
+                    this.controller.drawFrame(this.controller.currentFrame);
+                }
+            }
+        });
+
+        this.canvas.addEventListener('mouseup', () => {
+            this.isDragging = false;
+            this.canvas.style.cursor = 'default';
+        });
+
+        this.canvas.addEventListener('mouseleave', () => {
+            this.isDragging = false;
+            this.canvas.style.cursor = 'default';
+        });
+
+        // Double-click to reset vertical position
+        this.canvas.addEventListener('dblclick', () => {
+            this.cameraY = 0;
+            
+            // Trigger redraw
+            if (this.controller && this.controller.data) {
+                this.controller.drawFrame(this.controller.currentFrame);
+            }
+        });
     }
 
     draw(frameData, frameIndex) {
@@ -334,21 +471,21 @@ class SideViewPanel extends BasePanel {
         const wireRadius = this.wireDiameter / 2; // mm
         const wireCenterX = (wireEdgePos / 1000) - wireRadius; // mm
 
+        // Draw static water background in screen space so it does not shift with camera
+        this.drawWaterScreen(w, h);
+
         // Save context
         this.ctx.save();
 
-        // Setup camera transform (same as TopView horizontal)
+        // Setup camera transform (horizontal from TopView, vertical independent)
         this.ctx.translate(w / 2, h / 2);
-        this.ctx.translate(-cameraX * scale, 0);
+        this.ctx.translate(-cameraX * scale, -this.cameraY * scale);
 
         // Workpiece frontier position
         const workpieceEdgePos = frameData.workpiece_position || 0; // µm
         const workpieceEdgeX = workpieceEdgePos / 1000; // mm
 
-        // Draw water dielectric everywhere
-        this.drawWater(scale, h);
-
-        // Draw cut material behind wire
+        // Draw cut material behind wire (world space)
         this.drawCutMaterial(workpieceEdgeX, scale, h);
 
         // Draw workpiece (full thickness block, starting from workpiece edge)
@@ -360,10 +497,35 @@ class SideViewPanel extends BasePanel {
         // Draw wire
         this.drawWire(wireCenterX, wireRadius, scale, frameData);
 
-        // Draw spark if active
-        if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale);
+        // Detect backward seek and clear sparks
+        if (frameIndex < this.lastFrameIndex) {
+            this.activeSparks = [];
         }
+        this.lastFrameIndex = frameIndex;
+
+        // Update spark persistence tracking
+        if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const sparkLocationMM = frameData.spark_status[1]; // y position on wire (mm)
+            // Add new spark to active sparks list
+            this.activeSparks.push({
+                locationMM: sparkLocationMM,
+                startFrame: frameIndex,
+                intensity: 1.0
+            });
+        }
+
+        // Remove old sparks (older than persistence time)
+        this.activeSparks = this.activeSparks.filter(
+            spark => (frameIndex - spark.startFrame) < this.sparkPersistenceFrames
+        );
+
+        // Draw all active sparks with decay
+        const gap = (frameData.workpiece_position || 0) - (frameData.wire_position || 0); // Gap in µm
+        this.activeSparks.forEach(spark => {
+            const age = frameIndex - spark.startFrame;
+            const decayFactor = 1.0 - (age / this.sparkPersistenceFrames); // Linear decay from 1.0 to 0
+            this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, spark.locationMM, gap, decayFactor);
+        });
 
         // Restore context
         this.ctx.restore();
@@ -420,21 +582,10 @@ class SideViewPanel extends BasePanel {
         }
     }
 
-    drawWater(scale, canvasHeight) {
-        const maxDim = canvasHeight * 2;
-        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
-
-        // Water everywhere above and below workpiece
-        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.35)';
-
-        // Water above workpiece
-        this.ctx.fillRect(-maxDim, -maxDim, maxDim * 4, maxDim - workpieceHalfThickness);
-
-        // Water below workpiece
-        this.ctx.fillRect(-maxDim, workpieceHalfThickness, maxDim * 4, maxDim - workpieceHalfThickness);
-
-        // Water in the cut channel (where workpiece was removed)
-        this.ctx.fillRect(-maxDim, -workpieceHalfThickness, maxDim * 4, this.workpieceThickness * scale);
+    drawWaterScreen(canvasWidth, canvasHeight) {
+        // Draw water across the entire canvas in screen space (does not pan/zoom)
+        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.2)';
+        this.ctx.fillRect(0, 0, canvasWidth, canvasHeight);
     }
 
     drawCutMaterial(workpieceEdgeX, scale, canvasHeight) {
@@ -489,10 +640,10 @@ class SideViewPanel extends BasePanel {
         const wireTopEnd = -workpieceHalfThickness - radiusPx;
         const wireBottomEnd = workpieceHalfThickness + radiusPx;
 
-        // Nozzle dimensions
-        const nozzleWidth = 3.0 * scale; // 3mm width at base
-        const nozzleHeight = 2.0 * scale; // 2mm height
-        const nozzleTopWidth = 0.8 * scale; // 0.8mm width at narrow end
+        // Nozzle dimensions - fixed size (independent of workpiece thickness)
+        const nozzleWidth = 6.0 * scale; // 6mm width at base (2x original)
+        const nozzleHeight = 2.0 * scale; // 2mm height (same as original)
+        const nozzleTopWidth = 1.6 * scale; // 1.6mm width at narrow end (2x original)
 
         // Upper nozzle (trapezoid pointing down) - ends at wire top
         this.ctx.fillStyle = '#7c6f64'; // Gruvbox darker gray
@@ -529,34 +680,68 @@ class SideViewPanel extends BasePanel {
         this.ctx.stroke();
     }
 
-    drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale) {
+    drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, sparkLocationMM, gapUM, decayFactor) {
         const wireCenterXPx = wireCenterX * scale;
         const radiusPx = wireRadius * scale;
         const workpieceEdgeXPx = workpieceEdgeX * scale;
 
-        // Spark line thickness: 100 µm = 0.1 mm
-        const sparkThickness = 0.1 * scale;
-
-        // Spark position: from wire right edge to workpiece left edge
+        // Spark position: from wire right edge
         const wireRightEdge = wireCenterXPx + radiusPx;
-        const workpieceLeftEdge = workpieceEdgeXPx;
+        
+        // Ensure minimum spark length of 50µm for visibility
+        const minSparkLengthUM = 50.0; // µm
+        const actualGapMM = gapUM / 1000.0; // Convert gap to mm
+        const minSparkLengthMM = minSparkLengthUM / 1000.0; // Convert to mm
+        const sparkLengthMM = Math.max(actualGapMM, minSparkLengthMM);
+        const sparkEndX = wireRightEdge + (sparkLengthMM * scale);
 
-        // Random vertical position centered on workpiece thickness
-        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
-        const sparkY = (Math.random() - 0.5) * workpieceHalfThickness * 1.5; // Random position within ±75% of thickness
+        // Vertical position from spark_status[1] (y position on wire in mm)
+        // spark_location ranges from 0 (bottom) to workpiece_height (top) in mm
+        // Canvas: +y is down, -y is up
+        // Map: 0 → +workpieceHalfThickness (bottom), workpiece_height → -workpieceHalfThickness (top)
+        const thicknessMM = this.workpieceThickness; // in mm
+        const workpieceHalfThickness = thicknessMM / 2;
+        const sparkY = (workpieceHalfThickness - sparkLocationMM) * scale;
 
-        // Draw cyan spark line
-        this.ctx.strokeStyle = '#8ec07c'; // Gruvbox cyan/aqua
-        this.ctx.lineWidth = sparkThickness;
+        // Spark appearance with decay
+        const brightness = decayFactor; // 1.0 when new, fades to 0
+        const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
+        
+        // Spark thickness: 100 µm = 0.1 mm (as originally requested)
+        const sparkThickness = 0.1 * scale;
+        
+        // Draw bright spark with multiple layers for visibility (only varying glow, not thickness)
+        // Layer 1: Wide outer glow
+        this.ctx.strokeStyle = `rgba(184, 187, 38, ${alpha * 0.3})`; // Gruvbox bright yellow
+        this.ctx.lineWidth = sparkThickness * 3.0;
+        this.ctx.shadowBlur = 15;
+        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha * 0.8})`;
         this.ctx.beginPath();
         this.ctx.moveTo(wireRightEdge, sparkY);
-        this.ctx.lineTo(workpieceLeftEdge, sparkY);
+        this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
-
-        // Add glow effect
+        
+        // Layer 2: Medium glow
+        this.ctx.strokeStyle = `rgba(250, 189, 47, ${alpha * 0.6})`; // Gruvbox yellow
+        this.ctx.lineWidth = sparkThickness * 2.0;
+        this.ctx.shadowBlur = 10;
+        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireRightEdge, sparkY);
+        this.ctx.lineTo(sparkEndX, sparkY);
+        this.ctx.stroke();
+        
+        // Layer 3: Bright core (100µm thickness)
+        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
+        this.ctx.lineWidth = sparkThickness;
         this.ctx.shadowBlur = 5;
-        this.ctx.shadowColor = '#8ec07c';
+        this.ctx.shadowColor = `rgba(255, 255, 255, ${alpha})`;
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireRightEdge, sparkY);
+        this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
+        
+        // Reset shadow
         this.ctx.shadowBlur = 0;
     }
 
@@ -651,13 +836,17 @@ class TopViewPanel extends BasePanel {
         // Visualization parameters
         this.scale = 1.0; // pixels per mm
         this.cameraX = 0; // Camera offset in mm (world space)
-        this.zoomLevel = 3.0; // User-controlled zoom multiplier (3x wire diameter view)
+        this.zoomLevel = 15.0; // User-controlled zoom multiplier (start with wider view to see workpiece)
         this.autoPan = true; // Auto-pan when wire gets close to edge
 
         // Mouse interaction state
         this.isDragging = false;
         this.lastMouseX = 0;
         this.lastMouseY = 0;
+        
+        // Spark persistence tracking
+        this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
+        this.sparkPersistenceFrames = 10; // Number of frames sparks remain visible
 
         // Setup mouse controls
         this.setupControls();
@@ -669,7 +858,12 @@ class TopViewPanel extends BasePanel {
             e.preventDefault();
             const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
             this.zoomLevel *= zoomDelta;
-            this.zoomLevel = Math.max(0.5, Math.min(50, this.zoomLevel)); // Clamp between 0.5x and 50x (wider range)
+            this.zoomLevel = Math.max(0.05, Math.min(1000, this.zoomLevel)); // Clamp between 0.05x and 50x (allows viewing full workpiece)
+            
+            // Trigger redraw
+            if (this.controller && this.controller.data) {
+                this.controller.drawFrame(this.controller.currentFrame);
+            }
         });
 
         // Mouse drag to pan
@@ -687,6 +881,11 @@ class TopViewPanel extends BasePanel {
                 this.cameraX -= dx / this.scale; // Convert screen pixels to world space
                 this.lastMouseX = e.offsetX;
                 this.lastMouseY = e.offsetY;
+                
+                // Trigger redraw
+                if (this.controller && this.controller.data) {
+                    this.controller.drawFrame(this.controller.currentFrame);
+                }
             }
         });
 
@@ -702,9 +901,14 @@ class TopViewPanel extends BasePanel {
 
         // Double-click to reset view
         this.canvas.addEventListener('dblclick', () => {
-            this.zoomLevel = 3.0;
+            this.zoomLevel = 15.0;
             this.autoPan = true;
             this.cameraX = 0;
+            
+            // Trigger redraw
+            if (this.controller && this.controller.data) {
+                this.controller.drawFrame(this.controller.currentFrame);
+            }
         });
     }
 
@@ -715,6 +919,18 @@ class TopViewPanel extends BasePanel {
         if (data.metadata) {
             this.wireDiameter = data.metadata.wire_diameter || 0.25;
             this.initialGap = data.metadata.initial_gap || 50.0;
+
+            // Workpiece height/thickness for spark mapping in Top View (in mm, from env_config)
+            if (data.metadata.workpiece_height_mm !== undefined) {
+                this.workpieceHeightMM = data.metadata.workpiece_height_mm;
+            } else if (data.metadata.workpiece_height !== undefined) {
+                this.workpieceHeightMM = data.metadata.workpiece_height;
+            } else {
+                // Fallback to 20mm (default from env_config)
+                this.workpieceHeightMM = 20.0;
+            }
+            
+            console.log('TopViewPanel setData - workpieceHeightMM:', this.workpieceHeightMM, 'mm');
         }
     }
 
@@ -796,10 +1012,28 @@ class TopViewPanel extends BasePanel {
         // Draw wire (at wireCenterX position)
         this.drawWire(wireCenterX, wireRadius, frameData);
 
-        // Draw spark if active
+        // Update spark persistence tracking
         if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            this.drawSpark(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
+            const sparkLocationMM = frameData.spark_status[1]; // y position on wire (mm, from 0 to workpiece_height)
+            // Add new spark to active sparks list
+            this.activeSparks.push({
+                locationMM: sparkLocationMM,
+                startFrame: frameIndex,
+                intensity: 1.0
+            });
         }
+
+        // Remove old sparks (older than persistence time)
+        this.activeSparks = this.activeSparks.filter(
+            spark => (frameIndex - spark.startFrame) < this.sparkPersistenceFrames
+        );
+
+        // Draw all active sparks with decay
+        this.activeSparks.forEach(spark => {
+            const age = frameIndex - spark.startFrame;
+            const decayFactor = 1.0 - (age / this.sparkPersistenceFrames); // Linear decay from 1.0 to 0
+            this.drawSpark(wireCenterX, wireRadius, frontierCenterX, frontierRadius, spark.locationMM, gapUM, decayFactor);
+        });
 
         // Restore context
         this.ctx.restore();
@@ -940,42 +1174,56 @@ class TopViewPanel extends BasePanel {
         }
     }
 
-    drawSpark(wireX, wireRadius, frontierCenterX, frontierRadius) {
+    drawSpark(wireX, wireRadius, frontierCenterX, frontierRadius, sparkLocationMM, gapUM, decayFactor) {
         const wireCenterXPx = wireX * this.scale;
         const frontierCenterXPx = frontierCenterX * this.scale;
         const wireRadiusPx = wireRadius * this.scale;
         const frontierRadiusPx = frontierRadius * this.scale;
 
-        // Calculate gap between surfaces
-        const gapPx = (frontierCenterXPx + frontierRadiusPx) - (wireCenterXPx + wireRadiusPx);
+        // Ensure minimum spark length of 50µm for visibility
+        const minSparkLengthUM = 50.0; // µm
+        const actualGapMM = gapUM / 1000.0; // Convert gap to mm
+        const minSparkLengthMM = minSparkLengthUM / 1000.0; // Convert to mm
+        const sparkLengthMM = Math.max(actualGapMM, minSparkLengthMM);
+        const sparkLengthPx = sparkLengthMM * this.scale;
 
-        // Spark position (random point on wire surface facing workpiece)
-        const angle = (Math.random() - 0.5) * Math.PI; // ±90° from center
+        // Spark position: use sparkLocationMM to determine angle
+        // sparkLocationMM ranges from 0 to workpiece_height (mm)
+        // Map this to an angle around the wire facing the workpiece
+        // Normalize by actual workpiece height from metadata (fallback 20mm)
+        const heightMM = this.workpieceHeightMM || 20.0;
+        const normalizedPos = (sparkLocationMM / heightMM) % 1.0; // Normalize to 0-1
+        const angle = (normalizedPos - 0.5) * Math.PI; // Map to ±90° from center (facing workpiece)
         const sparkStartX = wireCenterXPx + wireRadiusPx * Math.cos(angle);
         const sparkStartY = wireRadiusPx * Math.sin(angle);
 
-        const sparkEndX = frontierCenterXPx + frontierRadiusPx * Math.cos(angle);
-        const sparkEndY = frontierRadiusPx * Math.sin(angle);
+        const sparkEndX = sparkStartX + sparkLengthPx * Math.cos(angle);
+        const sparkEndY = sparkStartY + sparkLengthPx * Math.sin(angle);
 
-        // Spark flash glow
+        // Spark appearance with decay
+        const brightness = decayFactor; // 1.0 when new, fades to 0
+        const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
+        
+        // Draw bright spark with multiple layers for visibility
+        // Layer 1: Wide outer glow
         const gradient = this.ctx.createRadialGradient(
             sparkStartX, sparkStartY, 0,
-            sparkStartX, sparkStartY, Math.abs(gapPx) * 1.5
+            sparkStartX, sparkStartY, sparkLengthPx * 1.5
         );
-        gradient.addColorStop(0, 'rgba(184, 187, 38, 0.8)'); // Gruvbox yellow bright
-        gradient.addColorStop(0.3, 'rgba(215, 153, 33, 0.4)'); // Gruvbox yellow/orange
-        gradient.addColorStop(1, 'rgba(215, 153, 33, 0)');
+        gradient.addColorStop(0, `rgba(184, 187, 38, ${alpha * 0.8})`); // Gruvbox yellow bright
+        gradient.addColorStop(0.3, `rgba(250, 189, 47, ${alpha * 0.4})`); // Gruvbox yellow/orange
+        gradient.addColorStop(1, `rgba(250, 189, 47, 0)`);
 
         this.ctx.fillStyle = gradient;
         this.ctx.beginPath();
-        this.ctx.arc(sparkStartX, sparkStartY, Math.abs(gapPx) * 1.5, 0, Math.PI * 2);
+        this.ctx.arc(sparkStartX, sparkStartY, sparkLengthPx * 1.5, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Spark arc/lightning
-        this.ctx.strokeStyle = '#fabd2f'; // Gruvbox bright yellow
-        this.ctx.lineWidth = 2;
-        this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = '#d79921'; // Gruvbox yellow glow
+        // Layer 2: Spark arc/lightning
+        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
+        this.ctx.lineWidth = 3.0;
+        this.ctx.shadowBlur = 15;
+        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
 
         this.ctx.beginPath();
         this.ctx.moveTo(sparkStartX, sparkStartY);
@@ -986,7 +1234,7 @@ class TopViewPanel extends BasePanel {
             const t = i / steps;
             const x = sparkStartX + (sparkEndX - sparkStartX) * t;
             const y = sparkStartY + (sparkEndY - sparkStartY) * t;
-            const jitter = (Math.random() - 0.5) * Math.abs(gapPx) * 0.3;
+            const jitter = (Math.random() - 0.5) * sparkLengthPx * 0.3;
             this.ctx.lineTo(x + jitter, y + jitter * 0.5);
         }
         this.ctx.lineTo(sparkEndX, sparkEndY);

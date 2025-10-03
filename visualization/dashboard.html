@@ -74,6 +74,14 @@
             cursor: pointer;
         }
 
+        #frameCounter {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            min-width: 100px;
+            color: #d65d0e;
+            font-weight: bold;
+        }
+
         #timeDisplay {
             font-family: 'Courier New', monospace;
             font-size: 0.95rem;
@@ -200,8 +208,14 @@
                 <button id="reset">↻ Reset</button>
             </div>
 
+            <div class="control-group">
+                <button id="prevFrame">◀ Prev</button>
+                <button id="nextFrame">Next ▶</button>
+            </div>
+
             <input type="range" id="timeline" min="0" max="100" value="0">
 
+            <div id="frameCounter">Frame: 0 / 0</div>
             <div id="timeDisplay">00:00.000 / 00:00.000</div>
         </div>
 

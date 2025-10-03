@@ -69,8 +69,11 @@ def main():
     print("=== Wire EDM Environment Quick Start ===")
     print("Using PI Voltage Controller\n")
 
-    # Create environment with default settings
-    env = WireEDMEnv()
+    # Create environment with custom workpiece height
+    config = EnvironmentConfig(
+        workpiece_height=5.0,  # mm (changed from default 20.0 mm)
+    )
+    env = WireEDMEnv(config=config)
 
     # Set up simulation data logger for dashboard
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -85,9 +88,9 @@ def main():
             "wire_average_temperature",
             "voltage",
             "current",
-            "spark_state",
+            "spark_status",
         ],
-        "log_frequency": {"type": "control_step"},
+        "log_frequency": {"type": "every_step"},
         "backend": {
             "type": "json",
             "filepath": json_filepath,
@@ -118,7 +121,7 @@ def main():
     spark_count = 0
 
     print("Running simulation...")
-    for i in range(10000000):
+    for i in range(200000):
         obs, reward, terminated, truncated, info = env.step(action)
 
         # Log simulation data

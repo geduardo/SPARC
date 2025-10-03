@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict, Union
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
+import copy  # For deep-copying mutable signals like lists
 
 if TYPE_CHECKING:
     from ..core.state import EDMState
@@ -164,9 +165,17 @@ class SimulationLogger:
 
                     # If the value is a NumPy array, store a copy to avoid issues with in-place modifications
                     # of the original array in the simulation state.
-                    processed_value = (
-                        value.copy() if isinstance(value, np.ndarray) else value
-                    )
+                    # Ensure we snapshot mutable data structures so later in-place
+                    # mutations in the simulation don't retroactively change logged values
+                    if isinstance(value, np.ndarray):
+                        processed_value = value.copy()
+                    elif isinstance(value, (list, dict)):
+                        processed_value = copy.deepcopy(value)
+                    elif isinstance(value, tuple):
+                        # Convert tuples to lists for JSON friendliness and snapshot
+                        processed_value = list(value)
+                    else:
+                        processed_value = value
 
                     if self.config["backend"]["type"] == "memory":
                         self.log_data[signal_name].append(processed_value)
@@ -278,6 +287,23 @@ class SimulationLogger:
         if not json_data:
             print("No signals could be serialized to JSON, skipping .json file creation.")
             return
+
+        # Add environment config as metadata for dashboard
+        if self.env and hasattr(self.env, 'config'):
+            try:
+                json_data['metadata'] = {
+                    'wire_diameter': float(self.env.config.wire_diameter),
+                    'wire_diameter_um': float(self.env.config.wire_diameter * 1000),
+                    'initial_gap': float(self.env.config.initial_gap),
+                    'workpiece_height': float(self.env.config.workpiece_height),
+                    'workpiece_height_mm': float(self.env.config.workpiece_height),
+                    'target_cutting_distance': float(self.env.config.target_cutting_distance),
+                    'dt': int(self.env.config.dt),
+                    'servo_interval': int(self.env.config.servo_interval),
+                }
+                print("Added environment config as metadata to JSON")
+            except Exception as e:
+                print(f"Warning: Could not add environment config to JSON metadata: {e}")
 
         output_path = pathlib.Path(filepath_str)
         output_path.parent.mkdir(parents=True, exist_ok=True)
