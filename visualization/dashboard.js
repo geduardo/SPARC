@@ -56,6 +56,9 @@ class DashboardController {
         this.panels.topView = new TopViewPanel('topViewCanvas');
         this.panels.thermal = new ThermalProfilePanel('thermalCanvas');
 
+        // Set up shared camera between TopView and SideView
+        this.panels.sideView.sharedCamera = this.panels.topView;
+
         // Initialize all panels
         Object.values(this.panels).forEach(panel => panel.init());
     }
@@ -287,28 +290,292 @@ class BasePanel {
 // ============================================================================
 
 class SideViewPanel extends BasePanel {
+    constructor(canvasId) {
+        super(canvasId);
+
+        // Default values
+        this.wireDiameter = 0.25; // mm
+        this.workpieceThickness = 5.0; // mm (example thickness)
+
+        // Shared camera with TopView (will be set by DashboardController)
+        this.sharedCamera = null;
+    }
+
     draw(frameData, frameIndex) {
         this.clear();
 
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
 
-        // Example rendering - replace with actual data visualization
-        this.ctx.fillStyle = '#1a1a1a';
+        // Background
+        this.ctx.fillStyle = '#fbf1c7';
         this.ctx.fillRect(0, 0, w, h);
 
-        // Draw placeholder
-        this.drawText('Side View', w/2, h/2, {
-            color: '#00ff88',
-            font: 'bold 16px sans-serif',
-            align: 'center',
-            baseline: 'middle'
-        });
-
-        if (frameData) {
-            this.drawText(`Frame: ${frameIndex}`, 10, 10, { color: '#888' });
-            this.drawText(`Time: ${(frameData.time / 1000).toFixed(3)} ms`, 10, 25, { color: '#888' });
+        if (!frameData) {
+            this.drawText('Side View', w/2, h/2, {
+                color: '#427b58',
+                font: 'bold 16px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
         }
+
+        // Get camera position from shared camera (TopView)
+        const cameraX = this.sharedCamera ? this.sharedCamera.cameraX : 0;
+        const zoomLevel = this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0;
+
+        // Scale calculation (match horizontal scale with TopView)
+        const viewWidth = this.wireDiameter * zoomLevel;
+        const scale = (w * 0.8) / viewWidth;
+
+        // Wire position
+        const wireEdgePos = frameData.wire_position || 0; // µm
+        const wireRadius = this.wireDiameter / 2; // mm
+        const wireCenterX = (wireEdgePos / 1000) - wireRadius; // mm
+
+        // Save context
+        this.ctx.save();
+
+        // Setup camera transform (same as TopView horizontal)
+        this.ctx.translate(w / 2, h / 2);
+        this.ctx.translate(-cameraX * scale, 0);
+
+        // Workpiece frontier position
+        const workpieceEdgePos = frameData.workpiece_position || 0; // µm
+        const workpieceEdgeX = workpieceEdgePos / 1000; // mm
+
+        // Draw water dielectric everywhere
+        this.drawWater(scale, h);
+
+        // Draw cut material behind wire
+        this.drawCutMaterial(workpieceEdgeX, scale, h);
+
+        // Draw workpiece (full thickness block, starting from workpiece edge)
+        this.drawWorkpiece(workpieceEdgeX, scale, h);
+
+        // Draw nozzles
+        this.drawNozzles(wireCenterX, wireRadius, scale);
+
+        // Draw wire
+        this.drawWire(wireCenterX, wireRadius, scale, frameData);
+
+        // Draw spark if active
+        if (frameData.spark_status && frameData.spark_status[0] === 1) {
+            this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale);
+        }
+
+        // Restore context
+        this.ctx.restore();
+
+        // Draw info overlay
+        this.drawInfoOverlay(w, h, frameData);
+    }
+
+    drawWorkpiece(workpieceEdgeX, scale, canvasHeight) {
+        const maxDim = canvasHeight * 2;
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+        const workpieceEdgeXPx = workpieceEdgeX * scale;
+
+        // Workpiece block (from workpiece edge to the right)
+        this.ctx.fillStyle = '#bdae93'; // Gruvbox gray
+        this.ctx.fillRect(
+            workpieceEdgeXPx,
+            -workpieceHalfThickness,
+            maxDim * 4,
+            this.workpieceThickness * scale
+        );
+
+        // Left edge (frontier face)
+        this.ctx.strokeStyle = '#665c54';
+        this.ctx.lineWidth = 2.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(workpieceEdgeXPx, -workpieceHalfThickness);
+        this.ctx.lineTo(workpieceEdgeXPx, workpieceHalfThickness);
+        this.ctx.stroke();
+
+        // Top edge
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(workpieceEdgeXPx, -workpieceHalfThickness);
+        this.ctx.lineTo(workpieceEdgeXPx + maxDim * 4, -workpieceHalfThickness);
+        this.ctx.stroke();
+
+        // Bottom edge
+        this.ctx.beginPath();
+        this.ctx.moveTo(workpieceEdgeXPx, workpieceHalfThickness);
+        this.ctx.lineTo(workpieceEdgeXPx + maxDim * 4, workpieceHalfThickness);
+        this.ctx.stroke();
+
+        // Texture lines
+        this.ctx.strokeStyle = 'rgba(60, 56, 54, 0.15)';
+        this.ctx.lineWidth = 0.5;
+        const gridSpacing = 10 * scale;
+
+        for (let x = workpieceEdgeXPx + gridSpacing; x < workpieceEdgeXPx + maxDim * 4; x += gridSpacing) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, -workpieceHalfThickness);
+            this.ctx.lineTo(x, workpieceHalfThickness);
+            this.ctx.stroke();
+        }
+    }
+
+    drawWater(scale, canvasHeight) {
+        const maxDim = canvasHeight * 2;
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+
+        // Water everywhere above and below workpiece
+        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.35)';
+
+        // Water above workpiece
+        this.ctx.fillRect(-maxDim, -maxDim, maxDim * 4, maxDim - workpieceHalfThickness);
+
+        // Water below workpiece
+        this.ctx.fillRect(-maxDim, workpieceHalfThickness, maxDim * 4, maxDim - workpieceHalfThickness);
+
+        // Water in the cut channel (where workpiece was removed)
+        this.ctx.fillRect(-maxDim, -workpieceHalfThickness, maxDim * 4, this.workpieceThickness * scale);
+    }
+
+    drawCutMaterial(workpieceEdgeX, scale, canvasHeight) {
+        const maxDim = canvasHeight * 2;
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+        const workpieceEdgeXPx = workpieceEdgeX * scale;
+
+        // Cut material behind wire (lighter/translucent gray showing eroded material)
+        this.ctx.fillStyle = 'rgba(189, 174, 147, 0.3)'; // Translucent workpiece color
+        this.ctx.fillRect(
+            -maxDim,
+            -workpieceHalfThickness,
+            workpieceEdgeXPx + maxDim,
+            this.workpieceThickness * scale
+        );
+    }
+
+    drawWire(wireCenterX, wireRadius, scale, frameData) {
+        const wireCenterXPx = wireCenterX * scale;
+        const radiusPx = wireRadius * scale;
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+
+        // Wire extends vertically through the workpiece
+        this.ctx.fillStyle = '#d79921'; // Gruvbox yellow/gold
+        this.ctx.fillRect(
+            wireCenterXPx - radiusPx,
+            -workpieceHalfThickness - radiusPx,
+            radiusPx * 2,
+            (workpieceHalfThickness * 2) + (radiusPx * 2)
+        );
+
+        // Wire edges
+        this.ctx.strokeStyle = '#b57614';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireCenterXPx - radiusPx, -workpieceHalfThickness - radiusPx);
+        this.ctx.lineTo(wireCenterXPx - radiusPx, workpieceHalfThickness + radiusPx);
+        this.ctx.stroke();
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireCenterXPx + radiusPx, -workpieceHalfThickness - radiusPx);
+        this.ctx.lineTo(wireCenterXPx + radiusPx, workpieceHalfThickness + radiusPx);
+        this.ctx.stroke();
+    }
+
+    drawNozzles(wireCenterX, wireRadius, scale) {
+        const wireCenterXPx = wireCenterX * scale;
+        const radiusPx = wireRadius * scale;
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+
+        // Wire ends (same as wire drawing)
+        const wireTopEnd = -workpieceHalfThickness - radiusPx;
+        const wireBottomEnd = workpieceHalfThickness + radiusPx;
+
+        // Nozzle dimensions
+        const nozzleWidth = 3.0 * scale; // 3mm width at base
+        const nozzleHeight = 2.0 * scale; // 2mm height
+        const nozzleTopWidth = 0.8 * scale; // 0.8mm width at narrow end
+
+        // Upper nozzle (trapezoid pointing down) - ends at wire top
+        this.ctx.fillStyle = '#7c6f64'; // Gruvbox darker gray
+        this.ctx.beginPath();
+        // Top wide edge
+        this.ctx.moveTo(wireCenterXPx - nozzleWidth / 2, wireTopEnd - nozzleHeight);
+        this.ctx.lineTo(wireCenterXPx + nozzleWidth / 2, wireTopEnd - nozzleHeight);
+        // Bottom narrow edge (at wire end)
+        this.ctx.lineTo(wireCenterXPx + nozzleTopWidth / 2, wireTopEnd);
+        this.ctx.lineTo(wireCenterXPx - nozzleTopWidth / 2, wireTopEnd);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        // Nozzle outline
+        this.ctx.strokeStyle = '#504945';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.stroke();
+
+        // Lower nozzle (trapezoid pointing up) - ends at wire bottom
+        this.ctx.fillStyle = '#7c6f64';
+        this.ctx.beginPath();
+        // Bottom wide edge
+        this.ctx.moveTo(wireCenterXPx - nozzleWidth / 2, wireBottomEnd + nozzleHeight);
+        this.ctx.lineTo(wireCenterXPx + nozzleWidth / 2, wireBottomEnd + nozzleHeight);
+        // Top narrow edge (at wire end)
+        this.ctx.lineTo(wireCenterXPx + nozzleTopWidth / 2, wireBottomEnd);
+        this.ctx.lineTo(wireCenterXPx - nozzleTopWidth / 2, wireBottomEnd);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        // Nozzle outline
+        this.ctx.strokeStyle = '#504945';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.stroke();
+    }
+
+    drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale) {
+        const wireCenterXPx = wireCenterX * scale;
+        const radiusPx = wireRadius * scale;
+        const workpieceEdgeXPx = workpieceEdgeX * scale;
+
+        // Spark line thickness: 100 µm = 0.1 mm
+        const sparkThickness = 0.1 * scale;
+
+        // Spark position: from wire right edge to workpiece left edge
+        const wireRightEdge = wireCenterXPx + radiusPx;
+        const workpieceLeftEdge = workpieceEdgeXPx;
+
+        // Random vertical position centered on workpiece thickness
+        const workpieceHalfThickness = (this.workpieceThickness / 2) * scale;
+        const sparkY = (Math.random() - 0.5) * workpieceHalfThickness * 1.5; // Random position within ±75% of thickness
+
+        // Draw cyan spark line
+        this.ctx.strokeStyle = '#8ec07c'; // Gruvbox cyan/aqua
+        this.ctx.lineWidth = sparkThickness;
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireRightEdge, sparkY);
+        this.ctx.lineTo(workpieceLeftEdge, sparkY);
+        this.ctx.stroke();
+
+        // Add glow effect
+        this.ctx.shadowBlur = 5;
+        this.ctx.shadowColor = '#8ec07c';
+        this.ctx.stroke();
+        this.ctx.shadowBlur = 0;
+    }
+
+    drawInfoOverlay(w, h, frameData) {
+        const padding = 10;
+        const lineHeight = 16;
+        let y = padding;
+
+        this.drawText('SIDE VIEW', padding, y, { color: '#427b58', font: 'bold 11px sans-serif' });
+        y += lineHeight;
+
+        const wireEdgePos = frameData.wire_position || 0;
+        const workpieceEdgePos = frameData.workpiece_position || 0;
+        const gap = workpieceEdgePos - wireEdgePos;
+
+        this.drawText(`Gap: ${gap.toFixed(1)} µm`, padding, y, { color: '#076678', font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`WP Thickness: ${this.workpieceThickness.toFixed(1)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
     }
 }
 
@@ -323,7 +590,7 @@ class OscilloscopePanel extends BasePanel {
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
 
-        this.ctx.fillStyle = '#0a0a0a';
+        this.ctx.fillStyle = '#fbf1c7';
         this.ctx.fillRect(0, 0, w, h);
 
         // Draw grid
@@ -331,22 +598,22 @@ class OscilloscopePanel extends BasePanel {
 
         // Draw placeholder
         this.drawText('Oscilloscope', w/2, h/2, {
-            color: '#00ff88',
+            color: '#076678',
             font: 'bold 16px sans-serif',
             align: 'center',
             baseline: 'middle'
         });
 
         if (frameData && frameData.voltage !== undefined) {
-            this.drawText(`Voltage: ${frameData.voltage.toFixed(1)} V`, 10, 10, { color: '#00ddff' });
+            this.drawText(`Voltage: ${frameData.voltage.toFixed(1)} V`, 10, 10, { color: '#076678' });
         }
         if (frameData && frameData.current !== undefined) {
-            this.drawText(`Current: ${frameData.current.toFixed(2)} A`, 10, 25, { color: '#ff8800' });
+            this.drawText(`Current: ${frameData.current.toFixed(2)} A`, 10, 25, { color: '#d65d0e' });
         }
     }
 
     drawGrid(w, h) {
-        this.ctx.strokeStyle = '#2a2a2a';
+        this.ctx.strokeStyle = '#ebdbb2';
         this.ctx.lineWidth = 1;
 
         // Horizontal lines
@@ -383,8 +650,62 @@ class TopViewPanel extends BasePanel {
 
         // Visualization parameters
         this.scale = 1.0; // pixels per mm
-        this.centerX = 0;
-        this.centerY = 0;
+        this.cameraX = 0; // Camera offset in mm (world space)
+        this.zoomLevel = 3.0; // User-controlled zoom multiplier (3x wire diameter view)
+        this.autoPan = true; // Auto-pan when wire gets close to edge
+
+        // Mouse interaction state
+        this.isDragging = false;
+        this.lastMouseX = 0;
+        this.lastMouseY = 0;
+
+        // Setup mouse controls
+        this.setupControls();
+    }
+
+    setupControls() {
+        // Mouse wheel for zoom
+        this.canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
+            this.zoomLevel *= zoomDelta;
+            this.zoomLevel = Math.max(0.5, Math.min(50, this.zoomLevel)); // Clamp between 0.5x and 50x (wider range)
+        });
+
+        // Mouse drag to pan
+        this.canvas.addEventListener('mousedown', (e) => {
+            this.isDragging = true;
+            this.autoPan = false; // Disable auto-pan when user manually pans
+            this.lastMouseX = e.offsetX;
+            this.lastMouseY = e.offsetY;
+            this.canvas.style.cursor = 'grabbing';
+        });
+
+        this.canvas.addEventListener('mousemove', (e) => {
+            if (this.isDragging) {
+                const dx = e.offsetX - this.lastMouseX;
+                this.cameraX -= dx / this.scale; // Convert screen pixels to world space
+                this.lastMouseX = e.offsetX;
+                this.lastMouseY = e.offsetY;
+            }
+        });
+
+        this.canvas.addEventListener('mouseup', () => {
+            this.isDragging = false;
+            this.canvas.style.cursor = 'default';
+        });
+
+        this.canvas.addEventListener('mouseleave', () => {
+            this.isDragging = false;
+            this.canvas.style.cursor = 'default';
+        });
+
+        // Double-click to reset view
+        this.canvas.addEventListener('dblclick', () => {
+            this.zoomLevel = 3.0;
+            this.autoPan = true;
+            this.cameraX = 0;
+        });
     }
 
     setData(data) {
@@ -403,17 +724,12 @@ class TopViewPanel extends BasePanel {
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
 
-        // Background
-        this.ctx.fillStyle = '#0a0a0a';
+        // Background - Gruvbox light
+        this.ctx.fillStyle = '#fbf1c7';
         this.ctx.fillRect(0, 0, w, h);
 
-        // Setup coordinate system
-        this.centerX = w / 2;
-        this.centerY = h / 2;
-
-        // Auto-scale to fit nicely (show ~2x kerf width)
-        const kerfWidth = this.wireDiameter + (this.initialGap * 2 / 1000); // Convert µm to mm
-        const viewWidth = kerfWidth * 4; // Show 4x the kerf width
+        // Auto-scale based on user zoom level
+        const viewWidth = this.wireDiameter * this.zoomLevel;
         this.scale = (w * 0.8) / viewWidth;
 
         if (!frameData) {
@@ -426,53 +742,85 @@ class TopViewPanel extends BasePanel {
             return;
         }
 
-        // Calculate current gap and positions
-        const wirePos = frameData.wire_position || 0; // µm
-        const workpiecePos = frameData.workpiece_position || 0; // µm
-        const gap = workpiecePos - wirePos; // µm
+        // Calculate positions in world space (mm)
+        // IMPORTANT: wire_position and workpiece_position refer to EDGES, not centers
+        const wireEdgePos = frameData.wire_position || 0; // µm - right edge of wire
+        const workpieceEdgePos = frameData.workpiece_position || 0; // µm - left edge of workpiece frontier
 
-        // Convert to mm for drawing
-        const gapMM = gap / 1000;
-        const wireRadius = this.wireDiameter / 2;
-        const workpieceOffset = gapMM + wireRadius; // Distance from wire center to workpiece edge
+        const wireRadius = this.wireDiameter / 2; // mm
+
+        // Kerf width (half on each side of the gap)
+        const kerfWidth = this.initialGap / 1000; // Convert µm to mm
+
+        // Workpiece frontier geometry
+        const frontierRadius = wireRadius + kerfWidth; // Radius includes wire radius + kerf
+
+        // Calculate CENTER positions from EDGE positions
+        // Wire center = wire right edge - wire radius
+        const wireCenterX = (wireEdgePos / 1000) - wireRadius; // mm
+
+        // Frontier center = workpiece left edge - frontier radius
+        const frontierCenterX = (workpieceEdgePos / 1000) - frontierRadius; // mm
+
+        // Calculate actual gap (surface to surface)
+        // Gap = workpiece left edge - wire right edge
+        const gapUM = workpieceEdgePos - wireEdgePos; // Already in µm
+
+        // Camera panning: auto-follow wire when enabled
+        if (this.autoPan) {
+            const wireScreenX = (wireCenterX - this.cameraX) * this.scale + w / 2;
+            const edgeThreshold = w * 0.1; // 10% from edge
+
+            // Pan camera if wire is getting too close to left or right edge
+            if (wireScreenX < edgeThreshold) {
+                this.cameraX = wireCenterX - (edgeThreshold / this.scale) + (w / 2 / this.scale);
+            } else if (wireScreenX > w - edgeThreshold) {
+                this.cameraX = wireCenterX + (edgeThreshold / this.scale) - (w / 2 / this.scale);
+            }
+        }
 
         // Save context
         this.ctx.save();
-        this.ctx.translate(this.centerX, this.centerY);
 
-        // Draw workpiece (right side, with semicircular frontier)
-        this.drawWorkpiece(workpieceOffset);
+        // Setup camera transform
+        // Center vertically, pan horizontally based on camera
+        this.ctx.translate(w / 2, h / 2);
+        this.ctx.translate(-this.cameraX * this.scale, 0);
+
+        // Draw workpiece (fills entire area with cut trail behind wire)
+        this.drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius);
 
         // Draw kerf (gap region)
-        this.drawKerf(wireRadius, workpieceOffset);
+        this.drawKerf(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
 
-        // Draw wire (center)
-        this.drawWire(wireRadius, frameData);
+        // Draw wire (at wireCenterX position)
+        this.drawWire(wireCenterX, wireRadius, frameData);
 
         // Draw spark if active
         if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            this.drawSpark(wireRadius, workpieceOffset);
+            this.drawSpark(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
         }
 
         // Restore context
         this.ctx.restore();
 
         // Draw info overlay
-        this.drawInfoOverlay(w, h, gap, frameData);
+        this.drawInfoOverlay(w, h, gapUM, wireEdgePos, workpieceEdgePos, frontierRadius, frameData);
     }
 
-    drawWire(wireRadius, frameData) {
-        // Wire is at center (x=0)
+    drawWire(wireX, wireRadius, frameData) {
+        // Wire position in world space
+        const wireCenterX = wireX * this.scale;
         const radiusPx = wireRadius * this.scale;
 
         // Wire body
-        this.ctx.fillStyle = '#ffcc00'; // Gold/brass color
+        this.ctx.fillStyle = '#d79921'; // Gruvbox yellow/gold
         this.ctx.beginPath();
-        this.ctx.arc(0, 0, radiusPx, 0, Math.PI * 2);
+        this.ctx.arc(wireCenterX, 0, radiusPx, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Wire outline
-        this.ctx.strokeStyle = '#ffaa00';
+        this.ctx.strokeStyle = '#b57614';
         this.ctx.lineWidth = 1.5;
         this.ctx.stroke();
 
@@ -484,127 +832,150 @@ class TopViewPanel extends BasePanel {
             // Heat glow
             if (tempRatio > 0.1) {
                 const glowRadius = radiusPx * (1 + tempRatio * 0.5);
-                const gradient = this.ctx.createRadialGradient(0, 0, radiusPx, 0, 0, glowRadius);
+                const gradient = this.ctx.createRadialGradient(
+                    wireCenterX, 0, radiusPx,
+                    wireCenterX, 0, glowRadius
+                );
                 gradient.addColorStop(0, `rgba(255, 100, 0, 0)`);
                 gradient.addColorStop(1, `rgba(255, 100, 0, ${tempRatio * 0.5})`);
                 this.ctx.fillStyle = gradient;
                 this.ctx.beginPath();
-                this.ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+                this.ctx.arc(wireCenterX, 0, glowRadius, 0, Math.PI * 2);
                 this.ctx.fill();
             }
         }
-
-        // Center dot
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
-        this.ctx.fill();
     }
 
-    drawKerf(wireRadius, workpieceOffset) {
-        // Kerf is the gap between wire and workpiece
-        const wireRadiusPx = wireRadius * this.scale;
-        const workpieceOffsetPx = workpieceOffset * this.scale;
-
-        // Draw kerf region (semi-transparent)
-        this.ctx.fillStyle = 'rgba(100, 150, 200, 0.2)';
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, workpieceOffsetPx, -Math.PI/2, Math.PI/2);
-        this.ctx.arc(0, 0, wireRadiusPx, Math.PI/2, -Math.PI/2, true);
-        this.ctx.closePath();
-        this.ctx.fill();
-
-        // Kerf boundary lines
-        this.ctx.strokeStyle = 'rgba(100, 150, 200, 0.5)';
-        this.ctx.lineWidth = 1;
-        this.ctx.setLineDash([3, 3]);
-
-        // Inner boundary (wire edge)
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, wireRadiusPx, -Math.PI/2, Math.PI/2);
-        this.ctx.stroke();
-
-        // Outer boundary (workpiece edge)
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, workpieceOffsetPx, -Math.PI/2, Math.PI/2);
-        this.ctx.stroke();
-
-        this.ctx.setLineDash([]);
+    drawKerf(wireX, wireRadius, frontierCenterX, frontierRadius) {
+        // Kerf region - removed shading, will be added later with debris
+        // For now, just clean empty space between wire and frontier
     }
 
-    drawWorkpiece(workpieceOffset) {
-        const workpieceOffsetPx = workpieceOffset * this.scale;
+    drawWorkpiece(frontierCenterX, frontierRadius, wireCenterX, wireRadius) {
+        const frontierCenterXPx = frontierCenterX * this.scale;
+        const frontierRadiusPx = frontierRadius * this.scale;
 
         // Get canvas dimensions
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
-        const maxDim = Math.max(w, h);
+        const maxDim = Math.max(w, h) * 2;
 
-        // Workpiece material (fills right side)
-        this.ctx.fillStyle = '#2a4a5a'; // Dark steel blue
+        const cutChannelHalfHeight = frontierRadiusPx;
+        const blockThickness = maxDim;
+
+        // === Draw water background in cut channel ===
+        this.ctx.fillStyle = 'rgba(69, 133, 136, 0.35)'; // More visible blue (Gruvbox blue)
+        this.ctx.fillRect(
+            -maxDim,
+            -cutChannelHalfHeight,
+            frontierCenterXPx + maxDim + maxDim,
+            cutChannelHalfHeight * 2
+        );
+
+        // === Draw simple rectangular workpiece block ===
+        this.ctx.fillStyle = '#bdae93'; // Gruvbox gray workpiece
+
+        // Top block (above cut channel)
+        this.ctx.fillRect(
+            -maxDim,
+            cutChannelHalfHeight,
+            frontierCenterXPx + maxDim + maxDim,
+            blockThickness
+        );
+
+        // Bottom block (below cut channel)
+        this.ctx.fillRect(
+            -maxDim,
+            -cutChannelHalfHeight - blockThickness,
+            frontierCenterXPx + maxDim + maxDim,
+            blockThickness
+        );
+
+        // === Draw frontier face (uncut semicircle) ===
+        this.ctx.fillStyle = '#bdae93'; // Gruvbox gray
         this.ctx.beginPath();
-
-        // Semicircular frontier (left edge of workpiece)
-        this.ctx.arc(0, 0, workpieceOffsetPx, -Math.PI/2, Math.PI/2);
-
-        // Rectangle extending to the right
-        this.ctx.lineTo(maxDim, workpieceOffsetPx);
-        this.ctx.lineTo(maxDim, -workpieceOffsetPx);
+        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI/2, Math.PI/2);
+        this.ctx.lineTo(frontierCenterXPx + maxDim, frontierRadiusPx);
+        this.ctx.lineTo(frontierCenterXPx + maxDim, -frontierRadiusPx);
         this.ctx.closePath();
         this.ctx.fill();
 
-        // Workpiece edge highlight
-        this.ctx.strokeStyle = '#4a7a8a';
-        this.ctx.lineWidth = 2;
+        // === Draw ALL cut edges with dark outlines ===
+        this.ctx.strokeStyle = '#665c54'; // Gruvbox dark gray edges
+        this.ctx.lineWidth = 2.5;
+
+        // Top wall of cut channel (from far left to frontier)
         this.ctx.beginPath();
-        this.ctx.arc(0, 0, workpieceOffsetPx, -Math.PI/2, Math.PI/2);
+        this.ctx.moveTo(-maxDim, cutChannelHalfHeight);
+        this.ctx.lineTo(frontierCenterXPx, cutChannelHalfHeight);
         this.ctx.stroke();
 
-        // Workpiece texture (optional grid lines)
-        this.ctx.strokeStyle = 'rgba(74, 122, 138, 0.2)';
-        this.ctx.lineWidth = 0.5;
-        const gridSpacing = 10 * this.scale; // 10mm grid
+        // Bottom wall of cut channel (from far left to frontier)
+        this.ctx.beginPath();
+        this.ctx.moveTo(-maxDim, -cutChannelHalfHeight);
+        this.ctx.lineTo(frontierCenterXPx, -cutChannelHalfHeight);
+        this.ctx.stroke();
 
-        for (let x = workpieceOffsetPx; x < maxDim; x += gridSpacing) {
+        // Frontier semicircular edge
+        this.ctx.beginPath();
+        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI/2, Math.PI/2);
+        this.ctx.stroke();
+
+        // === Texture lines on uncut workpiece ===
+        this.ctx.strokeStyle = 'rgba(60, 56, 54, 0.15)'; // Subtle Gruvbox dark lines
+        this.ctx.lineWidth = 0.5;
+        const gridSpacing = 10 * this.scale;
+
+        // Horizontal lines
+        for (let y = cutChannelHalfHeight + gridSpacing; y < blockThickness; y += gridSpacing) {
             this.ctx.beginPath();
-            this.ctx.moveTo(x, -maxDim);
-            this.ctx.lineTo(x, maxDim);
+            this.ctx.moveTo(frontierCenterXPx, y);
+            this.ctx.lineTo(frontierCenterXPx + maxDim, y);
+            this.ctx.stroke();
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(frontierCenterXPx, -y);
+            this.ctx.lineTo(frontierCenterXPx + maxDim, -y);
             this.ctx.stroke();
         }
     }
 
-    drawSpark(wireRadius, workpieceOffset) {
+    drawSpark(wireX, wireRadius, frontierCenterX, frontierRadius) {
+        const wireCenterXPx = wireX * this.scale;
+        const frontierCenterXPx = frontierCenterX * this.scale;
         const wireRadiusPx = wireRadius * this.scale;
-        const workpieceOffsetPx = workpieceOffset * this.scale;
-        const gapPx = workpieceOffsetPx - wireRadiusPx;
+        const frontierRadiusPx = frontierRadius * this.scale;
+
+        // Calculate gap between surfaces
+        const gapPx = (frontierCenterXPx + frontierRadiusPx) - (wireCenterXPx + wireRadiusPx);
 
         // Spark position (random point on wire surface facing workpiece)
         const angle = (Math.random() - 0.5) * Math.PI; // ±90° from center
-        const sparkStartX = wireRadiusPx * Math.cos(angle);
+        const sparkStartX = wireCenterXPx + wireRadiusPx * Math.cos(angle);
         const sparkStartY = wireRadiusPx * Math.sin(angle);
 
-        const sparkEndX = workpieceOffsetPx * Math.cos(angle);
-        const sparkEndY = workpieceOffsetPx * Math.sin(angle);
+        const sparkEndX = frontierCenterXPx + frontierRadiusPx * Math.cos(angle);
+        const sparkEndY = frontierRadiusPx * Math.sin(angle);
 
         // Spark flash glow
         const gradient = this.ctx.createRadialGradient(
             sparkStartX, sparkStartY, 0,
-            sparkStartX, sparkStartY, gapPx * 1.5
+            sparkStartX, sparkStartY, Math.abs(gapPx) * 1.5
         );
-        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
-        gradient.addColorStop(0.3, 'rgba(150, 200, 255, 0.4)');
-        gradient.addColorStop(1, 'rgba(150, 200, 255, 0)');
+        gradient.addColorStop(0, 'rgba(184, 187, 38, 0.8)'); // Gruvbox yellow bright
+        gradient.addColorStop(0.3, 'rgba(215, 153, 33, 0.4)'); // Gruvbox yellow/orange
+        gradient.addColorStop(1, 'rgba(215, 153, 33, 0)');
 
         this.ctx.fillStyle = gradient;
         this.ctx.beginPath();
-        this.ctx.arc(sparkStartX, sparkStartY, gapPx * 1.5, 0, Math.PI * 2);
+        this.ctx.arc(sparkStartX, sparkStartY, Math.abs(gapPx) * 1.5, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Spark arc/lightning
-        this.ctx.strokeStyle = '#ffffff';
+        this.ctx.strokeStyle = '#fabd2f'; // Gruvbox bright yellow
         this.ctx.lineWidth = 2;
         this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = '#aaddff';
+        this.ctx.shadowColor = '#d79921'; // Gruvbox yellow glow
 
         this.ctx.beginPath();
         this.ctx.moveTo(sparkStartX, sparkStartY);
@@ -615,7 +986,7 @@ class TopViewPanel extends BasePanel {
             const t = i / steps;
             const x = sparkStartX + (sparkEndX - sparkStartX) * t;
             const y = sparkStartY + (sparkEndY - sparkStartY) * t;
-            const jitter = (Math.random() - 0.5) * gapPx * 0.3;
+            const jitter = (Math.random() - 0.5) * Math.abs(gapPx) * 0.3;
             this.ctx.lineTo(x + jitter, y + jitter * 0.5);
         }
         this.ctx.lineTo(sparkEndX, sparkEndY);
@@ -624,40 +995,64 @@ class TopViewPanel extends BasePanel {
         this.ctx.shadowBlur = 0;
     }
 
-    drawInfoOverlay(w, h, gap, frameData) {
+    drawInfoOverlay(w, h, gap, wirePos, workpiecePos, frontierRadius, frameData) {
         // Info box (top-left)
         const padding = 10;
         const lineHeight = 16;
         let y = padding;
 
-        this.drawText('TOP VIEW', padding, y, { color: '#00ff88', font: 'bold 11px sans-serif' });
+        this.drawText('TOP VIEW', padding, y, { color: '#427b58', font: 'bold 11px sans-serif' });
         y += lineHeight;
 
-        this.drawText(`Gap: ${gap.toFixed(1)} µm`, padding, y, { color: '#aaddff', font: '11px monospace' });
+        this.drawText(`Wire Pos: ${wirePos.toFixed(1)} µm`, padding, y, { color: '#d79921', font: '11px monospace' });
         y += lineHeight;
 
-        this.drawText(`Wire Ø: ${this.wireDiameter.toFixed(3)} mm`, padding, y, { color: '#ffcc00', font: '11px monospace' });
+        this.drawText(`WP Pos: ${workpiecePos.toFixed(1)} µm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`Gap: ${gap.toFixed(1)} µm`, padding, y, { color: '#076678', font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`Wire Ø: ${this.wireDiameter.toFixed(3)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`Frontier R: ${frontierRadius.toFixed(3)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
+        y += lineHeight;
+
+        // Zoom level indicator
+        this.drawText(`Zoom: ${this.zoomLevel.toFixed(1)}x`, padding, y, { color: '#427b58', font: '11px monospace' });
         y += lineHeight;
 
         if (frameData.debris_density !== undefined) {
             const debrisPercent = (frameData.debris_density * 100).toFixed(1);
-            this.drawText(`Debris: ${debrisPercent}%`, padding, y, { color: '#ff8800', font: '11px monospace' });
+            this.drawText(`Debris: ${debrisPercent}%`, padding, y, { color: '#d65d0e', font: '11px monospace' });
             y += lineHeight;
         }
 
         if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            this.drawText('⚡ SPARK', padding, y, { color: '#ffffff', font: 'bold 11px sans-serif' });
+            this.drawText('⚡ SPARK', padding, y, { color: '#8f3f71', font: 'bold 11px sans-serif' });
         } else if (frameData.spark_status && frameData.spark_status[0] === -1) {
-            this.drawText('⚠ SHORT', padding, y, { color: '#ff4400', font: 'bold 11px sans-serif' });
+            this.drawText('⚠ SHORT', padding, y, { color: '#9d0006', font: 'bold 11px sans-serif' });
         }
 
-        // Scale reference (bottom-right)
-        const scaleBarLength = 1.0; // 1mm reference
+        // Scale reference (bottom-right) - dynamic based on zoom
+        // Choose scale bar size based on zoom level
+        let scaleBarLength, scaleBarLabel;
+        if (this.zoomLevel < 2.0) {
+            // Zoomed out: use 1mm scale
+            scaleBarLength = 1.0; // mm
+            scaleBarLabel = '1 mm';
+        } else {
+            // Zoomed in: use 100µm scale
+            scaleBarLength = 0.1; // mm
+            scaleBarLabel = '100 µm';
+        }
+
         const scaleBarLengthPx = scaleBarLength * this.scale;
         const scaleBarX = w - padding - scaleBarLengthPx;
         const scaleBarY = h - padding - 20;
 
-        this.ctx.strokeStyle = '#ffffff';
+        this.ctx.strokeStyle = '#665c54';
         this.ctx.lineWidth = 2;
         this.ctx.beginPath();
         this.ctx.moveTo(scaleBarX, scaleBarY);
@@ -672,11 +1067,26 @@ class TopViewPanel extends BasePanel {
         this.ctx.lineTo(scaleBarX + scaleBarLengthPx, scaleBarY + 3);
         this.ctx.stroke();
 
-        this.drawText('1 mm', scaleBarX + scaleBarLengthPx / 2, scaleBarY + 10, {
-            color: '#ffffff',
+        this.drawText(scaleBarLabel, scaleBarX + scaleBarLengthPx / 2, scaleBarY + 10, {
+            color: '#665c54',
             font: '10px sans-serif',
             align: 'center'
         });
+
+        // Control hints (bottom-left)
+        const hintsY = h - padding - 30;
+        this.drawText('🖱️ Scroll: Zoom | Drag: Pan | Double-click: Reset', padding, hintsY, {
+            color: '#7c6f64',
+            font: '9px sans-serif'
+        });
+
+        // Auto-pan indicator
+        if (!this.autoPan) {
+            this.drawText('Manual Mode', padding, hintsY + 12, {
+                color: '#d65d0e',
+                font: 'bold 9px sans-serif'
+            });
+        }
     }
 }
 
@@ -691,12 +1101,12 @@ class ThermalProfilePanel extends BasePanel {
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
 
-        this.ctx.fillStyle = '#1a1a1a';
+        this.ctx.fillStyle = '#fbf1c7';
         this.ctx.fillRect(0, 0, w, h);
 
         // Draw placeholder
         this.drawText('Thermal Profile', w/2, h/2, {
-            color: '#00ff88',
+            color: '#9d0006',
             font: 'bold 16px sans-serif',
             align: 'center',
             baseline: 'middle'
@@ -704,7 +1114,7 @@ class ThermalProfilePanel extends BasePanel {
 
         if (frameData && frameData.wire_average_temperature !== undefined) {
             const tempC = frameData.wire_average_temperature - 273.15;
-            this.drawText(`Avg Temp: ${tempC.toFixed(1)}°C`, 10, 10, { color: '#ff4400' });
+            this.drawText(`Avg Temp: ${tempC.toFixed(1)}°C`, 10, 10, { color: '#9d0006' });
         }
     }
 }
