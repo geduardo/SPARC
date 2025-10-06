@@ -71,7 +71,7 @@ def main():
 
     # Create environment with custom workpiece height
     config = EnvironmentConfig(
-        workpiece_height=5.0,  # mm (changed from default 20.0 mm)
+        workpiece_height= 25.0,  # mm (changed from default 20.0 mm)
     )
     env = WireEDMEnv(config=config)
 
@@ -100,7 +100,7 @@ def main():
     sim_logger = SimulationLogger(sim_logger_config, env)
 
     # Create voltage controller (target 30V average)
-    target_voltage = 30.0
+    target_voltage = 47.0
     controller = create_voltage_controller(target_voltage)
     
     # Voltage history tracking (for last 1ms)

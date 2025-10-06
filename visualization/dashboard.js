@@ -937,28 +937,28 @@ class SideViewPanel extends BasePanel {
         const sparkThickness = 0.1 * scale;
         
         // Draw bright spark with multiple layers for visibility (only varying glow, not thickness)
-        // Layer 1: Wide outer glow
-        this.ctx.strokeStyle = `rgba(184, 187, 38, ${alpha * 0.3})`; // Gruvbox bright yellow
+        // Layer 1: Wide outer glow (cool blue-white outer)
+        this.ctx.strokeStyle = `rgba(150, 200, 255, ${alpha * 0.4})`; // Light blue outer glow
         this.ctx.lineWidth = sparkThickness * 3.0;
         this.ctx.shadowBlur = 15;
-        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha * 0.8})`;
+        this.ctx.shadowColor = `rgba(180, 220, 255, ${alpha * 0.8})`;
         this.ctx.beginPath();
         this.ctx.moveTo(wireRightEdge, sparkY);
         this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
-        
-        // Layer 2: Medium glow
-        this.ctx.strokeStyle = `rgba(250, 189, 47, ${alpha * 0.6})`; // Gruvbox yellow
+
+        // Layer 2: Medium glow (bright cyan-white)
+        this.ctx.strokeStyle = `rgba(200, 230, 255, ${alpha * 0.7})`; // Cyan-white
         this.ctx.lineWidth = sparkThickness * 2.0;
         this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
+        this.ctx.shadowColor = `rgba(220, 240, 255, ${alpha})`;
         this.ctx.beginPath();
         this.ctx.moveTo(wireRightEdge, sparkY);
         this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
-        
-        // Layer 3: Bright core (100µm thickness)
-        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
+
+        // Layer 3: Bright core (100µm thickness - intense white-blue)
+        this.ctx.strokeStyle = `rgba(240, 250, 255, ${alpha * 0.95})`; // Very bright blue-white core
         this.ctx.lineWidth = sparkThickness;
         this.ctx.shadowBlur = 5;
         this.ctx.shadowColor = `rgba(255, 255, 255, ${alpha})`;
@@ -966,7 +966,7 @@ class SideViewPanel extends BasePanel {
         this.ctx.moveTo(wireRightEdge, sparkY);
         this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
-        
+
         // Reset shadow
         this.ctx.shadowBlur = 0;
     }
@@ -1091,7 +1091,7 @@ class TopViewPanel extends BasePanel {
             e.preventDefault();
             const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
             this.zoomLevel *= zoomDelta;
-            this.zoomLevel = Math.max(0.05, Math.min(1000, this.zoomLevel)); // Clamp between 0.05x and 50x (allows viewing full workpiece)
+            this.zoomLevel = Math.max(0.05, Math.min(10000, this.zoomLevel)); // Clamp between 0.05x and 50x (allows viewing full workpiece)
             
             // Trigger redraw
             if (this.controller && this.controller.data) {
@@ -1152,6 +1152,7 @@ class TopViewPanel extends BasePanel {
         if (data.metadata) {
             this.wireDiameter = data.metadata.wire_diameter || 0.25;
             this.initialGap = data.metadata.initial_gap || 50.0;
+            this.baseOvercut = data.metadata.base_overcut || 0.030; // mm
 
             // Workpiece height/thickness for spark mapping in Top View (in mm, from env_config)
             if (data.metadata.workpiece_height_mm !== undefined) {
@@ -1164,6 +1165,7 @@ class TopViewPanel extends BasePanel {
             }
 
             console.log('TopViewPanel setData - workpieceHeightMM:', this.workpieceHeightMM, 'mm');
+            console.log('TopViewPanel setData - baseOvercut:', this.baseOvercut, 'mm');
         }
 
         // Pre-calculate radial angles for all sparks using the provided distribution
@@ -1175,44 +1177,154 @@ class TopViewPanel extends BasePanel {
         // Initialize spark angle map
         this.sparkAngles = new Map();
 
-        if (!data || !data.spark_status) return;
+        if (!data || !data.spark_status || !data.wire_position || !data.workpiece_position) return;
 
-        // Distribution parameter k (controls concentration towards center)
-        const k = 5.0; // Higher k = more concentration at center
+        // Get base overcut for comparison (in µm)
+        // NOTE: base_overcut in metadata is already PER SIDE (not total), so don't divide by 2
+        const baseOvercutPerSideUM = (this.baseOvercut || 0.026) * 1000; // Convert mm to µm, per side
+        const threshold = baseOvercutPerSideUM; // Threshold is the base_overcut per side
+        const transitionRange = 5.0; // ±5 µm transition zone around threshold
 
-        // Inverse CDF sampling function with HARD constraint: θ ∈ (-π/2, π/2)
-        const sampleAngle = () => {
-            const u = Math.random(); // Uniform [0, 1]
+        console.log(`=== Spark Angle Distribution ===`);
+        console.log(`Base overcut per side (from metadata): ${baseOvercutPerSideUM.toFixed(1)} µm`);
+        console.log(`Threshold: ${threshold.toFixed(1)} µm`);
+        console.log(`Transition zone: ${(threshold - transitionRange).toFixed(1)} - ${(threshold + transitionRange).toFixed(1)} µm`);
+        console.log(`Rule: gap < ${(threshold - transitionRange).toFixed(1)}µm → FRONT (0°) | transition zone → MIXED | gap > ${(threshold + transitionRange).toFixed(1)}µm → SIDES (±90°)`);
 
-            // For the symmetric exponential distribution on [-π/2, π/2]:
-            // We use inverse transform sampling
+        // Track some sample gaps and angles for debugging
+        let sampleCount = 0;
+        const maxSamples = 15;
+        let frontCount = 0;
+        let sidesCount = 0;
+        let transitionCount = 0;
 
-            let angle;
-            if (u < 0.5) {
-                // Negative side
-                angle = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+        // Angle sampling function with gap-dependent distribution
+        // Smooth transition between front and sides modes
+        const sampleAngle = (gapUM) => {
+            // Calculate probability of "sides" mode based on gap
+            // Linear interpolation in transition zone
+            let pSides; // Probability of using sides distribution
+
+            if (gapUM < threshold - transitionRange) {
+                // Pure FRONT mode
+                pSides = 0.0;
+            } else if (gapUM > threshold + transitionRange) {
+                // Pure SIDES mode
+                pSides = 1.0;
             } else {
-                // Positive side
-                angle = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+                // TRANSITION zone: linear interpolation
+                // gap at (threshold - range) → pSides = 0
+                // gap at (threshold + range) → pSides = 1
+                pSides = (gapUM - (threshold - transitionRange)) / (2 * transitionRange);
+                pSides = Math.max(0, Math.min(1, pSides)); // Clamp to [0, 1]
             }
 
-            // HARD CONSTRAINT: angles MUST be strictly between -90° and +90°
-            // Clamp with small epsilon to avoid exactly ±90°
-            angle = Math.max(-Math.PI/2 + 0.001, Math.min(Math.PI/2 - 0.001, angle));
+            // Decide which distribution to use based on probability
+            const useSidesMode = Math.random() < pSides;
+
+            // Track statistics
+            if (pSides === 0.0) {
+                frontCount++;
+            } else if (pSides === 1.0) {
+                sidesCount++;
+            } else {
+                transitionCount++;
+            }
+
+            // Debug logging for first few sparks
+            if (sampleCount < maxSamples) {
+                const mode = pSides === 0.0 ? 'FRONT' : pSides === 1.0 ? 'SIDES' : `TRANSITION (${(pSides*100).toFixed(0)}% sides)`;
+                console.log(`  Spark ${sampleCount}: gap=${gapUM.toFixed(2)}µm → ${mode}`);
+                sampleCount++;
+            }
+
+            let angle;
+
+            if (useSidesMode) {
+                // Large gap: sparks concentrated at the SIDES (±90°, where workpiece walls are)
+                // Use exponential distribution but centered at ±π/2 instead of 0
+                const u = Math.random();
+                const k = 20.0; // Concentration parameter
+
+                // Choose which pole (north +π/2 or south -π/2) randomly
+                const pole = Math.random() < 0.5 ? Math.PI/2 : -Math.PI/2;
+
+                // Sample angle around the chosen pole using exponential distribution
+                // Map the exponential from [-π/2, π/2] to be centered at the pole
+                let offset;
+                if (u < 0.5) {
+                    // Negative side from pole
+                    offset = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+                } else {
+                    // Positive side from pole
+                    offset = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+                }
+
+                // Add offset to pole position
+                angle = pole + offset;
+
+                // Wrap angle to [-π, π]
+                if (angle > Math.PI) angle -= 2*Math.PI;
+                if (angle < -Math.PI) angle += 2*Math.PI;
+            } else {
+                // Small gap: sparks concentrated at front (θ=0, perpendicular to workpiece)
+                // Use original exponential distribution from initial implementation
+                const u = Math.random();
+                const k = 5.0; // Concentration parameter
+
+                // Original symmetric exponential distribution on [-π/2, π/2]
+                // HARD CONSTRAINT: θ ∈ (-π/2, π/2)
+                if (u < 0.5) {
+                    // Negative side
+                    angle = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+                } else {
+                    // Positive side
+                    angle = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+                }
+
+                // HARD CONSTRAINT: angles MUST be strictly between -90° and +90°
+                angle = Math.max(-Math.PI/2 + 0.001, Math.min(Math.PI/2 - 0.001, angle));
+            }
 
             return angle;
         };
 
-        // Pre-calculate angle for each spark event
+        // Pre-calculate angle for each spark event based on gap at that frame
+        let minGap = Infinity;
+        let maxGap = -Infinity;
+        let sumGap = 0;
+        let gapCount = 0;
+
         data.spark_status.forEach((status, frameIndex) => {
             if (status && status[0] === 1 && status[1] !== null) {
-                // Sample angle from distribution
-                const angle = sampleAngle();
+                // Calculate gap at this frame (µm)
+                const wirePos = data.wire_position[frameIndex] || 0;
+                const workpiecePos = data.workpiece_position[frameIndex] || 0;
+                const gapUM = workpiecePos - wirePos;
+
+                // Track gap statistics
+                minGap = Math.min(minGap, gapUM);
+                maxGap = Math.max(maxGap, gapUM);
+                sumGap += gapUM;
+                gapCount++;
+
+                // Sample angle from gap-dependent distribution
+                const angle = sampleAngle(gapUM);
                 this.sparkAngles.set(frameIndex, angle);
             }
         });
 
-        console.log(`Precomputed ${this.sparkAngles.size} spark angles`);
+        const avgGap = sumGap / gapCount;
+
+        console.log(`\n=== Gap Statistics ===`);
+        console.log(`Min gap: ${minGap.toFixed(2)} µm`);
+        console.log(`Max gap: ${maxGap.toFixed(2)} µm`);
+        console.log(`Avg gap: ${avgGap.toFixed(2)} µm`);
+        console.log(`Threshold: ${threshold.toFixed(2)} µm (±${transitionRange.toFixed(1)} µm transition)`);
+        console.log(`\n=== Results ===`);
+        console.log(`Total sparks: ${this.sparkAngles.size}`);
+        console.log(`Distribution: ${frontCount} pure FRONT (0°), ${transitionCount} TRANSITION, ${sidesCount} pure SIDES (±90°)`);
+        console.log(`${((frontCount/this.sparkAngles.size)*100).toFixed(1)}% front, ${((transitionCount/this.sparkAngles.size)*100).toFixed(1)}% transition, ${((sidesCount/this.sparkAngles.size)*100).toFixed(1)}% sides`);
     }
 
     draw(frameData, frameIndex) {
@@ -1246,11 +1358,14 @@ class TopViewPanel extends BasePanel {
 
         const wireRadius = this.wireDiameter / 2; // mm
 
-        // Kerf width (half on each side of the gap)
-        const kerfWidth = this.initialGap / 1000; // Convert µm to mm
+        // Kerf width: k = base_overcut + wire_diameter (ignoring dynamic crater_depth component)
+        // This is a static approximation. Full formula: k = base_overcut + wire_diameter + crater_depth
+        const kerfWidth = ((this.baseOvercut || 0.05)) + this.wireDiameter + 0.01; // mm + crater_size*2
 
         // Workpiece frontier geometry
-        const frontierRadius = wireRadius + kerfWidth; // Radius includes wire radius + kerf
+        // The kerf width is the TOTAL width of the cutting channel, so the frontier radius
+        // from the wire center is half the kerf width
+        const frontierRadius = kerfWidth / 2; // mm
 
         // Calculate CENTER positions from EDGE positions
         // Wire center = wire right edge - wire radius
@@ -1520,32 +1635,32 @@ class TopViewPanel extends BasePanel {
         const brightness = decayFactor; // 1.0 when new, fades to 0
         const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
 
-        // Draw cylinder (line in 2D top view) - same color as side view
+        // Draw cylinder (line in 2D top view) - blue-white plasma color
         // Use 'butt' lineCap since the ends are hidden anyway
         this.ctx.lineCap = 'butt';
 
-        // Layer 1: Wide outer glow
-        this.ctx.strokeStyle = `rgba(184, 187, 38, ${alpha * 0.3})`; // Gruvbox bright yellow
+        // Layer 1: Wide outer glow (cool blue-white outer)
+        this.ctx.strokeStyle = `rgba(150, 200, 255, ${alpha * 0.4})`; // Light blue outer glow
         this.ctx.lineWidth = sparkRadiusPx * 2 * 3.0;
         this.ctx.shadowBlur = 15;
-        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha * 0.8})`;
+        this.ctx.shadowColor = `rgba(180, 220, 255, ${alpha * 0.8})`;
         this.ctx.beginPath();
         this.ctx.moveTo(sparkStartX, sparkStartY);
         this.ctx.lineTo(sparkEndX, sparkEndY);
         this.ctx.stroke();
 
-        // Layer 2: Medium glow
-        this.ctx.strokeStyle = `rgba(250, 189, 47, ${alpha * 0.6})`; // Gruvbox yellow
+        // Layer 2: Medium glow (bright cyan-white)
+        this.ctx.strokeStyle = `rgba(200, 230, 255, ${alpha * 0.7})`; // Cyan-white
         this.ctx.lineWidth = sparkRadiusPx * 2 * 2.0;
         this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = `rgba(250, 189, 47, ${alpha})`;
+        this.ctx.shadowColor = `rgba(220, 240, 255, ${alpha})`;
         this.ctx.beginPath();
         this.ctx.moveTo(sparkStartX, sparkStartY);
         this.ctx.lineTo(sparkEndX, sparkEndY);
         this.ctx.stroke();
 
-        // Layer 3: Bright core (60µm diameter)
-        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`; // White core
+        // Layer 3: Bright core (60µm diameter - intense white-blue)
+        this.ctx.strokeStyle = `rgba(240, 250, 255, ${alpha * 0.95})`; // Very bright blue-white core
         this.ctx.lineWidth = sparkRadiusPx * 2;
         this.ctx.shadowBlur = 5;
         this.ctx.shadowColor = `rgba(255, 255, 255, ${alpha})`;
