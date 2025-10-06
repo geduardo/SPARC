@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from src.wedm.utils.logger import SimulationLogger; import inspect; print([m for m in dir(SimulationLogger) if ''signal'' in m.lower()])\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

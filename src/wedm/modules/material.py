@@ -19,7 +19,7 @@ class MaterialModuleParameters:
     """Material removal module specific parameters."""
 
     # ── Material Removal Model Parameters ──
-    base_overcut: float = 0.12  # [mm] Base overcut (0.06mm per side)
+    base_overcut: float = 0.026  # [mm] Base overcut (0.06mm per side)
 
 
 class MaterialRemovalModule(EDMModule):

@@ -301,6 +301,9 @@ class SimulationLogger:
                     'dt': int(self.env.config.dt),
                     'servo_interval': int(self.env.config.servo_interval),
                 }
+                # Add material parameters if available
+                if hasattr(self.env, 'material') and hasattr(self.env.material, 'params'):
+                    json_data['metadata']['base_overcut'] = float(self.env.material.params.base_overcut)
                 print("Added environment config as metadata to JSON")
             except Exception as e:
                 print(f"Warning: Could not add environment config to JSON metadata: {e}")
