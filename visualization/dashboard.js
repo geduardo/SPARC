@@ -37,9 +37,14 @@ class DashboardController {
             timeDisplay: document.getElementById('timeDisplay'),
             loadingOverlay: document.getElementById('loadingOverlay'),
             speedControl: document.getElementById('speedControl'),
+            timebaseControl: document.getElementById('timebaseControl'),
             linkViews: document.getElementById('linkViews'),
             toggleSideViewSparks: document.getElementById('toggleSideViewSparks'),
-            toggleTopViewSparks: document.getElementById('toggleTopViewSparks')
+            toggleTopViewSparks: document.getElementById('toggleTopViewSparks'),
+            triggerEnable: document.getElementById('triggerEnable'),
+            triggerSource: document.getElementById('triggerSource'),
+            triggerSlope: document.getElementById('triggerSlope'),
+            triggerLevel: document.getElementById('triggerLevel')
         };
 
         // Setup event listeners
@@ -51,9 +56,24 @@ class DashboardController {
         this.elements.nextFrame.addEventListener('click', () => this.nextFrame());
         this.elements.timeline.addEventListener('input', (e) => this.seekTo(parseInt(e.target.value)));
         this.elements.speedControl.addEventListener('change', (e) => this.setPlaybackSpeed(parseInt(e.target.value)));
+        if (this.elements.timebaseControl) {
+            this.elements.timebaseControl.addEventListener('change', (e) => this.setTimebase(e.target.value));
+        }
         this.elements.linkViews.addEventListener('click', () => this.toggleViewsLink());
         this.elements.toggleSideViewSparks.addEventListener('click', () => this.toggleSideViewSparks());
         this.elements.toggleTopViewSparks.addEventListener('click', () => this.toggleTopViewSparks());
+        if (this.elements.triggerEnable) {
+            const onTriggerChange = () => this.setTriggerConfig({
+                enabled: !!this.elements.triggerEnable.checked,
+                source: this.elements.triggerSource.value,
+                slope: this.elements.triggerSlope.value,
+                level: parseFloat(this.elements.triggerLevel.value)
+            });
+            this.elements.triggerEnable.addEventListener('change', onTriggerChange);
+            this.elements.triggerSource.addEventListener('change', onTriggerChange);
+            this.elements.triggerSlope.addEventListener('change', onTriggerChange);
+            this.elements.triggerLevel.addEventListener('change', onTriggerChange);
+        }
 
         // Initialize panels
         this.initializePanels();
@@ -102,6 +122,18 @@ class DashboardController {
         Object.values(this.panels).forEach(panel => {
             panel.controller = this;
             panel.init();
+        });
+
+        // Initialize oscilloscope timebase (defaults to Auto)
+        if (this.elements.timebaseControl) {
+            this.setTimebase(this.elements.timebaseControl.value || 'auto');
+        }
+        // Initialize trigger config defaults
+        this.setTriggerConfig({
+            enabled: this.elements.triggerEnable ? !!this.elements.triggerEnable.checked : false,
+            source: this.elements.triggerSource ? this.elements.triggerSource.value : 'ch1',
+            slope: this.elements.triggerSlope ? this.elements.triggerSlope.value : 'rising',
+            level: this.elements.triggerLevel ? parseFloat(this.elements.triggerLevel.value) : 50
         });
     }
 
@@ -283,6 +315,9 @@ class DashboardController {
     setPlaybackSpeed(speed) {
         this.playbackSpeed = speed;
         console.log(`Playback speed set to ${speed} µs/s`);
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
     }
 
     pause() {
@@ -436,6 +471,29 @@ class DashboardController {
 
     showLoading(show) {
         this.elements.loadingOverlay.classList.toggle('hidden', !show);
+    }
+
+    // Timebase handling for oscilloscope
+    setTimebase(value) {
+        const mode = value === 'auto' ? 'auto' : 'manual';
+        const usPerDiv = value === 'auto' ? null : parseInt(value);
+        if (this.panels && this.panels.oscilloscope && this.panels.oscilloscope.setTimebase) {
+            this.panels.oscilloscope.setTimebase(mode, usPerDiv);
+        }
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
+    }
+
+    // Trigger config handling
+    setTriggerConfig(cfg) {
+        this.triggerConfig = cfg;
+        if (this.panels && this.panels.oscilloscope && this.panels.oscilloscope.setTrigger) {
+            this.panels.oscilloscope.setTrigger(cfg);
+        }
+        if (this.data) {
+            this.drawFrame(this.currentFrame);
+        }
     }
 }
 
@@ -995,54 +1053,297 @@ class SideViewPanel extends BasePanel {
 // ============================================================================
 
 class OscilloscopePanel extends BasePanel {
-    draw(frameData, frameIndex) {
-        this.clear();
+    constructor(canvasId) {
+        super(canvasId);
+        this.mode = 'auto'; // 'auto' | 'manual'
+        this.usPerDiv = null; // µs per division when manual
+        this.divisionsX = 10; // vertical grid lines (time/div)
+        this.divisionsY = 5;  // horizontal grid lines per channel
+        this.windowUs = 100; // updated per timebase
+        this.lastDrawnFrame = -1;
+        this.sampleStartIndex = 0; // left edge index in data arrays
+        this.sampleEndIndex = 0;   // right edge index in data arrays
+        this.maxPointsPerSeries = 2000; // decimation guard for performance
+        this.channelGap = 8; // gap between channels in px
+        // Fixed voltage axis limits
+        this.vFixedMin = 0;
+        this.vFixedMax = 100;
+        // Trigger configuration
+        this.trigger = { enabled: false, source: 'ch1', slope: 'rising', level: 50 };
+    }
 
-        const w = this.canvas.width / window.devicePixelRatio;
-        const h = this.canvas.height / window.devicePixelRatio;
+    setTrigger(cfg) {
+        this.trigger = Object.assign({}, this.trigger, cfg || {});
+    }
 
-        this.ctx.fillStyle = '#fbf1c7';
-        this.ctx.fillRect(0, 0, w, h);
+    setTimebase(mode, usPerDiv) {
+        this.mode = mode;
+        this.usPerDiv = usPerDiv;
+    }
 
-        // Draw grid
-        this.drawGrid(w, h);
+    setData(data) {
+        super.setData(data);
+        this.recomputeWindow(this.controller ? this.controller.currentFrame : 0);
+    }
 
-        // Draw placeholder
-        this.drawText('Oscilloscope', w/2, h/2, {
-            color: '#076678',
-            font: 'bold 16px sans-serif',
-            align: 'center',
-            baseline: 'middle'
-        });
-
-        if (frameData && frameData.voltage !== undefined) {
-            this.drawText(`Voltage: ${frameData.voltage.toFixed(1)} V`, 10, 10, { color: '#076678' });
-        }
-        if (frameData && frameData.current !== undefined) {
-            this.drawText(`Current: ${frameData.current.toFixed(2)} A`, 10, 25, { color: '#d65d0e' });
+    onResize() {
+        super.onResize();
+        if (this.controller && this.controller.data) {
+            this.controller.drawFrame(this.controller.currentFrame);
         }
     }
 
-    drawGrid(w, h) {
-        this.ctx.strokeStyle = '#ebdbb2';
-        this.ctx.lineWidth = 1;
+    recomputeWindow(frameIndex) {
+        if (!this.data) return;
+        const totalFrames = this.data.time.length;
+        const w = this.canvas.width / window.devicePixelRatio;
 
-        // Horizontal lines
-        for (let i = 0; i <= 5; i++) {
-            const y = (h / 5) * i;
-            this.ctx.beginPath();
-            this.ctx.moveTo(0, y);
-            this.ctx.lineTo(w, y);
-            this.ctx.stroke();
+        let usPerDiv;
+        if (this.mode === 'manual' && this.usPerDiv) {
+            usPerDiv = this.usPerDiv;
+        } else {
+            const targetPxPerDiv = Math.min(Math.max(w / 10, 80), 140);
+            let onUs = 3, offUs = 80; // defaults
+            if (this.data.ON_time && typeof this.data.ON_time[frameIndex] === 'number') onUs = this.data.ON_time[frameIndex];
+            if (this.data.OFF_time && typeof this.data.OFF_time[frameIndex] === 'number') offUs = this.data.OFF_time[frameIndex];
+            const typicalCycleUs = Math.max(onUs + offUs, 20);
+            let desiredWindowUs = typicalCycleUs * 12; // ~1.2 cycles across 10 divisions
+            // Adjust to keep pixel density reasonable
+            const pxPerDivEstimate = w / this.divisionsX;
+            const scale = pxPerDivEstimate / targetPxPerDiv;
+            usPerDiv = Math.max(1, Math.round((desiredWindowUs / this.divisionsX) * scale));
         }
 
-        // Vertical lines
-        for (let i = 0; i <= 10; i++) {
-            const x = (w / 10) * i;
+        this.windowUs = usPerDiv * this.divisionsX;
+
+        // Default window right-aligned at current frame
+        const right = frameIndex;
+        const left = Math.max(0, right - this.windowUs + 1);
+        this.sampleStartIndex = left;
+        this.sampleEndIndex = Math.min(totalFrames - 1, right);
+
+        // If trigger enabled, try to center a trigger event horizontally
+        if (this.trigger && this.trigger.enabled) {
+            const trigIdx = this.findTriggerIndex(this.sampleStartIndex, this.sampleEndIndex);
+            if (trigIdx !== null) {
+                // Center trigger at window center
+                const half = Math.floor(this.windowUs / 2);
+                let newLeft = Math.max(0, trigIdx - half);
+                let newRight = Math.min(totalFrames - 1, newLeft + this.windowUs - 1);
+                // If at end, shift left to keep window size
+                if (newRight - newLeft + 1 < this.windowUs) {
+                    newLeft = Math.max(0, newRight - this.windowUs + 1);
+                }
+                this.sampleStartIndex = newLeft;
+                this.sampleEndIndex = newRight;
+            }
+        }
+    }
+
+    // Find first trigger crossing within [start, end]; returns index or null
+    findTriggerIndex(start, end) {
+        const sourceSeries = this.trigger.source === 'ch2' ? (this.data.current || []) : (this.data.voltage || []);
+        const level = this.trigger.level;
+        const rising = this.trigger.slope !== 'falling';
+        for (let i = Math.max(start + 1, 1); i <= end; i++) {
+            const prev = sourceSeries[i - 1];
+            const curr = sourceSeries[i];
+            if (typeof prev !== 'number' || typeof curr !== 'number') continue;
+            if (rising) {
+                if (prev < level && curr >= level) return i;
+            } else {
+                if (prev > level && curr <= level) return i;
+            }
+        }
+        return null;
+    }
+
+    draw(frameData, frameIndex) {
+        this.clear();
+        const w = this.canvas.width / window.devicePixelRatio;
+        const h = this.canvas.height / window.devicePixelRatio;
+
+        // Background
+        this.ctx.fillStyle = '#fbf1c7';
+        this.ctx.fillRect(0, 0, w, h);
+
+        if (!this.data) {
+            this.drawText('Oscilloscope', w/2, h/2, {
+                color: '#076678', font: 'bold 16px sans-serif', align: 'center', baseline: 'middle'
+            });
+            return;
+        }
+
+        // Update window based on timebase and current frame
+        this.recomputeWindow(frameIndex);
+
+        // Determine series
+        const voltageSeries = this.data.voltage || [];
+        const currentSeries = this.data.current || [];
+        const sparkStatus = this.data.spark_status || [];
+
+        // Visible range
+        const start = this.sampleStartIndex;
+        const end = this.sampleEndIndex;
+        if (end <= start) return;
+
+        // Layout
+        const padLeft = 40; // left labels (V)
+        const padRight = 40; // right labels (A)
+        const padTop = 10;
+        const padBottom = 18; // timebase label
+        const plotX0 = padLeft;
+        const plotX1 = w - padRight;
+        const plotW = Math.max(1, plotX1 - plotX0);
+        const availableH = Math.max(1, h - padTop - padBottom);
+        const chH = Math.max(1, Math.floor((availableH - this.channelGap) / 2));
+        const vTopY0 = padTop;
+        const vTopY1 = vTopY0 + chH;
+        const cBotY0 = vTopY1 + this.channelGap;
+        const cBotY1 = cBotY0 + chH;
+
+        // X scale common to both channels
+        const xToPx = (i) => plotX0 + ((i - start) / (end - start)) * plotW;
+
+        // Voltage Y scale fixed 0..100 V
+        const vMin = this.vFixedMin, vMax = this.vFixedMax;
+        const vToPx = (v) => vTopY1 - ((v - vMin) / Math.max(1e-9, vMax - vMin)) * chH;
+
+        // Current Y auto
+        const cMM = this.seriesMinMax(currentSeries, start, end, 0, 1);
+        const cMin = cMM.min;
+        let cTop = cMM.max + 10; // add 10 A headroom above maximum
+        if (!(cTop > cMin)) { cTop = cMin + 1; }
+        const cToPx = (c) => cBotY1 - ((c - cMin) / Math.max(1e-9, cTop - cMin)) * chH;
+
+        // Draw grids per channel
+        this.drawGridRect(plotX0, vTopY0, plotW, chH);
+        this.drawGridRect(plotX0, cBotY0, plotW, chH);
+
+        // Clip and draw series in each channel
+        // Voltage
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(plotX0, vTopY0, plotW, chH);
+        this.ctx.clip();
+        this.drawSeriesDecimated(voltageSeries, start, end, xToPx, vToPx, '#076678', 2);
+        this.ctx.restore();
+
+        // Current
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(plotX0, cBotY0, plotW, chH);
+        this.ctx.clip();
+        this.drawSeriesDecimated(currentSeries, start, end, xToPx, cToPx, '#d65d0e', 1.5);
+        this.ctx.restore();
+
+        // Event markers in both channels
+        this.drawEventMarkersRect(sparkStatus, start, end, xToPx, vTopY0, vTopY1);
+        this.drawEventMarkersRect(sparkStatus, start, end, xToPx, cBotY0, cBotY1);
+
+        // Axis labels per channel
+        this.drawText('Ch1 V', plotX0 - 36, vTopY0 - 2 + 10, { color: '#076678', font: '10px monospace' });
+        this.drawText(`${vMax.toFixed(0)} V`, 4, vTopY0 - 2, { color: '#076678', font: '10px monospace' });
+        this.drawText(`${vMin.toFixed(0)} V`, 4, vTopY1 - 12, { color: '#076678', font: '10px monospace' });
+
+        this.drawText('Ch2 I', plotX1 + 4, cBotY0 - 2 + 10, { color: '#d65d0e', font: '10px monospace' });
+        this.drawText(`${cTop.toFixed(2)} A`, plotX1 + 4, cBotY0 - 2, { color: '#d65d0e', font: '10px monospace' });
+        this.drawText(`${cMin.toFixed(2)} A`, plotX1 + 4, cBotY1 - 12, { color: '#d65d0e', font: '10px monospace' });
+
+        // Timebase label bottom-center
+        const timebaseLabel = this.mode === 'manual' && this.usPerDiv ? `${this.usPerDiv} µs/div` : 'Auto';
+        this.drawText(timebaseLabel, w / 2, h - 12, { color: '#7c6f64', font: '10px monospace', align: 'center' });
+
+        this.lastDrawnFrame = frameIndex;
+    }
+
+    drawGridRect(x, y, width, height) {
+        this.ctx.strokeStyle = '#ebdbb2';
+        this.ctx.lineWidth = 1;
+        // Horizontal
+        for (let i = 0; i <= this.divisionsY; i++) {
+            const yy = y + (height / this.divisionsY) * i;
             this.ctx.beginPath();
-            this.ctx.moveTo(x, 0);
-            this.ctx.lineTo(x, h);
+            this.ctx.moveTo(x, yy);
+            this.ctx.lineTo(x + width, yy);
             this.ctx.stroke();
+        }
+        // Vertical
+        for (let i = 0; i <= this.divisionsX; i++) {
+            const xx = x + (width / this.divisionsX) * i;
+            this.ctx.beginPath();
+            this.ctx.moveTo(xx, y);
+            this.ctx.lineTo(xx, y + height);
+            this.ctx.stroke();
+        }
+    }
+
+    seriesMinMax(arr, start, end, fallbackMin, fallbackMax) {
+        let min = Infinity, max = -Infinity;
+        for (let i = start; i <= end; i++) {
+            const v = arr[i];
+            if (typeof v !== 'number') continue;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        if (!isFinite(min) || !isFinite(max) || min === max) {
+            min = fallbackMin; max = Math.max(fallbackMax, min + 1);
+        }
+        return { min, max };
+    }
+
+    drawSeriesDecimated(series, start, end, xToPx, yToPx, color, lineWidth) {
+        const w = this.canvas.width / window.devicePixelRatio;
+        const plotWidthPx = Math.max(50, w - 80);
+        const span = end - start + 1;
+        if (span <= 1) return;
+
+        const targetBuckets = Math.min(this.maxPointsPerSeries, Math.max(100, Math.floor(plotWidthPx)));
+        const bucketSize = Math.max(1, Math.floor(span / targetBuckets));
+
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = lineWidth;
+        this.ctx.beginPath();
+
+        let penDown = false;
+        for (let i = start; i <= end; i += bucketSize) {
+            let bucketMin = Infinity, bucketMax = -Infinity, minIdx = i, maxIdx = i;
+            const bucketEnd = Math.min(end, i + bucketSize - 1);
+            for (let j = i; j <= bucketEnd; j++) {
+                const v = series[j];
+                if (typeof v !== 'number') continue;
+                if (v < bucketMin) { bucketMin = v; minIdx = j; }
+                if (v > bucketMax) { bucketMax = v; maxIdx = j; }
+            }
+            if (!isFinite(bucketMin) || !isFinite(bucketMax)) continue;
+            const x = xToPx((minIdx + maxIdx) / 2);
+            const y0 = yToPx(bucketMin);
+            const y1 = yToPx(bucketMax);
+            if (!penDown) {
+                this.ctx.moveTo(x, y0);
+                penDown = true;
+            }
+            this.ctx.lineTo(x, y1);
+        }
+        this.ctx.stroke();
+    }
+
+    drawEventMarkersRect(sparkStatus, start, end, xToPx, y0, y1) {
+        if (!sparkStatus) return;
+        for (let i = start; i <= end; i++) {
+            const s = sparkStatus[i];
+            if (!s) continue;
+            const state = s[0];
+            const x = xToPx(i);
+            if (state === -1) {
+                // short marker at bottom of channel (red)
+                this.ctx.strokeStyle = 'rgba(157, 0, 6, 0.8)';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(x, y1 - (y1 - y0) * 0.12);
+                this.ctx.lineTo(x, y1);
+                this.ctx.stroke();
+            }
         }
     }
 }

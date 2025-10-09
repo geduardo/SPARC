@@ -233,6 +233,39 @@
                 </select>
             </div>
 
+            <div class="control-group">
+                <label for="timebaseControl" style="font-size: 0.85rem; color: #7c6f64;">Timebase:</label>
+                <select id="timebaseControl" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
+                    <option value="auto" selected>Auto</option>
+                    <option value="1">1 µs/div</option>
+                    <option value="5">5 µs/div</option>
+                    <option value="10">10 µs/div</option>
+                    <option value="20">20 µs/div</option>
+                    <option value="50">50 µs/div</option>
+                    <option value="100">100 µs/div</option>
+                    <option value="200">200 µs/div</option>
+                    <option value="500">500 µs/div</option>
+                    <option value="1000">1 ms/div</option>
+                    <option value="2000">2 ms/div</option>
+                    <option value="5000">5 ms/div</option>
+                    <option value="10000">10 ms/div</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="triggerEnable" style="font-size: 0.85rem; color: #7c6f64;">Trigger:</label>
+                <input type="checkbox" id="triggerEnable" style="margin-right: 8px;">
+                <select id="triggerSource" title="Source" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
+                    <option value="ch1" selected>Ch1 (V)</option>
+                    <option value="ch2">Ch2 (I)</option>
+                </select>
+                <select id="triggerSlope" title="Slope" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
+                    <option value="rising" selected>Rising</option>
+                    <option value="falling">Falling</option>
+                </select>
+                <input type="number" id="triggerLevel" title="Level" step="0.1" value="50" style="width: 80px; padding: 6px 8px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7;">
+            </div>
+
             <input type="range" id="timeline" min="0" max="100" value="0">
 
             <div id="frameCounter">Frame: 0 / 0</div>
