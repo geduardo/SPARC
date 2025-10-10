@@ -47,6 +47,7 @@ build/
 *.log
 *.sqlite
 *.db
+*.npz
 
 # Local development
 .env
