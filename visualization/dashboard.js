@@ -10,6 +10,7 @@ class DashboardController {
         this.animationId = null;
         this.playbackSpeed = 60; // microseconds per second (default 60 µs/s)
         this.lastFrameTime = 0; // For timing playback
+        this.frameAccumulator = 0; // Accumulates fractional frames for low speeds
         this.viewsLinked = true; // Link/unlink top and side views
 
         // Panel instances
@@ -361,7 +362,11 @@ class DashboardController {
             // playbackSpeed is in µs/s (microseconds per second)
             // Each frame represents 1 µs of simulation time
             // deltaTime is in milliseconds (real time)
-            const framesToAdvance = Math.round((deltaTime / 1000) * this.playbackSpeed);
+            // Use accumulator so very low speeds (e.g., 1 µs/s) still progress smoothly
+            const framesFloat = (deltaTime / 1000) * this.playbackSpeed;
+            this.frameAccumulator += framesFloat;
+            const framesToAdvance = Math.floor(this.frameAccumulator);
+            this.frameAccumulator -= framesToAdvance;
 
             if (framesToAdvance > 0) {
                 const oldFrame = this.currentFrame;
@@ -386,6 +391,7 @@ class DashboardController {
 
     setPlaybackSpeed(speed) {
         this.playbackSpeed = speed;
+        this.frameAccumulator = 0; // reset accumulator to avoid carryover
         console.log(`Playback speed set to ${speed} µs/s`);
         if (this.data) {
             this.drawFrame(this.currentFrame);
