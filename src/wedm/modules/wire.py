@@ -45,6 +45,11 @@ class WireModuleParameters:
     compute_zone_mean: bool = False  # Whether to compute zone mean temperature
     zone_mean_interval: int = 100  # Compute zone mean every N steps for efficiency
 
+    # ── Feature Flags ──
+    moving_segments: bool = (
+        True  # Use circular buffer movement model instead of advection
+    )
+
     # ── Critical Temperature Parameters ──
     critical_temp_threshold: float = (
         0.9  # [dimensionless] Fraction of melting point considered critical
@@ -55,7 +60,7 @@ class WireModuleParameters:
 
 
 # Numba-compiled functions for performance-critical calculations
-@njit(cache=False, fastmath=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def compute_thermal_update(
     T,
     dT_dt,
@@ -67,60 +72,75 @@ def compute_thermal_update(
     rho_elec,
     alpha_rho,
     temp_ref,
-    plasma_idx,
+    plasma_idx_phys,
     plasma_heat,
     h_eff_base,
-    h_eff_zone,
+    h_eff_zone_phys,
     dielectric_temp,
     A,
     adv_coeff,
     temp_update_factor,
-    contact_bottom_idx,
-    contact_top_idx,
+    contact_bottom_idx_phys,
+    contact_top_idx_phys,
+    head_idx,
 ):
-    """Optimized thermal update computation using Numba."""
-    # Apply boundary condition
-    T[0] = spool_T
+    """Optimized thermal update using circular-buffer aware indexing.
 
-    # Reset dT/dt
+    Arrays T and dT_dt are stored in ring-buffer order. Physical order from inlet (i=0)
+    to outlet (i=N-1) maps to storage index s(i) = (head_idx + i + 1) % N.
+    """
+    # Helper: map physical index -> storage index
+    N = n_segments
+
+    # Apply inlet Dirichlet (physical i=0)
+    s_inlet = (head_idx + 1) % N
+    T[s_inlet] = spool_T
+
+    # Reset dT/dt in storage order
     dT_dt[:] = 0.0
 
-    # 1) Conduction - optimized with single pass
-    if n_segments > 1:
-        # Interior points
-        for i in prange(1, n_segments - 1):
-            dT_dt[i] = k_cond_coeff * (T[i - 1] - 2 * T[i] + T[i + 1])
+    # 1) Conduction (physical interior: i=1..N-2), Neumann at outlet (i=N-1)
+    if N > 1:
+        for i in prange(1, N - 1):
+            s_c = (head_idx + i + 1) % N
+            s_l = (head_idx + (i - 1) + 1) % N
+            s_r = (head_idx + (i + 1) + 1) % N
+            dT_dt[s_c] = k_cond_coeff * (T[s_l] - 2.0 * T[s_c] + T[s_r])
 
-        # Neumann BC at last segment
-        dT_dt[n_segments - 1] = k_cond_coeff * (T[n_segments - 2] - T[n_segments - 1])
+        # Neumann at outlet (physical i=N-1): use last interior neighbor
+        s_out = (head_idx + (N - 1) + 1) % N
+        s_out_l = (head_idx + (N - 2) + 1) % N
+        dT_dt[s_out] = k_cond_coeff * (T[s_out_l] - T[s_out])
 
-    # 2) Joule heating - only between electrical contacts
+    # 2) Joule heating between physical contact indices (inclusive)
     if I_squared > 1e-6:
         joule_factor = joule_geom_factor * I_squared * rho_elec
-        for i in prange(contact_bottom_idx, contact_top_idx + 1):
-            rho_T = 1.0 + alpha_rho * (T[i] - temp_ref)
-            dT_dt[i] += joule_factor * rho_T
+        start_i = 0 if contact_bottom_idx_phys < 0 else contact_bottom_idx_phys
+        end_i = N - 1 if contact_top_idx_phys >= N else contact_top_idx_phys
+        for i in prange(start_i, end_i + 1):
+            s_i = (head_idx + i + 1) % N
+            rho_T = 1.0 + alpha_rho * (T[s_i] - temp_ref)
+            dT_dt[s_i] += joule_factor * rho_T
 
-    # 3) Plasma heating
-    if plasma_idx >= 0 and plasma_idx < n_segments:
-        dT_dt[plasma_idx] += plasma_heat
+    # 3) Plasma heating at physical index
+    if plasma_idx_phys >= 0 and plasma_idx_phys < N:
+        s_pl = (head_idx + plasma_idx_phys + 1) % N
+        dT_dt[s_pl] += plasma_heat
 
-    # 4) Convection - optimized with precomputed coefficients
-    for i in prange(n_segments):
-        conv_coeff = h_eff_zone[i] * A
-        dT_dt[i] -= conv_coeff * (T[i] - dielectric_temp)
+    # 4) Convection using physical-indexed coefficients
+    for i in prange(N):
+        s_i = (head_idx + i + 1) % N
+        conv_coeff = h_eff_zone_phys[i] * A
+        dT_dt[s_i] -= conv_coeff * (T[s_i] - dielectric_temp)
 
-    # 5) Advection
-    if abs(adv_coeff) > 1e-9:
-        for i in prange(1, n_segments):
-            dT_dt[i] += adv_coeff * (T[i - 1] - T[i])
+    # 5) Advection removed (adv_coeff ignored)
 
-    # 6) Temperature update
-    for i in prange(n_segments):
+    # 6) Temperature update in storage order
+    for i in prange(N):
         T[i] += dT_dt[i] * temp_update_factor
 
-    # Re-apply boundary condition
-    T[0] = spool_T
+    # Re-apply inlet Dirichlet
+    T[s_inlet] = spool_T
 
 
 class WireModule(EDMModule):
@@ -167,6 +187,20 @@ class WireModule(EDMModule):
                 self.n_segments, self.params.spool_T, dtype=np.float32
             )
 
+        # ── Lagrangian segments (clarity-first) ──
+        @dataclass
+        class Segment:
+            y_start_mm: float
+            temperature: float
+            damage: float
+
+        self._Segment = Segment
+        self.segment_len_mm = float(self.params.segment_len)
+        self.segments = [
+            Segment(i * self.segment_len_mm, float(self.params.spool_T), 0.0)
+            for i in range(self.n_segments)
+        ]
+
         # ── Pre-compute Material Constants ──
         self.delta_y = self.params.segment_len * 1e-3  # [m]
         self.S = np.pi * (self.r_wire * 1e-3) ** 2  # [m²]
@@ -202,6 +236,7 @@ class WireModule(EDMModule):
 
         # ── Pre-allocate Arrays ──
         self.dT_dt = np.zeros(self.n_segments, dtype=np.float32)
+        # Convection coefficients per PHYSICAL index (0..N-1)
         self.h_eff_zone = np.zeros(self.n_segments, dtype=np.float32)
 
         # Zone boundaries
@@ -221,10 +256,11 @@ class WireModule(EDMModule):
 
         # Cache for last computed zone mean
         self._last_zone_mean = self.params.spool_T
-        self._last_flow_condition = 0.0
+        # Force first-time convection coefficient update on first call to update()
+        self._last_flow_condition = None  # type: ignore[assignment]
         self.zone_mean_counter = 0
 
-        # ── Calculate electrical contact positions ──
+        # ── Calculate electrical contact positions (physical) ──
         # Contacts are positioned outside the workpiece zone
         contact_bottom_pos_mm = (
             self.params.buffer_len_bottom - self.params.contact_offset_bottom
@@ -235,7 +271,7 @@ class WireModule(EDMModule):
             + self.params.contact_offset_top
         )
 
-        # Convert to segment indices
+        # Convert to PHYSICAL segment indices
         self.contact_bottom_idx = max(
             0, int(contact_bottom_pos_mm / self.params.segment_len)
         )
@@ -252,9 +288,11 @@ class WireModule(EDMModule):
         )
 
         print(
-            f"[+] Electrical contacts: segments {self.contact_bottom_idx} to {self.contact_top_idx}"
+            f"[+] Electrical contacts (physical): segments {self.contact_bottom_idx} to {self.contact_top_idx}"
         )
-        print(f"   Workpiece zone: segments {self.zone_start} to {self.zone_end}")
+        print(
+            f"   Workpiece zone (physical): segments {self.zone_start} to {self.zone_end}"
+        )
 
     def update(self, state: EDMState) -> None:
         if state.is_wire_broken:
@@ -276,64 +314,100 @@ class WireModule(EDMModule):
 
         # Update convection coefficients only when flow condition changes significantly
         flow_condition = state.flow_rate
-        if abs(flow_condition - self._last_flow_condition) > 0.01:
+        if (self._last_flow_condition is None) or (
+            abs(flow_condition - self._last_flow_condition) > 0.01
+        ):
             self._update_convection_coefficients(wire_unwind_vel, flow_condition)
             self._last_flow_condition = flow_condition
 
-        # Prepare plasma heating
+        # ── Wire movement: simple Lagrangian advance and single-segment rollover ──
+        if self.params.moving_segments:
+            dt_us = float(self.env.config.dt)
+            v_mm_per_us = float(wire_unwind_vel) * 1e-3
+            delta_mm = v_mm_per_us * dt_us
+            for seg in self.segments:
+                seg.y_start_mm += delta_mm
+            if self.segments[-1].y_start_mm > self.total_L:
+                remainder = self.segments[-1].y_start_mm - self.total_L
+                for i in range(self.n_segments - 1, 0, -1):
+                    prev = self.segments[i - 1]
+                    self.segments[i] = self._Segment(
+                        prev.y_start_mm, prev.temperature, prev.damage
+                    )
+                self.segments[0] = self._Segment(
+                    remainder, float(self.params.spool_T), 0.0
+                )
+
+        # Prepare plasma heating (physical index)
         plasma_idx = -1
         plasma_heat = 0.0
         if state.spark_status[0] == 1 and state.spark_status[1] is not None:
             y_spark = state.spark_status[1]
-            plasma_idx = (
-                self.zone_start + int(y_spark // self.params.segment_len)
-                if self.params.segment_len != 0
-                else self.zone_start
-            )
+            # Clamp spark location strictly within the workpiece zone
+            if self.params.segment_len > 0 and self.zone_end > self.zone_start:
+                rel_idx_float = y_spark / self.params.segment_len
+                # Clip to [0, zone_len - 1]
+                zone_len = self.zone_end - self.zone_start
+                rel_idx = int(min(max(0.0, rel_idx_float), zone_len - 1))
+                plasma_idx = self.zone_start + rel_idx
+            else:
+                plasma_idx = -1
+
             if 0 <= plasma_idx < self.n_segments:
                 voltage = state.voltage if state.voltage is not None else 0.0
                 plasma_heat = self.params.plasma_efficiency * voltage * I
                 if not np.isfinite(plasma_heat):
                     plasma_heat = 0.0
 
-        # Advection coefficient
-        if abs(wire_unwind_vel) > 1e-6:
-            v_wire = abs(wire_unwind_vel)  # Use absolute value - m s⁻¹
-            adv_coeff = (
-                self.wire_material.density
-                * self.wire_material.specific_heat
-                * v_wire
-                * self.S
-            )
-        else:
-            adv_coeff = 0.0
+        # Advection disabled when moving_segments is enabled
+        adv_coeff = 0.0
 
-        # Call optimized Numba function
-        compute_thermal_update(
-            T,
-            self.dT_dt,
-            self.n_segments,
-            self.params.spool_T,
-            self.k_cond_coeff,
-            I_squared,
-            self.joule_geom_factor,
-            self.rho_elec,
-            self.alpha_rho,
-            self.temp_ref,
-            plasma_idx,
-            plasma_heat,
-            self.params.base_convection_coefficient,
-            self.h_eff_zone,
-            dielectric_temp,
-            self.A,
-            adv_coeff,
-            self.temp_update_factor,
-            self.contact_bottom_idx,
-            self.contact_top_idx,
-        )
+        # ── Thermal update (clarity-first Python) ──
+        T_vec = np.array([seg.temperature for seg in self.segments], dtype=np.float32)
+        dT_dt = self.dT_dt
+        dT_dt[:] = 0.0
+
+        if self.n_segments > 1:
+            for i in range(1, self.n_segments - 1):
+                dT_dt[i] = self.k_cond_coeff * (
+                    T_vec[i - 1] - 2.0 * T_vec[i] + T_vec[i + 1]
+                )
+            dT_dt[self.n_segments - 1] = self.k_cond_coeff * (
+                T_vec[self.n_segments - 2] - T_vec[self.n_segments - 1]
+            )
+
+        if I_squared > 1e-6 and self.contact_top_idx >= self.contact_bottom_idx:
+            joule_factor = self.joule_geom_factor * I_squared * self.rho_elec
+            for i in range(self.contact_bottom_idx, self.contact_top_idx + 1):
+                rho_T = 1.0 + self.alpha_rho * (T_vec[i] - self.temp_ref)
+                dT_dt[i] += joule_factor * rho_T
+
+        if 0 <= plasma_idx < self.n_segments:
+            dT_dt[plasma_idx] += plasma_heat
+
+        for i in range(self.n_segments):
+            conv_coeff = self.h_eff_zone[i] * self.A
+            dT_dt[i] -= conv_coeff * (T_vec[i] - dielectric_temp)
+
+        T_vec += dT_dt * self.temp_update_factor
+        T_vec[0] = self.params.spool_T
+        for i in range(self.n_segments):
+            self.segments[i].temperature = float(T_vec[i])
 
         # ── Temperature Monitoring and Wire Breaking ──
-        self._check_wire_breaking(state, T)
+        self._check_wire_breaking(state, T_vec)
+
+        # Expose movement diagnostics and positions
+        try:
+            state.wire_head_idx = 0
+            state.wire_offset_mm = float(self.segments[0].y_start_mm)
+            starts = np.array(
+                [seg.y_start_mm for seg in self.segments], dtype=np.float32
+            )
+            state.wire_material_positions_mm = starts
+            state.wire_temperature[:] = T_vec
+        except Exception:
+            pass
 
         # Compute zone mean only when needed
         if self.params.compute_zone_mean:
@@ -366,7 +440,7 @@ class WireModule(EDMModule):
             1.0 + self.params.convection_flow_enhancement * flow_condition
         )
 
-        # Fill array with appropriate values
+        # Fill array (per PHYSICAL index order)
         self.h_eff_zone.fill(h_eff_base)
         if self.actual_zone_start < self.actual_zone_end:
             self.h_eff_zone[self.actual_zone_start : self.actual_zone_end] = (
@@ -388,7 +462,7 @@ class WireModule(EDMModule):
             state.is_wire_broken = True
 
     def _compute_zone_mean_fast(self, T: np.ndarray) -> float:
-        """Fast zone mean computation."""
+        """Zone mean over contiguous zone indices (simple)."""
         if self.zone_size > 0 and self.actual_zone_end <= len(T):
             return float(np.mean(T[self.actual_zone_start : self.actual_zone_end]))
         return float(np.mean(T))
