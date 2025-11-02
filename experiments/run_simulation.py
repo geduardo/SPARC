@@ -140,11 +140,24 @@ def setup_logger(
 
     # Add temperature signals based on strategy
     if log_strategy == "full_field":
-        signals_to_log = base_signals + ["wire_temperature"]
+        signals_to_log = base_signals + [
+            "wire_temperature",
+            # Movement diagnostics for animation with circular buffer
+            "wire_head_idx",
+            "wire_offset_mm",
+            # Lagrangian material positions per segment (mm)
+            "wire_material_positions_mm",
+        ]
     elif log_strategy == "zone_mean":
         signals_to_log = base_signals + ["wire_average_temperature"]
     elif log_strategy == "both":
-        signals_to_log = base_signals + ["wire_temperature", "wire_average_temperature"]
+        signals_to_log = base_signals + [
+            "wire_temperature",
+            "wire_average_temperature",
+            "wire_head_idx",
+            "wire_offset_mm",
+            "wire_material_positions_mm",
+        ]
     else:
         raise ValueError(f"Unknown log_strategy: {log_strategy}")
 

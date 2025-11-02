@@ -64,19 +64,28 @@ def create_single_spark_controller(
     return controller
 
 
-def setup_single_spark_logger() -> LoggerConfig:
+def setup_single_spark_logger(log_interval: int = 1) -> LoggerConfig:
     """Setup logger for high-frequency wire temperature recording."""
+    log_freq = (
+        {"type": "every_step"}
+        if log_interval <= 1
+        else {"type": "interval", "value": int(log_interval)}
+    )
     return {
         "signals_to_log": [
             "time",
             "wire_temperature",  # Full temperature field
+            "wire_material_positions_mm",  # Lagrangian positions per segment (mm)
             "voltage",
             "current",
             "spark_status",
             "wire_position",
             "workpiece_position",
+            # Movement diagnostics (from WireModule)
+            "wire_head_idx",
+            "wire_offset_mm",
         ],
-        "log_frequency": {"type": "every_step"},  # Log every microsecond
+        "log_frequency": log_freq,
         "backend": {
             "type": "numpy",
             "filepath": "logs/single_spark_temperature.npz",
@@ -86,7 +95,9 @@ def setup_single_spark_logger() -> LoggerConfig:
 
 
 def initialize_single_spark_environment(
-    seed: int = 42, plasma_efficiency: Optional[float] = None
+    seed: int = 42,
+    plasma_efficiency: Optional[float] = None,
+    wire_velocity_um_us: float = 0.2,
 ) -> WireEDMEnv:
     """Initialize environment optimized for single spark observation."""
 
@@ -108,7 +119,8 @@ def initialize_single_spark_environment(
     )
     env.state.spark_status = [0, None, 0]  # No initial spark
     env.state.dielectric_temperature = 293.15  # Room temperature
-    env.state.wire_unwinding_velocity = 0.0  # No wire movement for cleaner observation
+    # Wire movement (µm/µs). Example: 0.2 → ~1 turnover per ms for 0.2 mm segments
+    env.state.wire_unwinding_velocity = float(wire_velocity_um_us)
 
     # Initialize wire temperature to room temperature
     if len(env.state.wire_temperature) == 0:
@@ -124,6 +136,7 @@ def initialize_single_spark_environment(
     print(
         f"   Initial gap: {env.state.workpiece_position - env.state.wire_position:.1f} µm"
     )
+    print(f"   Wire velocity: {env.state.wire_unwinding_velocity:.3f} µm/µs")
 
     return env
 
@@ -133,6 +146,9 @@ def run_single_spark_simulation(
     logger_config: LoggerConfig,
     spark_config: Dict[str, float],
     simulation_duration_us: int = 1000,
+    *,
+    fast_mode: bool = False,
+    verbose: bool = False,
 ) -> Tuple[str, float]:
     """
     Run simulation of single spark event.
@@ -142,6 +158,8 @@ def run_single_spark_simulation(
         logger_config: Logger configuration
         spark_config: Spark timing and parameters
         simulation_duration_us: Total simulation time in microseconds
+        fast_mode: If True, monkey-patch non-wire modules to no-op for speed
+        verbose: If True, print periodic logs
 
     Returns:
         Tuple of (log_file_path, wall_time)
@@ -157,46 +175,34 @@ def run_single_spark_simulation(
 
     start_time = time.time()
 
-    print(f"🚀 Starting single spark simulation...")
-    print(
-        f"   Duration: {simulation_duration_us} µs ({simulation_duration_us/1000:.1f} ms)"
-    )
-    print(f"   Spark at: {spark_config['spark_time_us']} µs")
-    print(f"   Spark duration: {spark_config['spark_duration_us']} µs")
-    print(
-        f"   Spark location: {spark_config['spark_location_mm']} mm from workpiece bottom"
-    )
+    if verbose:
+        print(f"🚀 Starting single spark simulation...")
+        print(
+            f"   Duration: {simulation_duration_us} µs ({simulation_duration_us/1000:.1f} ms)"
+        )
+        print(f"   Spark at: {spark_config['spark_time_us']} µs")
+        print(f"   Spark duration: {spark_config['spark_duration_us']} µs")
+        print(
+            f"   Spark location: {spark_config['spark_location_mm']} mm from workpiece bottom"
+        )
 
     # Pre-calculate spark location index
     if len(env.state.wire_temperature) == 0:
         env.wire.update(env.state)
         env.state.wire_temperature.fill(293.15)
 
-    # Spark location is from the bottom of the WORKPIECE
-    spark_y_m_from_workpiece_bottom = spark_config["spark_location_mm"] / 1000.0  # m
-
-    # Get wire parameters for correct indexing
-    # buffer_len_bottom is in mm from WireModuleParameters, segment_len is also in mm
-    L_buffer_bottom_m = env.wire.params.buffer_len_bottom / 1000.0  # m
-    segment_length_m = env.wire.params.segment_len / 1000.0  # m
-    total_wire_segments = len(env.state.wire_temperature)
-
-    # Absolute spark position from the very start of the simulated wire
-    absolute_spark_y_m = L_buffer_bottom_m + spark_y_m_from_workpiece_bottom
-
-    spark_location_idx = 0
-    if (
-        segment_length_m > 1e-9
-    ):  # Avoid division by zero if segment_length is tiny or zero
-        spark_location_idx = int(absolute_spark_y_m / segment_length_m)
-
-    spark_location_idx = max(0, min(spark_location_idx, total_wire_segments - 1))
+    # Speed optimizations: monkey-patch non-wire modules if requested
+    if fast_mode:
+        env.ignition.update = lambda state: None
+        env.material.update = lambda state: None
+        env.dielectric.update = lambda state: None
+        env.mechanics.update = lambda state: None
 
     spark_start_time = spark_config["spark_time_us"]
     spark_total_duration = spark_config["spark_duration_us"]
 
-    # Initial log print before loop starts, using env.state
-    if 1 <= 10:  # Mimic the first few steps condition for initial state print
+    # Initial log print before loop starts
+    if verbose:
         avg_temp = np.mean(env.state.wire_temperature) - 273.15
         max_temp = np.max(env.state.wire_temperature) - 273.15
         spark_on_state = "OFF"  # Spark hasn't started
@@ -211,13 +217,9 @@ def run_single_spark_simulation(
 
         action = controller(env)
 
-        if step_counter == 0:
-            original_ignition_update = env.ignition.update
-
-            def disabled_ignition_update(state, dt=None):
-                pass
-
-            env.ignition.update = disabled_ignition_update
+        # Disable ignition in fast or normal mode (we drive spark manually)
+        if step_counter == 0 and not fast_mode:
+            env.ignition.update = lambda state, dt=None: None
 
         is_spark_active_this_step = (
             spark_start_time
@@ -226,22 +228,16 @@ def run_single_spark_simulation(
         )
 
         if is_spark_active_this_step:
-            # Activate spark: [active=1, location_idx, duration_remaining=1 for this step]
+            # Activate spark: [active=1, location_mm, duration_remaining]
             env.state.spark_status = [1, spark_config["spark_location_mm"], 1]
-
-            # Manually set spark V/I because IgnitionModule is disabled
+            # Manually set spark V/I
             OCV = spark_config["voltage"]
             spark_burning_voltage = OCV * 0.3
             env.state.voltage = spark_burning_voltage
             env.state.current = 60.0
-
-            if current_time_us == spark_start_time:
-                # spark_location_idx is still useful for verification if WireModule calculates it correctly
+            if verbose and current_time_us == spark_start_time:
                 print(
-                    f"🔥 Spark FORCED at t={current_time_us}µs, duration={spark_total_duration}µs, loc_cfg={spark_config['spark_location_mm']:.1f}mm (expected_idx={spark_location_idx})"
-                )
-                print(
-                    f"   Applied V={env.state.voltage:.1f}V, I={env.state.current:.1f}A for spark"
+                    f"🔥 Spark FORCED at t={current_time_us}µs, duration={spark_total_duration}µs, loc_cfg={spark_config['spark_location_mm']:.1f}mm"
                 )
         else:
             env.state.spark_status = [0, None, 0]
@@ -250,35 +246,10 @@ def run_single_spark_simulation(
 
         state_from_step, reward, terminated, truncated, info = env.step(action)
 
-        # Log progress (use env.state as it reflects the true state after all modules run)
-        should_print_log = (
-            current_time_us % 50 == 0
-            or current_time_us <= 10
-            or (is_spark_active_this_step and current_time_us == spark_start_time)
-            or (current_time_us == (spark_start_time + spark_total_duration))
-        )
-
-        if should_print_log and current_time_us > 0:
-            # Use env.state for printing the most up-to-date information
-            avg_temp = np.mean(env.state.wire_temperature) - 273.15
-            max_temp = np.max(env.state.wire_temperature) - 273.15
-            spark_on_state = "ON" if env.state.spark_status[0] > 0 else "OFF"
-            # Voltage and current in env.state should be what WireModule used
-            voltage_in_state = (
-                env.state.voltage if env.state.voltage is not None else 0.0
-            )
-            current_in_state = (
-                env.state.current if env.state.current is not None else 0.0
-            )
-            print(
-                f"   t={current_time_us:4d} µs: avg_temp={avg_temp:5.1f}°C, max_temp={max_temp:5.1f}°C, spark={spark_on_state}, V={voltage_in_state:.1f}, I={current_in_state:.1f}"
-            )
-
         # Log data to file/memory - always use env.state for microsecond-resolution logging
         logger.collect(env.state, info)
 
-        if terminated or truncated:
-            # If termination happens, info might contain useful details like 'wire_broken'
+        if (terminated or truncated) and verbose:
             term_reason = "Unknown"
             if info and info.get("wire_broken"):
                 term_reason = "Wire Broken"
@@ -289,22 +260,6 @@ def run_single_spark_simulation(
             print(
                 f"⚠️  Simulation terminated early at t={current_time_us} µs. Reason: {term_reason}"
             )
-            # Log one last time if terminated, using the final env.state
-            if not (
-                should_print_log and current_time_us > 0
-            ):  # Avoid double print if already printed
-                avg_temp = np.mean(env.state.wire_temperature) - 273.15
-                max_temp = np.max(env.state.wire_temperature) - 273.15
-                spark_on_state = "ON" if env.state.spark_status[0] > 0 else "OFF"
-                voltage_in_state = (
-                    env.state.voltage if env.state.voltage is not None else 0.0
-                )
-                current_in_state = (
-                    env.state.current if env.state.current is not None else 0.0
-                )
-                print(
-                    f"   t={current_time_us:4d} µs: avg_temp={avg_temp:5.1f}°C, max_temp={max_temp:5.1f}°C, spark={spark_on_state}, V={voltage_in_state:.1f}, I={current_in_state:.1f} (Final state on termination)"
-                )
             break
 
     wall_time = time.time() - start_time
@@ -351,6 +306,12 @@ def create_spark_animation(
         return
 
     required_keys = ["time", "wire_temperature"]
+    if "wire_material_positions_mm" not in data:
+        print(
+            "wire_material_positions_mm not found in data; required for Lagrangian visualization."
+        )
+        print(f"Available keys: {list(data.keys())}")
+        return
     missing_keys = [key for key in required_keys if key not in data]
     if missing_keys:
         print(f"Missing required data: {missing_keys}")
@@ -359,36 +320,59 @@ def create_spark_animation(
 
     time_us = data["time"]
     wire_temp_k = data["wire_temperature"]
+    pos_mm = data["wire_material_positions_mm"]  # Lagrangian positions (T, N)
     if wire_temp_k.ndim != 2:
         print(f"Error: Temperature data has wrong dimensions: {wire_temp_k.shape}")
         return
+
+    if pos_mm.ndim != 2 or pos_mm.shape != wire_temp_k.shape:
+        print(
+            f"Error: Position data shape mismatch: {pos_mm.shape} vs {wire_temp_k.shape}"
+        )
+        return
+
     wire_temp_c = wire_temp_k - 273.15
     time_ms = time_us / 1000.0
     n_timesteps_data, n_segments = wire_temp_c.shape
 
     # Get actual physical dimensions from WireModuleParameters
-    # Use the same values as plot_temperature_heatmap.py for consistency
     wire_params = WireModuleParameters()
+    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 30.0)
+    buffer_top_mm = getattr(wire_params, "buffer_len_top", 30.0)
 
-    # Use actual attributes that exist, with fallbacks to known working values
-    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 30.0)  # mm
-    buffer_top_mm = getattr(wire_params, "buffer_len_top", 20.0)  # mm
-    segment_len_mm = getattr(wire_params, "segment_len", 0.2)  # mm
+    # Get workpiece height (needed for total_length calculation)
+    workpiece_height_mm = (
+        getattr(getattr(wire_params, "__class__", object), "workpiece_height", 20.0)
+        if hasattr(wire_params, "workpiece_height")
+        else 20.0
+    )
 
-    # Calculate workpiece height from total segments and buffers
-    # From your console: 350 total segments, work zone segments 149 to 197 (49 segments)
-    workpiece_height_mm = 10.0  # mm - use same value as heatmap script
-    total_length_mm = buffer_bottom_mm + workpiece_height_mm + buffer_top_mm
+    # Compute segment length from position differences
+    first_positions = pos_mm[0, :]
+    if len(first_positions) > 1:
+        # Sort positions to find segment length
+        sorted_pos = np.sort(first_positions)
+        diffs = np.diff(sorted_pos)
+        # Filter out zero differences (if segments have same position initially)
+        diffs = diffs[diffs > 1e-6]
+        if len(diffs) > 0:
+            segment_len_mm = np.median(diffs)  # Use median to handle edge cases
+        else:
+            # Fallback: compute from total range
+            segment_len_mm = (np.max(first_positions) - np.min(first_positions)) / max(
+                1, n_segments - 1
+            )
+    else:
+        segment_len_mm = getattr(wire_params, "segment_len", 0.2)
 
-    # Verify this matches the actual data
-    expected_total_segments = int(total_length_mm / segment_len_mm)
-    if abs(expected_total_segments - n_segments) > 5:  # Allow some tolerance
-        print(
-            f"⚠️  Segment count mismatch: expected {expected_total_segments}, got {n_segments}"
-        )
-        print(f"   Adjusting total_length_mm to match actual data")
-        total_length_mm = n_segments * segment_len_mm
-        workpiece_height_mm = total_length_mm - buffer_bottom_mm - buffer_top_mm
+    # Find max and min positions across all timesteps to determine total length
+    max_pos = np.max(pos_mm)
+    min_pos = np.min(pos_mm)
+    # Total length is approximately the range plus one segment
+    total_length_mm = max(
+        max_pos + segment_len_mm - min_pos,
+        buffer_bottom_mm + workpiece_height_mm + buffer_top_mm,
+    )
 
     wire_diameter_mm = 0.2
 
@@ -488,29 +472,48 @@ def create_spark_animation(
     fig.patch.set_facecolor("white")
     visual_thickness = wire_diameter_mm * 5
 
-    # Wire extent: [left, right, bottom, top]
-    # With origin='upper', row 0 is at the top, so Y goes from total_length_mm (top) down to 0 (bottom)
-    wire_extent = [-visual_thickness / 2, visual_thickness / 2, total_length_mm, 0]
     temp_min_c = 20
     temp_max_c = min(500, np.max(wire_temp_c))
-    img = ax_wire.imshow(
-        wire_temp_c[animation_frame_indices[0], :].reshape(n_segments, 1),
-        cmap="hot",
-        origin="upper",  # Changed to 'upper'
-        vmin=temp_min_c,
-        vmax=temp_max_c,
-        extent=wire_extent,
-        interpolation="bilinear",
-        aspect="auto",  # Ensure it fills the axes box correctly with new origin
-    )
-    workpiece_bottom_display = total_length_mm - (
-        buffer_bottom_mm + workpiece_height_mm
-    )  # Position from top
-    workpiece_top_display = total_length_mm - buffer_bottom_mm  # Position from top
 
-    ax_wire.set_ylim(0, total_length_mm)
-    # Recalculate extent for imshow to match this new y-axis orientation for ax_wire
-    img.set_extent([-visual_thickness / 2, visual_thickness / 2, 0, total_length_mm])
+    # Create colormap for temperature
+    cmap = plt.get_cmap("hot")
+    norm = plt.Normalize(vmin=temp_min_c, vmax=temp_max_c)
+
+    # Initialize rectangles for Lagrangian visualization
+    from matplotlib.patches import Rectangle
+
+    rectangles = []
+    initial_positions = pos_mm[animation_frame_indices[0], :]
+    initial_temps = wire_temp_c[animation_frame_indices[0], :]
+
+    for i in range(n_segments):
+        y_start = initial_positions[i]
+        rect = Rectangle(
+            (-visual_thickness / 2, y_start),
+            visual_thickness,
+            segment_len_mm,
+            facecolor=cmap(norm(initial_temps[i])),
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax_wire.add_patch(rect)
+        rectangles.append(rect)
+
+    ax_wire.set_xlim(-visual_thickness * 2, visual_thickness * 2)
+
+    # Crop visualization to exclude first 2 and last 2 segments
+    if n_segments > 4:
+        # Get positions of segments we want to show (indices 2 to N-3)
+        visible_positions = initial_positions[2:-2]
+        y_min_visible = np.min(visible_positions)
+        y_max_visible = np.max(visible_positions) + segment_len_mm
+        # Add small padding
+        padding = segment_len_mm * 0.5
+        # With inverted y-axis, set limits so min appears at top and max at bottom
+        ax_wire.set_ylim(y_min_visible - padding, y_max_visible + padding)
+    else:
+        ax_wire.set_ylim(0, total_length_mm)
+    ax_wire.invert_yaxis()  # Invert so wire unwinds from top to bottom
 
     # Workpiece lines on wire plot (y from bottom)
     ax_wire.axhline(
@@ -554,17 +557,23 @@ def create_spark_animation(
     ax_wire.set_ylabel("Position along wire (mm from bottom)")
     ax_wire.set_title("Wire Temperature Field")
 
+    # Add colorbar using a ScalarMappable
+    from matplotlib.cm import ScalarMappable
+
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
     fig.colorbar(
-        img, ax=ax_wire, orientation="vertical", label="Temperature (°C)", shrink=0.8
+        sm, ax=ax_wire, orientation="vertical", label="Temperature (°C)", shrink=0.8
     )
 
-    # Y positions for the line plot
-    y_positions_lineplot = np.linspace(total_length_mm, 0, n_segments)
+    # Initialize line plot with Lagrangian positions
+    initial_positions_sorted = np.sort(initial_positions)
+    initial_temps_sorted = initial_temps[np.argsort(initial_positions)]
     (line_temp,) = ax_temp.plot(
-        wire_temp_c[animation_frame_indices[0], :],
-        y_positions_lineplot,
+        initial_temps_sorted,
+        initial_positions_sorted,
         "r-",
-        linewidth=3,  # Make line thicker
+        linewidth=3,
     )
 
     # Workpiece shaded region on temperature profile plot
@@ -596,7 +605,18 @@ def create_spark_animation(
 
     ax_temp.set_xlabel("Temperature (°C)")
     ax_temp.set_ylabel("Position along wire (mm from bottom)")
-    ax_temp.set_ylim(0, total_length_mm)
+
+    # Crop visualization to exclude first 2 and last 2 segments (match wire plot)
+    if n_segments > 4:
+        visible_positions = initial_positions[2:-2]
+        y_min_visible = np.min(visible_positions)
+        y_max_visible = np.max(visible_positions) + segment_len_mm
+        padding = segment_len_mm * 0.5
+        # With inverted y-axis, set limits so min appears at top and max at bottom
+        ax_temp.set_ylim(y_min_visible - padding, y_max_visible + padding)
+    else:
+        ax_temp.set_ylim(0, total_length_mm)
+    ax_temp.invert_yaxis()  # Invert to match wire visualization
     ax_temp.set_title("Temperature Profile")
     ax_temp.grid(True, alpha=0.3)
     ax_temp.legend(loc="upper right")
@@ -609,22 +629,37 @@ def create_spark_animation(
     )
 
     def update_animation(frame_k):
-        actual_data_idx = animation_frame_indices[frame_k]
-        current_temp_field = wire_temp_c[actual_data_idx, :].reshape(n_segments, 1)
-        img.set_data(current_temp_field)
-        # The line plot - keep the same temperature data, y_positions_lineplot is now correct
-        line_temp.set_xdata(wire_temp_c[actual_data_idx, :])
+        actual_idx = animation_frame_indices[frame_k]
+
+        # Get current Lagrangian positions and temperatures
+        current_positions = pos_mm[actual_idx, :]
+        current_temps = wire_temp_c[actual_idx, :]
+
+        # Update rectangle positions and colors
+        for i in range(n_segments):
+            rectangles[i].set_y(current_positions[i])
+            rectangles[i].set_facecolor(cmap(norm(current_temps[i])))
+
+        # Update line plot - sort by position for proper visualization
+        sorted_indices = np.argsort(current_positions)
+        sorted_positions = current_positions[sorted_indices]
+        sorted_temps = current_temps[sorted_indices]
+        line_temp.set_xdata(sorted_temps)
+        line_temp.set_ydata(sorted_positions)
+
         title_obj.set_text(
-            f"Single Spark Evolution - Sim Time: {time_ms[actual_data_idx]:.3f} ms (Frame {frame_k+1}/{num_animation_render_frames})"
+            f"Single Spark Evolution - Sim Time: {time_ms[actual_idx]:.3f} ms (Frame {frame_k+1}/{num_animation_render_frames})"
         )
-        return [img, line_temp, title_obj]
+
+        # Return all artists for blitting
+        return rectangles + [line_temp, title_obj]
 
     ani = animation.FuncAnimation(
         fig,
         update_animation,
         frames=num_animation_render_frames,
         interval=live_preview_interval_ms,
-        blit=True,
+        blit=False,
         repeat=True,
     )
 
@@ -705,8 +740,8 @@ def main():
     sim_group.add_argument(
         "--spark-location",
         type=float,
-        default=25.0,
-        help="Spark location from workpiece bottom (mm, default: 25.0)",
+        default=5.0,
+        help="Spark location from workpiece bottom (mm, default: 5.0)",
     )
     sim_group.add_argument(
         "--voltage", type=float, default=80.0, help="Spark voltage (V, default: 80.0)"
@@ -729,6 +764,28 @@ def main():
         default=1000,
         help="Total simulation duration (µs, default: 1000 for 1ms)",
     )
+    sim_group.add_argument(
+        "--velocity",
+        type=float,
+        default=0.2,
+        help="Wire unwinding velocity [µm/µs] (default: 0.2 → ~1 turnover/ms)",
+    )
+    sim_group.add_argument(
+        "--log-interval",
+        type=int,
+        default=1,
+        help="Log every N µs to reduce I/O (default: 1 = every step)",
+    )
+    sim_group.add_argument(
+        "--fast",
+        action="store_true",
+        help="Fast mode: skip non-wire modules to speed up simulation",
+    )
+    sim_group.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed progress during simulation",
+    )
 
     # Arguments for loading existing data
     load_group = parser.add_argument_group("Data Loading Parameters")
@@ -745,7 +802,7 @@ def main():
         "--playback-speed",
         type=float,
         default=0.1,
-        help="Animation playback speed multiplier for live preview (default: 0.1 for slow motion)",
+        help="Animation playback speed multiplier for live preview (higher = faster)",
     )
     anim_group.add_argument(
         "--save", action="store_true", help="Save animation to file"
@@ -753,22 +810,22 @@ def main():
     anim_group.add_argument(
         "--out",
         type=str,
-        default="single_spark_animation.gif",  # Changed default to GIF
+        default="single_spark_animation.gif",  # Default GIF
         help="Output animation filename (e.g., .mp4 or .gif, default: single_spark_animation.gif)",
     )
     anim_group.add_argument(
         "--target-video-duration",
         type=float,
         default=10.0,
-        help="Target duration for the output video in seconds (default: 10.0)",
+        help="Target duration for the output video in seconds (when saving)",
     )
     anim_group.add_argument(
         "--target-video-fps",
         type=int,
-        default=20,  # Changed default to 20, better for GIF
+        default=20,
         help="Target FPS for the output video (default: 20 for GIF, 30 for MP4)",
     )
-    parser.add_argument(  # Moved data-only out of any specific group as it's a general flag
+    parser.add_argument(
         "--data-only",
         action="store_true",
         help="Only run simulation, skip animation (if not loading data)",
@@ -784,16 +841,17 @@ def main():
             print(f"Error: Data file not found at {args.load_data}")
             return
         log_file_path = args.load_data
-        # If loading data, we must not be in data_only mode for animation
         if args.data_only:
             print(
                 "Warning: --data-only is ignored when --load-data is used, proceeding with animation."
             )
-            args.data_only = False  # Ensure animation happens
+            args.data_only = False
     else:
         # Run new simulation
         spark_config = {
-            "spark_time_us": args.spark_time,
+            "spark_time_us": (
+                args.spark_time if args.spark_time != 50.0 else int(args.duration * 0.2)
+            ),
             "spark_duration_us": args.spark_duration,
             "spark_location_mm": args.spark_location,
             "voltage": args.voltage,
@@ -804,9 +862,10 @@ def main():
             current_plasma_efficiency = 0.5
 
         env = initialize_single_spark_environment(
-            plasma_efficiency=current_plasma_efficiency
+            plasma_efficiency=current_plasma_efficiency,
+            wire_velocity_um_us=args.velocity,
         )
-        logger_config = setup_single_spark_logger()
+        logger_config = setup_single_spark_logger(args.log_interval)
         # Use a unique name for the data file if running a new sim, based on output anim name
         sim_data_identifier = pathlib.Path(args.out).stem
         logger_config["backend"][
@@ -814,7 +873,12 @@ def main():
         ] = f"logs/{sim_data_identifier}_sim_data.npz"
 
         log_file_path, wall_time = run_single_spark_simulation(
-            env, logger_config, spark_config, args.duration
+            env,
+            logger_config,
+            spark_config,
+            args.duration,
+            fast_mode=args.fast,
+            verbose=args.verbose,
         )
 
     if not args.data_only and log_file_path:
@@ -832,7 +896,7 @@ def main():
             )
             effective_target_fps = 20
         elif not output_is_gif and args.target_video_fps > 30:  # e.g. MP4
-            effective_target_fps = 30  # Keep a reasonable default if not GIF
+            effective_target_fps = 30
 
         create_spark_animation(
             log_file_path,
@@ -840,9 +904,7 @@ def main():
             output_filename=args.out,
             playback_speed=args.playback_speed,
             target_video_duration_s=args.target_video_duration if args.save else None,
-            target_video_fps=(
-                effective_target_fps if args.save else 20
-            ),  # Default to 20 if not saving
+            target_video_fps=(effective_target_fps if args.save else 20),
         )
     elif args.data_only:
         print("Simulation completed in data-only mode. No animation created.")
