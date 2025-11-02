@@ -59,6 +59,17 @@ def run_quickstart_sim(
     else:
         env = WireEDMEnv(mechanics_control_mode=control_mode)
 
+    # Set initial conditions (same as initialize_environment in run_simulation.py)
+    env.state.workpiece_position = 20.0  # um
+    env.state.wire_position = 10.0  # um
+    env.state.target_position = 5_000.0  # um
+    env.state.spark_status = [0, None, 0]
+    env.state.dielectric_temperature = 293.15  # Room temperature in K
+
+    # Initialize wire temperature array
+    if len(env.state.wire_temperature) == 0:
+        env.wire.update(env.state)
+
     logger_config = setup_logger(
         control_mode, log_to_file=True, log_strategy="full_field"
     )
@@ -257,7 +268,7 @@ def create_animation(
             10, (sim_duration_ms_data / n_timesteps_data) / playback_speed
         )
 
-    print("\n📽️  Animation data:")
+    print("\n[ANIM] Animation data:")
     print(f"   Total data timesteps: {n_timesteps_data}")
     print(f"   Wire segments: {n_segments}")
     print(f"   Simulation duration recorded: {sim_duration_ms_data:.1f} ms")
@@ -486,10 +497,10 @@ def create_animation(
                     derived_fps = 1000.0 / live_preview_interval_ms
                     actual_save_fps = max(5.0, min(derived_fps, 15.0))
         print(
-            f"💾 Saving animation to {output_filename} (FPS: {actual_save_fps:.1f}, Writer: {writer_name}, DPI: {save_dpi})..."
+            f"[SAVE] Saving animation to {output_filename} (FPS: {actual_save_fps:.1f}, Writer: {writer_name}, DPI: {save_dpi})..."
         )
         ani.save(output_filename, writer=writer_name, fps=actual_save_fps, dpi=save_dpi)
-        print("✅ Animation saved successfully!")
+        print("[OK] Animation saved successfully!")
     else:
         plt.show()
 
