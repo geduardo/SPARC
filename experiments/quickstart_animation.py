@@ -44,6 +44,7 @@ def run_quickstart_sim(
     segment_len_mm: float | None = None,
     workpiece_height: float = 20.0,
     current_mode: int = 7,
+    current_override: float | None = None,
 ):
     # Import necessary modules
     from src.wedm.core.env_config import EnvironmentConfig
@@ -51,7 +52,10 @@ def run_quickstart_sim(
     # Determine environment and wire parameters
     if segment_len_mm is not None:
         wire_params = WireModuleParameters(
-            segment_len=float(segment_len_mm), moving_segments=True
+            segment_len=float(segment_len_mm),
+            moving_segments=True,
+            buffer_len_bottom=10.0,
+            buffer_len_top=10.0,
         )
         config = EnvironmentConfig(workpiece_height=workpiece_height)
         env = WireEDMEnv(config=config)
@@ -61,12 +65,17 @@ def run_quickstart_sim(
         env.wire = WireModule(env, parameters=wire_params)
     elif segments is not None and segments > 0:
         # Calculate segment length for desired number of segments
-        # Total wire length = buffer_bottom (30mm) + workpiece_height + buffer_top (30mm)
-        total_length_mm = 30.0 + workpiece_height + 30.0
+        # Total wire length = buffer_bottom (10mm) + workpiece_height + buffer_top (10mm)
+        total_length_mm = 10.0 + workpiece_height + 10.0
         # Compute segment length
         eps = 1e-9
         seg_len = max(1e-9, total_length_mm / float(segments) - eps)
-        wire_params = WireModuleParameters(segment_len=seg_len, moving_segments=True)
+        wire_params = WireModuleParameters(
+            segment_len=seg_len,
+            moving_segments=True,
+            buffer_len_bottom=10.0,
+            buffer_len_top=10.0,
+        )
         config = EnvironmentConfig(workpiece_height=workpiece_height)
         env = WireEDMEnv(config=config)
         # Override wire module with custom parameters
@@ -76,6 +85,13 @@ def run_quickstart_sim(
     else:
         config = EnvironmentConfig(workpiece_height=workpiece_height)
         env = WireEDMEnv(config=config)
+        # Override wire module with 10mm buffers
+        from src.wedm.modules.wire import WireModule
+        wire_params = WireModuleParameters(
+            buffer_len_bottom=10.0,
+            buffer_len_top=10.0,
+        )
+        env.wire = WireModule(env, parameters=wire_params)
 
     # Set initial conditions (same as initialize_environment in run_simulation.py)
     env.state.workpiece_position = 20.0  # um
@@ -84,6 +100,18 @@ def run_quickstart_sim(
     env.state.spark_status = [0, None, 0]
     env.state.dielectric_temperature = 293.15  # Room temperature in K
 
+    # Set current mode - if current_override is provided, find closest matching mode
+    if current_override is not None:
+        # Current mapping: I1=30A, I2=35A, I3=40A, I4=50A, I5=60A, I6=68A, I7=80A,
+        # I8=95A, I9=110A, I10=130A, I11=155A, I12=180A, I13=215A, I14=255A,
+        # I15=305A, I16=360A, I17=425A, I18=500A, I19=600A
+        current_values = [30, 35, 40, 50, 60, 68, 80, 95, 110, 130, 155, 180, 215, 255, 305, 360, 425, 500, 600]
+        # Find closest current mode
+        closest_idx = min(range(len(current_values)), key=lambda i: abs(current_values[i] - current_override))
+        current_mode = closest_idx + 1  # I1 is index 1, not 0
+        if verbose:
+            print(f"[INFO] Current override: {current_override} A -> closest mode: I{current_mode} ({current_values[closest_idx]} A)")
+    
     # Set current mode if specified
     env.state.current_mode = f"I{current_mode}"
 
@@ -105,9 +133,80 @@ def run_quickstart_sim(
         verbose=verbose,
         logger_config=logger_config,
         controller_type=controller,
+        current_mode=current_mode,
     )
     # log_data is file path (numpy backend)
     return logger_config["backend"]["filepath"]
+
+
+def export_json(npz_filepath: str, json_out: str, workpiece_height: float = 100.0) -> None:
+    """Export NPZ data to JSON format for web dashboard visualization."""
+    import json
+
+    try:
+        data = np.load(npz_filepath, allow_pickle=True)
+    except Exception as e:
+        print(f"Error loading data for JSON export: {e}")
+        return
+
+    print(f"[INFO] Converting NPZ to JSON for dashboard...")
+
+    # Build JSON structure
+    json_data = {}
+
+    # Convert all arrays to lists
+    for key in data.keys():
+        arr = data[key]
+        if isinstance(arr, np.ndarray):
+            # Convert to native Python types
+            if arr.dtype == np.float64 or arr.dtype == np.float32:
+                json_data[key] = arr.tolist()
+            elif arr.dtype == np.int64 or arr.dtype == np.int32:
+                json_data[key] = arr.tolist()
+            elif arr.dtype == object:
+                # Handle object arrays (like spark_status)
+                converted = []
+                for item in arr:
+                    if isinstance(item, np.ndarray):
+                        converted.append(item.tolist())
+                    elif isinstance(item, (list, tuple)):
+                        converted.append(list(item))
+                    elif item is None or (isinstance(item, float) and np.isnan(item)):
+                        converted.append(None)
+                    else:
+                        converted.append(item)
+                json_data[key] = converted
+            else:
+                json_data[key] = arr.tolist()
+
+    # Add metadata for visualization
+    from src.wedm.modules.wire import WireModuleParameters
+    wire_params = WireModuleParameters(
+        buffer_len_bottom=10.0,
+        buffer_len_top=10.0,
+    )
+
+    json_data['metadata'] = {
+        'workpiece_height': workpiece_height,
+        'buffer_len_bottom': getattr(wire_params, 'buffer_len_bottom', 10.0),
+        'buffer_len_top': getattr(wire_params, 'buffer_len_top', 10.0),
+        'contact_offset_bottom': getattr(wire_params, 'contact_offset_bottom', 10.0),
+        'contact_offset_top': getattr(wire_params, 'contact_offset_top', 10.0),
+        'wire_diameter': 0.25,  # mm
+    }
+
+    # Ensure output directory exists
+    json_path = pathlib.Path(json_out)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write JSON file (compact format to save space)
+    print(f"[INFO] Writing JSON to {json_path}...")
+    with open(json_path, 'w') as f:
+        json.dump(json_data, f, separators=(',', ':'))
+
+    file_size_mb = json_path.stat().st_size / (1024 * 1024)
+    print(f"[INFO] JSON exported: {json_path} ({file_size_mb:.2f} MB)")
+    print(f"[INFO] Open visualization/dashboard.html in your browser and load this file")
 
 
 def export_csv(npz_filepath: str, csv_out: str, max_segments: int = 20) -> None:
@@ -191,7 +290,7 @@ def export_csv(npz_filepath: str, csv_out: str, max_segments: int = 20) -> None:
         comments="",
         fmt=fmt_list if len(fmt_list) > 1 else "%.6f",
     )
-    print(f"📝 CSV exported: {csv_path}")
+    print(f"[INFO] CSV exported: {csv_path}")
 
 
 def create_animation(
@@ -201,6 +300,7 @@ def create_animation(
     playback_speed: float = 1.0,
     target_video_duration_s: Optional[float] = None,
     target_video_fps: int = 20,
+    show_edges: bool = False,
 ) -> None:
     try:
         data = np.load(npz_filepath)
@@ -243,9 +343,12 @@ def create_animation(
     n_timesteps_data, n_segments = wire_temp_c.shape
 
     # Physical dimensions - compute segment length from first timestep positions
-    wire_params = WireModuleParameters()
-    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 30.0)
-    buffer_top_mm = getattr(wire_params, "buffer_len_top", 30.0)
+    wire_params = WireModuleParameters(
+        buffer_len_bottom=10.0,
+        buffer_len_top=10.0,
+    )
+    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 10.0)
+    buffer_top_mm = getattr(wire_params, "buffer_len_top", 10.0)
 
     # Compute segment length from position differences
     first_positions = pos_mm[0, :]
@@ -265,21 +368,19 @@ def create_animation(
     else:
         segment_len_mm = getattr(wire_params, "segment_len", 0.2)
 
-    # Get workpiece height (needed for total_length calculation)
-    workpiece_height_mm = (
-        getattr(getattr(wire_params, "__class__", object), "workpiece_height", 20.0)
-        if hasattr(wire_params, "workpiece_height")
-        else 20.0
-    )
-
     # Find max and min positions across all timesteps to determine total length
     max_pos = np.max(pos_mm)
     min_pos = np.min(pos_mm)
     # Total length is approximately the range plus one segment
-    total_length_mm = max(
-        max_pos + segment_len_mm - min_pos,
-        buffer_bottom_mm + workpiece_height_mm + buffer_top_mm,
-    )
+    total_length_mm = max_pos + segment_len_mm - min_pos
+    
+    # Calculate workpiece height from total length and buffer lengths
+    # Formula: total_length = buffer_bottom + workpiece_height + buffer_top
+    workpiece_height_mm = total_length_mm - buffer_bottom_mm - buffer_top_mm
+    # Ensure non-negative
+    if workpiece_height_mm < 0:
+        print(f"[WARNING] Calculated workpiece_height ({workpiece_height_mm:.2f} mm) is negative, using default 20.0 mm")
+        workpiece_height_mm = 20.0
 
     # Playback timing
     sim_duration_ms_data = time_ms[-1] - time_ms[0] if n_timesteps_data > 1 else 0.0
@@ -359,16 +460,19 @@ def create_animation(
     rectangles = []
     initial_positions = pos_mm[animation_frame_indices[0], :]
     initial_temps = wire_temp_c[animation_frame_indices[0], :]
+    
+    # Add small overlap (5%) to segment height to prevent gaps between segments
+    segment_height_viz = segment_len_mm * 1.05
 
     for i in range(n_segments):
         y_start = initial_positions[i]
         rect = Rectangle(
             (-visual_thickness / 2, y_start),
             visual_thickness,
-            segment_len_mm,
+            segment_height_viz,
             facecolor=cmap(norm(initial_temps[i])),
-            edgecolor="black",
-            linewidth=0.5,
+            edgecolor="black" if show_edges else "none",
+            linewidth=0.5 if show_edges else 0,
         )
         ax_wire.add_patch(rect)
         rectangles.append(rect)
@@ -406,6 +510,30 @@ def create_animation(
         linewidth=2,
         label="Workpiece Top",
     )
+    
+    # Contact lines on wire plot
+    contact_offset_bottom = getattr(wire_params, "contact_offset_bottom", 10.0)  # mm
+    contact_offset_top = getattr(wire_params, "contact_offset_top", 10.0)  # mm
+    contact_bottom_pos_mm = buffer_bottom_mm - contact_offset_bottom
+    contact_top_pos_mm = buffer_bottom_mm + workpiece_height_mm + contact_offset_top
+    
+    ax_wire.axhline(
+        contact_bottom_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Bottom Contact",
+        linewidth=2,
+    )
+    ax_wire.axhline(
+        contact_top_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Top Contact",
+        linewidth=2,
+    )
+    
     ax_wire.set_xlim(-visual_thickness * 4, visual_thickness * 4)
     ax_wire.set_xticks([])
     ax_wire.set_xlabel("")
@@ -438,6 +566,25 @@ def create_animation(
         color="gray",
         label="Workpiece",
     )
+    
+    # Contact lines on temperature profile plot
+    ax_temp.axhline(
+        contact_bottom_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Bottom Contact",
+        linewidth=2,
+    )
+    ax_temp.axhline(
+        contact_top_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Top Contact",
+        linewidth=2,
+    )
+    
     ax_temp.set_xlabel("Temperature (°C)")
     ax_temp.set_ylabel("Position along wire (mm from bottom)")
 
@@ -571,9 +718,16 @@ def main():
     sim_group.add_argument(
         "--current-mode",
         type=int,
-        default=13,
+        default=17,
         dest="current_mode",
-        help="Current mode setting (default: 13 for I13)",
+        help="Current mode setting (default: 17 for I17)",
+    )
+    sim_group.add_argument(
+        "--current",
+        type=float,
+        default=None,
+        dest="current",
+        help="Current in Amperes (overrides --current-mode by finding closest matching mode). Example: --current 215 sets I13 (215A)",
     )
     sim_group.add_argument(
         "--verbose", action="store_true", help="Verbose simulation logs"
@@ -609,6 +763,11 @@ def main():
     anim_group.add_argument(
         "--target-video-fps", type=int, default=20, help="Target FPS for saved video"
     )
+    anim_group.add_argument(
+        "--show-edges",
+        action="store_true",
+        help="Show edges/contours around thermal segments (default: False, edges hidden)",
+    )
     # CSV export
     anim_group.add_argument(
         "--export-csv",
@@ -627,6 +786,18 @@ def main():
         default=20,
         help="Max segments to include in CSV (default: 20)",
     )
+    # JSON export for dashboard
+    anim_group.add_argument(
+        "--log-json",
+        action="store_true",
+        help="Export data to JSON format for web dashboard",
+    )
+    anim_group.add_argument(
+        "--json-out",
+        type=str,
+        default="visualization/data/simulation_data.json",
+        help="JSON output filepath for dashboard (default: visualization/data/simulation_data.json)",
+    )
 
     args = parser.parse_args()
 
@@ -637,16 +808,22 @@ def main():
             duration_us=args.duration,
             control_mode=args.mode,
             controller=args.controller,
-            out_basename=args.out,
-            verbose=args.verbose,
-            segments=args.segments,
-            segment_len_mm=args.segment_len,
-            workpiece_height=args.workpiece_height,
-            current_mode=args.current_mode,
-        )
+        out_basename=args.out,
+        verbose=args.verbose,
+        segments=args.segments,
+        segment_len_mm=args.segment_len,
+        workpiece_height=args.workpiece_height,
+        current_mode=args.current_mode,
+        current_override=args.current,
+    )
 
     if args.export_csv:
         export_csv(data_path, args.csv_out, max_segments=args.csv_segments)
+
+    if args.log_json:
+        # Limit to 5000 frames for browser compatibility (reduces file size)
+        # 5000 frames = 5ms at 1µs resolution, plenty for visualization
+        export_json(data_path, args.json_out, workpiece_height=args.workpiece_height)
 
     create_animation(
         data_path,
@@ -655,6 +832,7 @@ def main():
         playback_speed=args.playback_speed,
         target_video_duration_s=args.target_video_duration if args.save else None,
         target_video_fps=args.target_video_fps,
+        show_edges=args.show_edges,
     )
 
 

@@ -25,6 +25,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from src.wedm.envs import WireEDMEnv
 from src.wedm.utils.logger import SimulationLogger, LoggerConfig
 from src.wedm.modules.wire import WireModuleParameters
+from src.wedm.core.env_config import EnvironmentConfig
 
 
 def create_single_spark_controller(
@@ -98,15 +99,44 @@ def initialize_single_spark_environment(
     seed: int = 42,
     plasma_efficiency: Optional[float] = None,
     wire_velocity_um_us: float = 0.2,
+    workpiece_height_mm: float = 20.0,
+    n_segments: Optional[int] = None,
 ) -> WireEDMEnv:
     """Initialize environment optimized for single spark observation."""
-
+    
+    # Create environment config with specified workpiece height
+    env_config = EnvironmentConfig(workpiece_height=workpiece_height_mm)
+    
+    # Set up wire parameters
     wire_params = WireModuleParameters()
     if plasma_efficiency is not None:
-        print(f"💡 Using custom plasma_efficiency: {plasma_efficiency}")
+        print(f"[INFO] Using custom plasma_efficiency: {plasma_efficiency}")
         wire_params.plasma_efficiency = plasma_efficiency
+    
+    # Calculate segment length to get desired number of segments
+    if n_segments is not None:
+        total_length = (
+            wire_params.buffer_len_bottom
+            + workpiece_height_mm
+            + wire_params.buffer_len_top
+        )
+        # Calculate segment length to get exactly n_segments
+        # The wire module uses: n_segments = int(total_L / segment_len)
+        # To get exactly n_segments, we need: n_segments <= total_L / segment_len < n_segments + 1
+        # So: total_L / (n_segments + 1) < segment_len <= total_L / n_segments
+        # We use total_L / n_segments but with a tiny reduction to ensure we don't exceed n_segments+1
+        base_segment_len = total_length / n_segments
+        # Ensure we get at least n_segments by making segment_len slightly smaller
+        # This ensures total_L / segment_len >= n_segments
+        calculated_segment_len = base_segment_len * (1.0 - 1e-6)
+        wire_params.segment_len = calculated_segment_len
+        print(f"[INFO] Setting segment length to {calculated_segment_len:.6f} mm for {n_segments} segments (total_L={total_length:.2f} mm)")
 
-    env = WireEDMEnv(mechanics_control_mode="position", wire_params=wire_params)
+    env = WireEDMEnv(
+        mechanics_control_mode="position",
+        config=env_config,
+        wire_params=wire_params,
+    )
     env.reset(seed=seed)
 
     # Set initial conditions for stable observation
@@ -129,7 +159,7 @@ def initialize_single_spark_environment(
     # Set all segments to room temperature initially
     env.state.wire_temperature.fill(293.15)  # 20°C in Kelvin
 
-    print(f"🔬 Single spark observation setup:")
+    print(f"[INFO] Single spark observation setup:")
     print(f"   Wire segments: {len(env.state.wire_temperature)}")
     print(f"   Wire length: {env.wire.total_L:.1f} mm")
     print(f"   Segment length: {env.wire.params.segment_len:.3f} mm")
@@ -176,7 +206,7 @@ def run_single_spark_simulation(
     start_time = time.time()
 
     if verbose:
-        print(f"🚀 Starting single spark simulation...")
+        print(f"[START] Starting single spark simulation...")
         print(
             f"   Duration: {simulation_duration_us} µs ({simulation_duration_us/1000:.1f} ms)"
         )
@@ -237,7 +267,7 @@ def run_single_spark_simulation(
             env.state.current = 60.0
             if verbose and current_time_us == spark_start_time:
                 print(
-                    f"🔥 Spark FORCED at t={current_time_us}µs, duration={spark_total_duration}µs, loc_cfg={spark_config['spark_location_mm']:.1f}mm"
+                    f"[SPARK] Spark FORCED at t={current_time_us}µs, duration={spark_total_duration}µs, loc_cfg={spark_config['spark_location_mm']:.1f}mm"
                 )
         else:
             env.state.spark_status = [0, None, 0]
@@ -258,7 +288,7 @@ def run_single_spark_simulation(
             elif truncated:
                 term_reason = "Truncated (e.g. time limit)"
             print(
-                f"⚠️  Simulation terminated early at t={current_time_us} µs. Reason: {term_reason}"
+                f"[WARNING] Simulation terminated early at t={current_time_us} µs. Reason: {term_reason}"
             )
             break
 
@@ -267,15 +297,15 @@ def run_single_spark_simulation(
     logger.finalize()
     log_file = logger.get_data()
 
-    print(f"✅ Simulation completed in {wall_time:.2f} seconds")
+    print(f"[OK] Simulation completed in {wall_time:.2f} seconds")
     if not log_file or (
         isinstance(log_file, str) and not pathlib.Path(log_file).exists()
     ):
         print(
-            f"⚠️ Log file may not have been created or is empty. Expected at: {logger_config['backend']['filepath']}"
+            f"[WARNING] Log file may not have been created or is empty. Expected at: {logger_config['backend']['filepath']}"
         )
     else:
-        print(f"📁 Data saved to: {log_file}")
+        print(f"[INFO] Data saved to: {log_file}")
 
     return log_file, wall_time
 
@@ -287,6 +317,7 @@ def create_spark_animation(
     playback_speed: float = 0.1,
     target_video_duration_s: Optional[float] = None,
     target_video_fps: int = 30,
+    show_edges: bool = False,
 ) -> None:
     """
     Create animation from single spark simulation data.
@@ -340,13 +371,6 @@ def create_spark_animation(
     buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 30.0)
     buffer_top_mm = getattr(wire_params, "buffer_len_top", 30.0)
 
-    # Get workpiece height (needed for total_length calculation)
-    workpiece_height_mm = (
-        getattr(getattr(wire_params, "__class__", object), "workpiece_height", 20.0)
-        if hasattr(wire_params, "workpiece_height")
-        else 20.0
-    )
-
     # Compute segment length from position differences
     first_positions = pos_mm[0, :]
     if len(first_positions) > 1:
@@ -369,14 +393,19 @@ def create_spark_animation(
     max_pos = np.max(pos_mm)
     min_pos = np.min(pos_mm)
     # Total length is approximately the range plus one segment
-    total_length_mm = max(
-        max_pos + segment_len_mm - min_pos,
-        buffer_bottom_mm + workpiece_height_mm + buffer_top_mm,
-    )
+    total_length_mm = max_pos + segment_len_mm - min_pos
+    
+    # Calculate workpiece height from total length and buffer lengths
+    # Formula: total_length = buffer_bottom + workpiece_height + buffer_top
+    workpiece_height_mm = total_length_mm - buffer_bottom_mm - buffer_top_mm
+    # Ensure non-negative
+    if workpiece_height_mm < 0:
+        print(f"[WARNING] Calculated workpiece_height ({workpiece_height_mm:.2f} mm) is negative, using default 20.0 mm")
+        workpiece_height_mm = 20.0
 
     wire_diameter_mm = 0.2
 
-    print(f"🔧 Using actual wire parameters:")
+    print(f"[INFO] Using actual wire parameters:")
     print(f"   Buffer bottom: {buffer_bottom_mm} mm")
     print(f"   Workpiece height: {workpiece_height_mm} mm")
     print(f"   Buffer top: {buffer_top_mm} mm")
@@ -393,7 +422,7 @@ def create_spark_animation(
     contact_bottom_pos_mm = buffer_bottom_mm - contact_offset_bottom
     contact_top_pos_mm = buffer_bottom_mm + workpiece_height_mm + contact_offset_top
 
-    print(f"🔌 Contact positions:")
+    print(f"[INFO] Contact positions:")
     print(f"   Bottom contact: {contact_bottom_pos_mm} mm")
     print(f"   Top contact: {contact_top_pos_mm} mm")
 
@@ -405,7 +434,7 @@ def create_spark_animation(
             10, (sim_duration_ms_data / n_timesteps_data) / playback_speed
         )
 
-    print(f"\n📽️  Animation data:")
+    print(f"\n[ANIMATION] Animation data:")
     print(f"   Total data timesteps: {n_timesteps_data}")
     print(f"   Wire segments: {n_segments}")
     print(f"   Simulation duration recorded: {sim_duration_ms_data:.1f} ms")
@@ -485,16 +514,19 @@ def create_spark_animation(
     rectangles = []
     initial_positions = pos_mm[animation_frame_indices[0], :]
     initial_temps = wire_temp_c[animation_frame_indices[0], :]
+    
+    # Add small overlap (5%) to segment height to prevent gaps between segments
+    segment_height_viz = segment_len_mm * 1.05
 
     for i in range(n_segments):
         y_start = initial_positions[i]
         rect = Rectangle(
             (-visual_thickness / 2, y_start),
             visual_thickness,
-            segment_len_mm,
+            segment_height_viz,
             facecolor=cmap(norm(initial_temps[i])),
-            edgecolor="black",
-            linewidth=0.5,
+            edgecolor="black" if show_edges else "none",
+            linewidth=0.5 if show_edges else 0,
         )
         ax_wire.add_patch(rect)
         rectangles.append(rect)
@@ -675,7 +707,7 @@ def create_spark_animation(
                 writer_name = "ffmpeg"
             else:
                 print(
-                    "⚠️ FFmpeg writer not available. Trying to save as GIF with Pillow instead."
+                    "[WARNING] FFmpeg writer not available. Trying to save as GIF with Pillow instead."
                 )
                 # Fallback to GIF if ffmpeg isn't there for MP4
                 output_filename = str(
@@ -698,7 +730,7 @@ def create_spark_animation(
         if writer_name:
             try:
                 print(
-                    f"💾 Saving animation to {output_filename} (FPS: {actual_save_fps:.1f}, Writer: {writer_name}, DPI: {save_dpi})..."
+                    f"[SAVING] Saving animation to {output_filename} (FPS: {actual_save_fps:.1f}, Writer: {writer_name}, DPI: {save_dpi})..."
                 )
                 ani.save(
                     output_filename,
@@ -706,9 +738,9 @@ def create_spark_animation(
                     fps=actual_save_fps,
                     dpi=save_dpi,
                 )
-                print("✅ Animation saved successfully!")
+                print("[OK] Animation saved successfully!")
             except Exception as e:
-                print(f"❌ Error saving animation with {writer_name}: {e}")
+                print(f"[ERROR] Error saving animation with {writer_name}: {e}")
                 print("Showing live preview instead (if possible)...")
                 plt.show()
         else:
@@ -786,6 +818,18 @@ def main():
         action="store_true",
         help="Print detailed progress during simulation",
     )
+    sim_group.add_argument(
+        "--workpiece-height",
+        type=float,
+        default=20.0,
+        help="Workpiece height in mm (default: 20.0)",
+    )
+    sim_group.add_argument(
+        "--n-segments",
+        type=int,
+        default=None,
+        help="Number of wire segments (default: auto-calculated based on segment length)",
+    )
 
     # Arguments for loading existing data
     load_group = parser.add_argument_group("Data Loading Parameters")
@@ -824,6 +868,11 @@ def main():
         type=int,
         default=20,
         help="Target FPS for the output video (default: 20 for GIF, 30 for MP4)",
+    )
+    anim_group.add_argument(
+        "--show-edges",
+        action="store_true",
+        help="Show edges/contours around thermal segments (default: False, edges hidden)",
     )
     parser.add_argument(
         "--data-only",
@@ -864,6 +913,8 @@ def main():
         env = initialize_single_spark_environment(
             plasma_efficiency=current_plasma_efficiency,
             wire_velocity_um_us=args.velocity,
+            workpiece_height_mm=args.workpiece_height,
+            n_segments=args.n_segments,
         )
         logger_config = setup_single_spark_logger(args.log_interval)
         # Use a unique name for the data file if running a new sim, based on output anim name
@@ -905,6 +956,7 @@ def main():
             playback_speed=args.playback_speed,
             target_video_duration_s=args.target_video_duration if args.save else None,
             target_video_fps=(effective_target_fps if args.save else 20),
+            show_edges=args.show_edges,
         )
     elif args.data_only:
         print("Simulation completed in data-only mode. No animation created.")

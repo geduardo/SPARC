@@ -21,7 +21,7 @@ from src.wedm.envs import WireEDMEnv
 from src.wedm.utils.logger import SimulationLogger, LoggerConfig
 
 
-def create_gap_controller(desired_gap: float = 5.0):  # µm
+def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7):  # µm
     """Create adaptive gap controller that works with both control modes."""
 
     def controller(env: WireEDMEnv) -> Dict[str, Any]:
@@ -44,8 +44,8 @@ def create_gap_controller(desired_gap: float = 5.0):  # µm
                 # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
                 # Other options: 5=I5(60A→1A), 9=I9(110A→3A), 17=I17(425A→11A), 19=I19(600A→17A)
                 "current_mode": np.array(
-                    [7], dtype=np.int32
-                ),  # I13 mode - good balance for general machining
+                    [current_mode], dtype=np.int32
+                ),
                 "ON_time": np.array([2.0], dtype=np.float32),
                 "OFF_time": np.array([33.0], dtype=np.float32),
             },
@@ -54,7 +54,7 @@ def create_gap_controller(desired_gap: float = 5.0):  # µm
     return controller
 
 
-def create_voltage_controller(target_voltage: float = 30.0):  # V
+def create_voltage_controller(target_voltage: float = 30.0, current_mode: int = 7):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
 
     # PI controller state
@@ -100,7 +100,7 @@ def create_voltage_controller(target_voltage: float = 30.0):  # V
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
                 "target_voltage": np.array([80.0], dtype=np.float32),
-                "current_mode": np.array([7], dtype=np.int32),
+                "current_mode": np.array([current_mode], dtype=np.int32),
                 "ON_time": np.array([2.0], dtype=np.float32),
                 "OFF_time": np.array([33.0], dtype=np.float32),
             },
@@ -136,6 +136,8 @@ def setup_logger(
         "dielectric_flow_rate",
         "is_short_circuit",
         "flow_rate",  # Dimensionless flow condition (0-1)
+        "spark_status",  # [status, location_mm, count] for visualization
+        "debris_density",  # For top view visualization
     ]
 
     # Add temperature signals based on strategy
@@ -204,9 +206,9 @@ def initialize_environment(
         from src.wedm.modules.wire import WireModule
 
         env.wire = WireModule(env, compute_zone_mean=True)
-        print(f"📊 Zone mean calculation: ENABLED (strategy: {log_strategy})")
+        print(f"[INFO] Zone mean calculation: ENABLED (strategy: {log_strategy})")
     else:
-        print(f"📊 Zone mean calculation: DISABLED (strategy: {log_strategy})")
+        print(f"[INFO] Zone mean calculation: DISABLED (strategy: {log_strategy})")
 
     # Set initial conditions
     env.state.workpiece_position = 70.0  # µm
@@ -229,17 +231,18 @@ def run_simulation(
     logger_config: LoggerConfig,
     controller_type: str = "gap",
     target_voltage: float = 30.0,
+    current_mode: int = 7,
 ) -> Tuple[Any, float, int]:
     """Run the core simulation loop."""
     print(
-        f"🔧 Running smoke test with {env.mechanics.control_mode.upper()} control mode"
+        f"[RUN] Running smoke test with {env.mechanics.control_mode.upper()} control mode"
     )
 
     if controller_type == "gap":
-        print(f"🎯 Using GAP controller (target: 5.0 µm)")
+        print(f"[CTRL] Using GAP controller (target: 5.0 µm)")
     else:
         print(
-            f"🎯 Using VOLTAGE controller (target: {target_voltage:.1f} V average over 1ms)"
+            f"[CTRL] Using VOLTAGE controller (target: {target_voltage:.1f} V average over 1ms)"
         )
 
     logger = SimulationLogger(config=logger_config, env_reference=env)
@@ -247,9 +250,9 @@ def run_simulation(
 
     # Create the appropriate controller
     if controller_type == "gap":
-        controller = create_gap_controller()
+        controller = create_gap_controller(current_mode=current_mode)
     else:  # voltage
-        controller = create_voltage_controller(target_voltage)
+        controller = create_voltage_controller(target_voltage, current_mode=current_mode)
 
     # For voltage controller, maintain voltage history over last 1ms
     voltage_history = []
@@ -262,7 +265,7 @@ def run_simulation(
     )
 
     # Print simulation start message
-    print(f"🚀 Starting simulation for {max_steps:,} µs...")
+    print(f"[START] Starting simulation for {max_steps:,} µs...")
     start_time = time.time()
 
     for step in range(max_steps):
@@ -306,13 +309,13 @@ def run_simulation(
         # Check termination
         if terminated or truncated:
             reason = get_termination_reason(info, terminated, truncated)
-            print(f"\n💥 Terminated at t={env.state.time} µs ({reason}).")
+            print(f"\n[TERM] Terminated at t={env.state.time} µs ({reason}).")
             break
 
     wall_time = time.time() - start_time
 
     # Print simulation completion message
-    print(f"✅ Simulation completed! Took {wall_time:.2f} seconds")
+    print(f"[OK] Simulation completed! Took {wall_time:.2f} seconds")
 
     logger.finalize()
     log_data = logger.get_data()
@@ -400,7 +403,7 @@ def print_performance_summary(sim_time_us: int, wall_time: float) -> None:
         speed_factor = sim_time_us / wall_time / 1e6  # sim_seconds / real_seconds
         print(
             f"Simulated {sim_time_us:,} µs ({sim_time_us / 1e3:.2f} ms) "
-            f"in {wall_time:.2f} s → {speed_factor:.1f}× realtime."
+            f"in {wall_time:.2f} s -> {speed_factor:.1f}x realtime."
         )
 
         sim_time_s = sim_time_us / 1_000_000.0
@@ -552,7 +555,7 @@ def plot_simulation_results(data: Any, control_mode: str) -> None:
         )
     elif "wire_temperature" in data:
         # Compute average temperature from full field if needed
-        print("📊 Computing zone mean temperature from full temperature field...")
+        print("[INFO] Computing zone mean temperature from full temperature field...")
         # This would require accessing the wire module to get zone boundaries
         # For now, just skip or compute simple mean
         temp_celsius = np.array([np.mean(T) for T in data["wire_temperature"]]) - 273.15
@@ -835,11 +838,11 @@ def main():
                 f"\n📈 Average wire speed (last 100ms): {avg_velocity_mm_min:.2f} mm/min ({avg_velocity_um_s:.1f} µm/s)"
             )
         else:
-            print(f"\n📈 Insufficient data for last 100ms speed calculation")
+            print(f"\n[INFO] Insufficient data for last 100ms speed calculation")
 
     # Plotting
     if args.plot:
-        print(f"\n📊 Starting plotting phase...")
+        print(f"\n[INFO] Starting plotting phase...")
         if data is None:  # Load data again if not already loaded
             data = load_simulation_data(log_data, logger_config)
         if data is not None:
