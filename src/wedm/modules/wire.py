@@ -32,7 +32,7 @@ class WireModuleParameters:
     # ── Heat Transfer Parameters ──
     base_convection_coefficient: float = 14000  # [W/m²·K] Base convection coefficient
     plasma_efficiency: float = (
-        0.1  # [dimensionless] Fraction of electrical power converted to heat in plasma
+        0.25  # [dimensionless] Fraction of electrical power converted to heat in plasma
     )
     convection_velocity_factor: float = (
         0.5  # [dimensionless] Factor for velocity enhancement of convection

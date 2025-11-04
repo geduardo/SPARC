@@ -42,22 +42,40 @@ def run_quickstart_sim(
     *,
     segments: int | None = None,
     segment_len_mm: float | None = None,
+    workpiece_height: float = 20.0,
+    current_mode: int = 7,
 ):
+    # Import necessary modules
+    from src.wedm.core.env_config import EnvironmentConfig
+
     # Determine environment and wire parameters
     if segment_len_mm is not None:
-        wire_params = WireModuleParameters(segment_len=float(segment_len_mm))
-        env = WireEDMEnv(mechanics_control_mode=control_mode, wire_params=wire_params)
+        wire_params = WireModuleParameters(
+            segment_len=float(segment_len_mm), moving_segments=True
+        )
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
+        # Override wire module with custom parameters
+        from src.wedm.modules.wire import WireModule
+
+        env.wire = WireModule(env, parameters=wire_params)
     elif segments is not None and segments > 0:
-        # Create a temp env to read total modeled length robustly
-        temp_env = WireEDMEnv(mechanics_control_mode=control_mode)
-        total_length_mm = temp_env.wire.total_L
-        # Compute segment length slightly below exact division to avoid flooring to N-1 due to FP
+        # Calculate segment length for desired number of segments
+        # Total wire length = buffer_bottom (30mm) + workpiece_height + buffer_top (30mm)
+        total_length_mm = 30.0 + workpiece_height + 30.0
+        # Compute segment length
         eps = 1e-9
         seg_len = max(1e-9, total_length_mm / float(segments) - eps)
-        wire_params = WireModuleParameters(segment_len=seg_len)
-        env = WireEDMEnv(mechanics_control_mode=control_mode, wire_params=wire_params)
+        wire_params = WireModuleParameters(segment_len=seg_len, moving_segments=True)
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
+        # Override wire module with custom parameters
+        from src.wedm.modules.wire import WireModule
+
+        env.wire = WireModule(env, parameters=wire_params)
     else:
-        env = WireEDMEnv(mechanics_control_mode=control_mode)
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
 
     # Set initial conditions (same as initialize_environment in run_simulation.py)
     env.state.workpiece_position = 20.0  # um
@@ -65,6 +83,9 @@ def run_quickstart_sim(
     env.state.target_position = 5_000.0  # um
     env.state.spark_status = [0, None, 0]
     env.state.dielectric_temperature = 293.15  # Room temperature in K
+
+    # Set current mode if specified
+    env.state.current_mode = f"I{current_mode}"
 
     # Initialize wire temperature array
     if len(env.state.wire_temperature) == 0:
@@ -541,6 +562,20 @@ def main():
         help="Segment length in mm (overrides --segments)",
     )
     sim_group.add_argument(
+        "--workpiece-height",
+        type=float,
+        default=100.0,
+        dest="workpiece_height",
+        help="Workpiece height in mm (default: 100.0)",
+    )
+    sim_group.add_argument(
+        "--current-mode",
+        type=int,
+        default=13,
+        dest="current_mode",
+        help="Current mode setting (default: 13 for I13)",
+    )
+    sim_group.add_argument(
         "--verbose", action="store_true", help="Verbose simulation logs"
     )
 
@@ -606,6 +641,8 @@ def main():
             verbose=args.verbose,
             segments=args.segments,
             segment_len_mm=args.segment_len,
+            workpiece_height=args.workpiece_height,
+            current_mode=args.current_mode,
         )
 
     if args.export_csv:
