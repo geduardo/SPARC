@@ -326,7 +326,30 @@
                 </div>
             </div>
 
-            <!-- Panel 2: Oscilloscope -->
+            <!-- Panel 2: Thermal Profile -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Wire Thermal Profile</span>
+                    <span class="panel-info" id="thermalInfo">Temperature Distribution</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="thermalCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Panel 3: Top View -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Top View</span>
+                    <button id="toggleTopViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
+                    <span class="panel-info" id="topViewInfo">Debris Concentration</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="topViewCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Panel 4: Oscilloscope -->
             <div class="panel oscilloscope-panel">
                 <div class="panel-header" style="background: #3a3a3a; border-bottom: 2px solid #555;">
                     <span class="panel-title" style="color: #e0e0e0;">Virtual Oscilloscope</span>
@@ -408,29 +431,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Panel 3: Top View -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Top View</span>
-                    <button id="toggleTopViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
-                    <span class="panel-info" id="topViewInfo">Debris Concentration</span>
-                </div>
-                <div class="canvas-container">
-                    <canvas id="topViewCanvas"></canvas>
-                </div>
-            </div>
-
-            <!-- Panel 4: Thermal Profile -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Wire Thermal Profile</span>
-                    <span class="panel-info" id="thermalInfo">Temperature Distribution</span>
-                </div>
-                <div class="canvas-container">
-                    <canvas id="thermalCanvas"></canvas>
                 </div>
             </div>
         </div>

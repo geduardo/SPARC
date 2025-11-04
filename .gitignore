@@ -74,3 +74,7 @@ quickstart_data_20251003_162653.json
 quickstart_data_*.json
 
 MIGRATION_MOVING_SEGMENTS.md
+
+*.gif
+*.png
+

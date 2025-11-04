@@ -1062,12 +1062,12 @@ class SideViewPanel extends BasePanel {
         const sparkEndX = wireRightEdge + (sparkLengthMM * scale);
 
         // Vertical position from spark_status[1] (y position on wire in mm)
-        // spark_location ranges from 0 (bottom) to workpiece_height (top) in mm
+        // sparkLocationMM: 0 = top of workpiece, increases downward
         // Canvas: +y is down, -y is up
-        // Map: 0 → +workpieceHalfThickness (bottom), workpiece_height → -workpieceHalfThickness (top)
+        // Map: 0 (top) → -workpieceHalfThickness, workpiece_height (bottom) → +workpieceHalfThickness
         const thicknessMM = this.workpieceThickness; // in mm
         const workpieceHalfThickness = thicknessMM / 2;
-        const sparkY = (workpieceHalfThickness - sparkLocationMM) * scale;
+        const sparkY = (sparkLocationMM - workpieceHalfThickness) * scale;
 
         // Spark appearance with decay
         const brightness = decayFactor; // 1.0 when new, fades to 0
@@ -2392,27 +2392,508 @@ class TopViewPanel extends BasePanel {
 // ============================================================================
 
 class ThermalProfilePanel extends BasePanel {
+    constructor(canvasId) {
+        super(canvasId);
+
+        // Configuration for workpiece dimensions (will be updated from data if available)
+        this.bufferBottomMM = 30.0;
+        this.bufferTopMM = 30.0;
+        this.workpieceHeightMM = 100.0;
+        this.contactOffsetBottom = 10.0;
+        this.contactOffsetTop = 10.0;
+        this.wireDiameter = 0.2; // mm
+
+        // Visualization settings
+        this.showEdges = false; // Show edges around segments
+        this.tempMinC = 20;
+        this.tempMaxC = 500;
+
+        // Color map cache
+        this.colorMapCache = new Map();
+
+        // Camera controls for vertical zoom/pan
+        this.cameraY = 0; // Center position in mm (will be set to workpiece center)
+        this.zoomY = 1.0; // Zoom factor for Y-axis (1.0 = show workpiece + 5mm buffers)
+        this.isDragging = false;
+        this.lastMouseY = 0;
+    }
+
+    init() {
+        super.init();
+
+        // Set initial camera to workpiece center
+        this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
+
+        // Add mouse event listeners for pan and zoom
+        this.canvas.addEventListener('wheel', (e) => this.handleWheel(e));
+        this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
+        this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+        this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
+        this.canvas.addEventListener('mouseleave', (e) => this.handleMouseUp(e));
+        this.canvas.addEventListener('dblclick', (e) => this.handleDoubleClick(e));
+    }
+
+    handleWheel(e) {
+        e.preventDefault();
+
+        const zoomSpeed = 0.1;
+        const zoomFactor = e.deltaY > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
+
+        // Limit zoom range
+        const newZoom = Math.max(0.1, Math.min(5.0, this.zoomY * zoomFactor));
+        this.zoomY = newZoom;
+
+        if (this.controller) {
+            this.controller.drawFrame(this.controller.currentFrame);
+        }
+    }
+
+    handleMouseDown(e) {
+        this.isDragging = true;
+        this.lastMouseY = e.offsetY;
+    }
+
+    handleMouseMove(e) {
+        if (!this.isDragging) return;
+
+        const deltaY = e.offsetY - this.lastMouseY;
+        this.lastMouseY = e.offsetY;
+
+        // Convert pixel delta to mm (approximate based on current zoom)
+        const h = this.canvas.height / window.devicePixelRatio;
+        const visibleHeightMM = (this.workpieceHeightMM + 10) * this.zoomY;
+        const mmPerPixel = visibleHeightMM / h;
+
+        this.cameraY -= deltaY * mmPerPixel;
+
+        if (this.controller) {
+            this.controller.drawFrame(this.controller.currentFrame);
+        }
+    }
+
+    handleMouseUp() {
+        this.isDragging = false;
+    }
+
+    handleDoubleClick() {
+        // Reset camera to default
+        this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
+        this.zoomY = 1.0;
+
+        if (this.controller) {
+            this.controller.drawFrame(this.controller.currentFrame);
+        }
+    }
+
+    setData(data) {
+        super.setData(data);
+
+        // Extract workpiece dimensions from metadata if available
+        if (data && data.metadata) {
+            if (data.metadata.workpiece_height !== undefined) {
+                this.workpieceHeightMM = data.metadata.workpiece_height;
+            }
+            if (data.metadata.buffer_len_bottom !== undefined) {
+                this.bufferBottomMM = data.metadata.buffer_len_bottom;
+            }
+            if (data.metadata.buffer_len_top !== undefined) {
+                this.bufferTopMM = data.metadata.buffer_len_top;
+            }
+            if (data.metadata.contact_offset_bottom !== undefined) {
+                this.contactOffsetBottom = data.metadata.contact_offset_bottom;
+            }
+            if (data.metadata.contact_offset_top !== undefined) {
+                this.contactOffsetTop = data.metadata.contact_offset_top;
+            }
+        }
+
+        // Recenter camera to workpiece center after loading new data
+        this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
+        this.zoomY = 1.0;
+    }
+
+    /**
+     * Get color from hot colormap for temperature value
+     */
+    getHotColor(tempC, minC, maxC) {
+        // Normalize temperature to [0, 1]
+        const normalized = Math.max(0, Math.min(1, (tempC - minC) / (maxC - minC)));
+
+        // Check cache
+        const cacheKey = normalized.toFixed(4);
+        if (this.colorMapCache.has(cacheKey)) {
+            return this.colorMapCache.get(cacheKey);
+        }
+
+        // Hot colormap approximation (black -> red -> orange -> yellow -> white)
+        let r, g, b;
+
+        if (normalized < 0.33) {
+            // Black to red
+            const t = normalized / 0.33;
+            r = Math.floor(255 * t);
+            g = 0;
+            b = 0;
+        } else if (normalized < 0.66) {
+            // Red to yellow
+            const t = (normalized - 0.33) / 0.33;
+            r = 255;
+            g = Math.floor(255 * t);
+            b = 0;
+        } else {
+            // Yellow to white
+            const t = (normalized - 0.66) / 0.34;
+            r = 255;
+            g = 255;
+            b = Math.floor(255 * t);
+        }
+
+        const color = `rgb(${r}, ${g}, ${b})`;
+        this.colorMapCache.set(cacheKey, color);
+        return color;
+    }
+
     draw(frameData, frameIndex) {
         this.clear();
 
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
 
-        this.ctx.fillStyle = '#fbf1c7';
+        // Background
+        this.ctx.fillStyle = '#f9f5d7';
         this.ctx.fillRect(0, 0, w, h);
 
-        // Draw placeholder
-        this.drawText('Thermal Profile', w/2, h/2, {
-            color: '#9d0006',
-            font: 'bold 16px sans-serif',
-            align: 'center',
-            baseline: 'middle'
+        // Check if we have wire temperature and position data
+        if (!frameData || !frameData.wire_temperature || !frameData.wire_material_positions_mm) {
+            // Draw placeholder message
+            this.drawText('Lagrangian Wire Thermal Profile', w/2, h/2 - 20, {
+                color: '#7c6f64',
+                font: 'bold 16px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            this.drawText('No wire temperature data available', w/2, h/2 + 10, {
+                color: '#9d0006',
+                font: '14px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            this.drawText('Ensure log_strategy="full_field" when running simulation', w/2, h/2 + 35, {
+                color: '#7c6f64',
+                font: '12px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
+        }
+
+        const wireTemperatures = frameData.wire_temperature; // Array of temperatures in K
+        const wirePositions = frameData.wire_material_positions_mm; // Array of positions in mm
+        const nSegments = wireTemperatures.length;
+
+        if (nSegments === 0) {
+            this.drawText('No wire segments', w/2, h/2, {
+                color: '#9d0006',
+                font: '14px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
+        }
+
+        // Calculate segment length from position differences
+        let segmentLenMM = 0.2; // Default fallback
+        if (nSegments > 1) {
+            const sortedPos = [...wirePositions].sort((a, b) => a - b);
+            const diffs = [];
+            for (let i = 1; i < sortedPos.length; i++) {
+                const diff = sortedPos[i] - sortedPos[i-1];
+                if (diff > 1e-6) {
+                    diffs.push(diff);
+                }
+            }
+            if (diffs.length > 0) {
+                // Use median to handle edge cases
+                diffs.sort((a, b) => a - b);
+                segmentLenMM = diffs[Math.floor(diffs.length / 2)];
+            }
+        }
+
+        // Define margins and plotting area
+        const marginLeft = 80;
+        const marginRight = 100; // Extra space for colorbar
+        const marginTop = 40;
+        const marginBottom = 40;
+        const plotWidth = w - marginLeft - marginRight;
+        const plotHeight = h - marginTop - marginBottom;
+
+        // Define visible range using camera position and zoom
+        const baseVisibleHeightMM = this.workpieceHeightMM + 10; // Workpiece + 5mm buffers on each side
+        const visibleHeightMM = baseVisibleHeightMM * this.zoomY;
+        let visibleMinPos = this.cameraY - visibleHeightMM / 2;
+        let visibleMaxPos = this.cameraY + visibleHeightMM / 2;
+
+        // Y-axis: position along wire (inverted so wire unwinds from top to bottom)
+        const yScale = plotHeight / (visibleMaxPos - visibleMinPos);
+        const posToY = (posMM) => {
+            return marginTop + (posMM - visibleMinPos) * yScale;
+        };
+
+        // Calculate temperature range - FIXED at 20-500°C
+        const tempsC = wireTemperatures.map(t => t - 273.15);
+        this.tempMinC = 20;  // Fixed minimum
+        this.tempMaxC = 500; // Fixed maximum
+
+        // Draw wire thermal field visualization (left side)
+        const wireVisWidth = plotWidth * 0.35; // 35% for wire visualization
+        const wireVisCenterX = marginLeft + wireVisWidth / 2;
+        const visualThickness = this.wireDiameter * 25 * yScale; // Make wire 5x thicker (was 5, now 25)
+
+        // Add overlap to segment height to prevent gaps (5% overlap + extra pixel)
+        const segmentHeightViz = segmentLenMM * yScale * 1.05;
+
+        // Draw wire segments as colored rectangles
+        // Use Math.floor/ceil to prevent subpixel rendering gaps
+        for (let i = 0; i < nSegments; i++) {
+            const pos = wirePositions[i];
+            const tempC = tempsC[i];
+            const y = posToY(pos);
+
+            // Get color from hot colormap
+            const color = this.getHotColor(tempC, this.tempMinC, this.tempMaxC);
+
+            this.ctx.fillStyle = color;
+
+            // Round coordinates and add +2 pixels to height to ensure no gaps
+            const x = wireVisCenterX - visualThickness / 2;
+            const rectHeight = Math.ceil(segmentHeightViz) + 2;
+
+            this.ctx.fillRect(
+                Math.floor(x),
+                Math.floor(y),
+                Math.ceil(visualThickness),
+                rectHeight
+            );
+
+            // Draw edges if enabled
+            if (this.showEdges) {
+                this.ctx.strokeStyle = 'black';
+                this.ctx.lineWidth = 0.5;
+                this.ctx.strokeRect(
+                    Math.floor(x),
+                    Math.floor(y),
+                    Math.ceil(visualThickness),
+                    rectHeight
+                );
+            }
+        }
+
+        // Draw workpiece boundaries
+        const workpieceBottomY = posToY(this.bufferBottomMM);
+        const workpieceTopY = posToY(this.bufferBottomMM + this.workpieceHeightMM);
+
+        this.ctx.strokeStyle = '#7c6f64';
+        this.ctx.lineWidth = 2;
+        this.ctx.setLineDash([5, 5]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(marginLeft, workpieceBottomY);
+        this.ctx.lineTo(marginLeft + wireVisWidth, workpieceBottomY);
+        this.ctx.stroke();
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(marginLeft, workpieceTopY);
+        this.ctx.lineTo(marginLeft + wireVisWidth, workpieceTopY);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+
+        // Draw contact lines
+        const contactBottomPosMM = this.bufferBottomMM - this.contactOffsetBottom;
+        const contactTopPosMM = this.bufferBottomMM + this.workpieceHeightMM + this.contactOffsetTop;
+        const contactBottomY = posToY(contactBottomPosMM);
+        const contactTopY = posToY(contactTopPosMM);
+
+        this.ctx.strokeStyle = '#7c6f64';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.setLineDash([2, 4]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(marginLeft, contactBottomY);
+        this.ctx.lineTo(marginLeft + wireVisWidth, contactBottomY);
+        this.ctx.stroke();
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(marginLeft, contactTopY);
+        this.ctx.lineTo(marginLeft + wireVisWidth, contactTopY);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+
+        // Draw temperature profile line (right side)
+        const profileX = marginLeft + wireVisWidth + 40;
+        const profileWidth = plotWidth - wireVisWidth - 40;
+
+        // X-axis: temperature
+        const tempScale = profileWidth / (this.tempMaxC - this.tempMinC);
+        const tempToX = (tempC) => {
+            return profileX + (tempC - this.tempMinC) * tempScale;
+        };
+
+        // Draw shaded workpiece region
+        this.ctx.fillStyle = 'rgba(124, 111, 100, 0.15)';
+        this.ctx.fillRect(profileX, workpieceTopY, profileWidth, workpieceBottomY - workpieceTopY);
+
+        // Sort positions and temperatures for line plot
+        const sortedIndices = [...Array(nSegments).keys()].sort((a, b) =>
+            wirePositions[a] - wirePositions[b]
+        );
+        const sortedPositions = sortedIndices.map(i => wirePositions[i]);
+        const sortedTemps = sortedIndices.map(i => tempsC[i]);
+
+        // Draw temperature profile line
+        this.ctx.strokeStyle = '#d65d0e';
+        this.ctx.lineWidth = 2.5;
+        this.ctx.beginPath();
+        for (let i = 0; i < sortedPositions.length; i++) {
+            const x = tempToX(sortedTemps[i]);
+            const y = posToY(sortedPositions[i]);
+            if (i === 0) {
+                this.ctx.moveTo(x, y);
+            } else {
+                this.ctx.lineTo(x, y);
+            }
+        }
+        this.ctx.stroke();
+
+        // Draw axes and labels
+        // Y-axis (position)
+        this.ctx.strokeStyle = '#3c3836';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(profileX, marginTop);
+        this.ctx.lineTo(profileX, h - marginBottom);
+        this.ctx.stroke();
+
+        // X-axis (temperature)
+        this.ctx.beginPath();
+        this.ctx.moveTo(profileX, h - marginBottom);
+        this.ctx.lineTo(w - marginRight, h - marginBottom);
+        this.ctx.stroke();
+
+        // Y-axis ticks and labels
+        const numYTicks = 6;
+        for (let i = 0; i <= numYTicks; i++) {
+            const posMM = visibleMinPos + (i / numYTicks) * (visibleMaxPos - visibleMinPos);
+            const y = posToY(posMM);
+
+            // Tick
+            this.ctx.beginPath();
+            this.ctx.moveTo(profileX - 5, y);
+            this.ctx.lineTo(profileX, y);
+            this.ctx.stroke();
+
+            // Label
+            this.drawText(posMM.toFixed(1), profileX - 10, y, {
+                color: '#3c3836',
+                font: '11px sans-serif',
+                align: 'right',
+                baseline: 'middle'
+            });
+        }
+
+        // X-axis ticks and labels (temperature)
+        const numXTicks = 5;
+        for (let i = 0; i <= numXTicks; i++) {
+            const tempC = this.tempMinC + (i / numXTicks) * (this.tempMaxC - this.tempMinC);
+            const x = tempToX(tempC);
+
+            // Tick
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, h - marginBottom);
+            this.ctx.lineTo(x, h - marginBottom + 5);
+            this.ctx.stroke();
+
+            // Label
+            this.drawText(tempC.toFixed(0), x, h - marginBottom + 10, {
+                color: '#3c3836',
+                font: '11px sans-serif',
+                align: 'center',
+                baseline: 'top'
+            });
+        }
+
+        // Axis labels
+        this.drawText('Position (mm)', marginLeft - 10, marginTop - 15, {
+            color: '#3c3836',
+            font: 'bold 12px sans-serif',
+            align: 'left'
         });
 
-        if (frameData && frameData.wire_average_temperature !== undefined) {
-            const tempC = frameData.wire_average_temperature - 273.15;
-            this.drawText(`Avg Temp: ${tempC.toFixed(1)}°C`, 10, 10, { color: '#9d0006' });
+        this.drawText('Temperature (°C)', profileX + profileWidth / 2, h - marginBottom + 30, {
+            color: '#3c3836',
+            font: 'bold 12px sans-serif',
+            align: 'center'
+        });
+
+        // Draw colorbar
+        const colorbarX = w - marginRight + 20;
+        const colorbarWidth = 20;
+        const colorbarHeight = plotHeight;
+        const colorbarY = marginTop;
+
+        // Draw colorbar gradient
+        const numColorSteps = 50;
+        for (let i = 0; i < numColorSteps; i++) {
+            const tempC = this.tempMinC + (i / numColorSteps) * (this.tempMaxC - this.tempMinC);
+            const color = this.getHotColor(tempC, this.tempMinC, this.tempMaxC);
+            const y = colorbarY + colorbarHeight - (i / numColorSteps) * colorbarHeight;
+            const stepHeight = colorbarHeight / numColorSteps;
+
+            this.ctx.fillStyle = color;
+            this.ctx.fillRect(colorbarX, y, colorbarWidth, stepHeight + 1);
         }
+
+        // Colorbar border
+        this.ctx.strokeStyle = '#3c3836';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
+
+        // Colorbar labels
+        const numColorbarTicks = 5;
+        for (let i = 0; i <= numColorbarTicks; i++) {
+            const tempC = this.tempMinC + (i / numColorbarTicks) * (this.tempMaxC - this.tempMinC);
+            const y = colorbarY + colorbarHeight - (i / numColorbarTicks) * colorbarHeight;
+
+            // Tick
+            this.ctx.beginPath();
+            this.ctx.moveTo(colorbarX + colorbarWidth, y);
+            this.ctx.lineTo(colorbarX + colorbarWidth + 5, y);
+            this.ctx.stroke();
+
+            // Label
+            this.drawText(tempC.toFixed(0) + '°C', colorbarX + colorbarWidth + 10, y, {
+                color: '#3c3836',
+                font: '10px sans-serif',
+                align: 'left',
+                baseline: 'middle'
+            });
+        }
+
+        // Title and stats
+        this.drawText('Wire Thermal Profile (Lagrangian)', w/2, 15, {
+            color: '#427b58',
+            font: 'bold 14px sans-serif',
+            align: 'center',
+            baseline: 'top'
+        });
+
+        // Stats
+        const avgTempC = tempsC.reduce((a, b) => a + b, 0) / tempsC.length;
+        const actualMaxTempC = Math.max(...tempsC);
+        const statsText = `Segments: ${nSegments} | Avg: ${avgTempC.toFixed(1)}°C | Max: ${actualMaxTempC.toFixed(1)}°C`;
+        this.drawText(statsText, 10, h - 10, {
+            color: '#7c6f64',
+            font: '11px monospace',
+            align: 'left',
+            baseline: 'bottom'
+        });
     }
 }
 

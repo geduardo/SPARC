@@ -53,7 +53,7 @@ def create_voltage_controller(target_voltage: float = 47.0):
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
                 "target_voltage": np.array([80.0], dtype=np.float32),
-                "current_mode": np.array([9], dtype=np.int32),
+                "current_mode": np.array([13], dtype=np.int32),
                 "ON_time": np.array([2.0], dtype=np.float32),
                 "OFF_time": np.array([33.0], dtype=np.float32),
             },
@@ -200,7 +200,7 @@ def main():
         moving_segments=True,
     )
 
-    config = EnvironmentConfig(workpiece_height=100.0)
+    config = EnvironmentConfig(workpiece_height=10.0)
     env = WireEDMEnv(config=config)
 
     # Override wire module with custom parameters
@@ -216,7 +216,7 @@ def main():
     print("Wire breaking disabled for temperature tracking.")
 
     # Initialize controller
-    target_voltage = 30.0
+    target_voltage = 40.0
     controller = create_voltage_controller(target_voltage)
 
     # Voltage history tracking

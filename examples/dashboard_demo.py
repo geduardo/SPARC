@@ -34,18 +34,19 @@ def main():
     logger_config: LoggerConfig = {
         "signals_to_log": [
             # Essential signals for all panels
-            "time",                         # Timeline
-            "voltage",                      # Oscilloscope
-            "current",                      # Oscilloscope
-            "wire_position",                # Side view
-            "workpiece_position",           # Side view
-            "spark_status",                 # Side view & top view
-            "debris_density",               # Top view
-            "wire_temperature",             # Thermal profile
-            "wire_average_temperature",     # Thermal profile (scalar)
-            "dielectric_conductivity",      # Additional info
-            "is_short_circuit",             # Status info
-            "is_wire_broken",               # Status info
+            "time",                             # Timeline
+            "voltage",                          # Oscilloscope
+            "current",                          # Oscilloscope
+            "wire_position",                    # Side view
+            "workpiece_position",               # Side view
+            "spark_status",                     # Side view & top view
+            "debris_density",                   # Top view
+            "wire_temperature",                 # Thermal profile (full array)
+            "wire_material_positions_mm",       # Thermal profile (Lagrangian positions)
+            "wire_average_temperature",         # Thermal profile (scalar)
+            "dielectric_conductivity",          # Additional info
+            "is_short_circuit",                 # Status info
+            "is_wire_broken",                   # Status info
         ],
         "log_frequency": {"type": "interval", "value": 50},  # Log every 50 µs
         "backend": {
@@ -117,6 +118,10 @@ def main():
             'initial_gap': config.initial_gap,
             'workpiece_height': config.workpiece_height,
             'target_cutting_distance': config.target_cutting_distance,
+            'buffer_len_bottom': getattr(env.wire.parameters, 'buffer_len_bottom', 30.0),
+            'buffer_len_top': getattr(env.wire.parameters, 'buffer_len_top', 30.0),
+            'contact_offset_bottom': getattr(env.wire.parameters, 'contact_offset_bottom', 10.0),
+            'contact_offset_top': getattr(env.wire.parameters, 'contact_offset_top', 10.0),
         }
 
         # Save back
