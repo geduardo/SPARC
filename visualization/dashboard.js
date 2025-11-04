@@ -2,6 +2,237 @@
 // SPARC Visualization Dashboard - Main Controller
 // ============================================================================
 
+// ----------- Binary Pack Loader (ZIP STORED of .npy files) -----------
+// Minimal ZIP reader (STORED entries only) + NPY parser to produce typed arrays
+
+function decodeUTF8(u8) {
+    try {
+        return new TextDecoder('utf-8').decode(u8);
+    } catch {
+        // Fallback (very rare)
+        let s = '';
+        for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+        return decodeURIComponent(escape(s));
+    }
+}
+
+function parseZipStored(arrayBuffer) {
+    const u8 = new Uint8Array(arrayBuffer);
+    const dv = new DataView(arrayBuffer);
+
+    // Find End of Central Directory (EOCD) by scanning last 64KB
+    const EOCD_SIG = 0x06054b50;
+    const maxScan = Math.min(u8.length, 0xFFFF + 22);
+    let eocdOffset = -1;
+    for (let i = u8.length - 22; i >= u8.length - maxScan; i--) {
+        if (dv.getUint32(i, true) === EOCD_SIG) {
+            eocdOffset = i;
+            break;
+        }
+    }
+    if (eocdOffset < 0) throw new Error('Invalid ZIP: EOCD not found');
+
+    const cdSize = dv.getUint32(eocdOffset + 12, true);
+    const cdOffset = dv.getUint32(eocdOffset + 16, true);
+
+    // Parse central directory
+    const CEN_SIG = 0x02014b50;
+    const entries = {};
+    let ptr = cdOffset;
+    const end = cdOffset + cdSize;
+    while (ptr < end) {
+        const sig = dv.getUint32(ptr, true);
+        if (sig !== CEN_SIG) throw new Error('Invalid ZIP: central directory signature mismatch');
+        const compress = dv.getUint16(ptr + 10, true);
+        const compSize = dv.getUint32(ptr + 20, true);
+        const uncompSize = dv.getUint32(ptr + 24, true);
+        const nameLen = dv.getUint16(ptr + 28, true);
+        const extraLen = dv.getUint16(ptr + 30, true);
+        const commentLen = dv.getUint16(ptr + 32, true);
+        const localHeaderOffset = dv.getUint32(ptr + 42, true);
+        const nameBytes = u8.subarray(ptr + 46, ptr + 46 + nameLen);
+        const name = decodeUTF8(nameBytes);
+        // Move to next entry
+        ptr = ptr + 46 + nameLen + extraLen + commentLen;
+
+        // Read local header to find data offset
+        const LOC_SIG = 0x04034b50;
+        if (dv.getUint32(localHeaderOffset, true) !== LOC_SIG) throw new Error('Invalid ZIP: local header signature mismatch');
+        const locNameLen = dv.getUint16(localHeaderOffset + 26, true);
+        const locExtraLen = dv.getUint16(localHeaderOffset + 28, true);
+        const dataOffset = localHeaderOffset + 30 + locNameLen + locExtraLen;
+
+        entries[name] = {
+            compression: compress,
+            compressedSize: compSize,
+            uncompressedSize: uncompSize,
+            dataOffset,
+        };
+    }
+
+    // Only support STORED entries (no compression)
+    for (const k in entries) {
+        if (entries[k].compression !== 0) {
+            throw new Error('Compressed ZIP entries are not supported in this viewer. Please export with uncompressed pack.');
+        }
+    }
+
+    return {
+        getFile(name) {
+            const e = entries[name];
+            if (!e) return null;
+            return new Uint8Array(arrayBuffer, e.dataOffset, e.uncompressedSize);
+        },
+        list() {
+            return Object.keys(entries);
+        }
+    };
+}
+
+function parseNPY(u8) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    // Magic: '\x93NUMPY'
+    if (!(u8[0] === 0x93 && u8[1] === 0x4e && u8[2] === 0x55 && u8[3] === 0x4d && u8[4] === 0x50 && u8[5] === 0x59)) {
+        throw new Error('Invalid NPY: bad magic');
+    }
+    const major = u8[6];
+    const minor = u8[7];
+    let headerLen, headerStart;
+    if (major === 1) {
+        headerLen = dv.getUint16(8, true); headerStart = 10;
+    } else {
+        headerLen = dv.getUint32(8, true); headerStart = 12;
+    }
+    const headerTxt = new TextDecoder('ascii').decode(u8.subarray(headerStart, headerStart + headerLen));
+    // Parse minimal dict: descr, fortran_order, shape
+    const descrMatch = headerTxt.match(/'descr'\s*:\s*'([^']+)'/);
+    const shapeMatch = headerTxt.match(/'shape'\s*:\s*\(([^\)]*)\)/);
+    const fortranMatch = headerTxt.match(/'fortran_order'\s*:\s*(True|False)/);
+    if (!descrMatch || !shapeMatch || !fortranMatch) throw new Error('Invalid NPY header');
+    const descr = descrMatch[1];
+    const fortran = fortranMatch[1] === 'True';
+    const shapeParts = shapeMatch[1].split(',').map(s => s.trim()).filter(Boolean).map(s => parseInt(s, 10));
+    const shape = shapeParts.length ? shapeParts : [parseInt(shapeMatch[1], 10)];
+    const dataOffset = headerStart + headerLen;
+
+    const ctor = dtypeToTypedArrayConstructor(descr);
+    const numel = shape.reduce((a,b)=> a*b, 1);
+    const byteLen = numel * ctor.BYTES_PER_ELEMENT;
+    const elementSize = ctor.BYTES_PER_ELEMENT;
+    const actualOffset = u8.byteOffset + dataOffset;
+    
+    // Check if offset is aligned to element size (required for typed arrays)
+    const needsCopy = (actualOffset % elementSize) !== 0;
+    
+    let dataView;
+    if (needsCopy || fortran) {
+        // Copy to aligned buffer (required for alignment or Fortran-order conversion)
+        const alignedData = new Uint8Array(byteLen);
+        alignedData.set(u8.subarray(dataOffset, dataOffset + byteLen));
+        dataView = new ctor(alignedData.buffer, alignedData.byteOffset, numel);
+        
+        if (fortran && shape.length > 1) {
+            // Convert Fortran-order to C-order copy
+            const cpy = new ctor(numel);
+            // Only handle 2D efficiently (our use-case)
+            if (shape.length === 2) {
+                const R = shape[0], C = shape[1];
+                let idx = 0;
+                for (let r = 0; r < R; r++) {
+                    for (let c = 0; c < C; c++) {
+                        cpy[idx++] = dataView[c * R + r];
+                    }
+                }
+            } else {
+                // Generic (slower) fallback
+                for (let i = 0; i < numel; i++) cpy[i] = dataView[i];
+            }
+            return { data: cpy, shape, dtype: descr };
+        }
+        return { data: dataView, shape, dtype: descr };
+    } else {
+        // Offset is aligned, can use view directly
+        dataView = new ctor(u8.buffer, actualOffset, numel);
+        return { data: dataView, shape, dtype: descr };
+    }
+}
+
+function dtypeToTypedArrayConstructor(descr) {
+    // Endianness is little ('<') in our files
+    if (descr.endsWith('f8') || descr.endsWith('f64')) return Float64Array;
+    if (descr.endsWith('f4') || descr.endsWith('f32')) return Float32Array;
+    if (descr.endsWith('i1')) return Int8Array;
+    if (descr.endsWith('u1')) return Uint8Array;
+    if (descr.endsWith('i2')) return Int16Array;
+    if (descr.endsWith('u2')) return Uint16Array;
+    if (descr.endsWith('i4')) return Int32Array;
+    if (descr.endsWith('u4')) return Uint32Array;
+    // 64-bit ints: use BigInt arrays if needed; most series fit in Number range
+    if (descr.endsWith('i8')) return BigInt64Array;
+    if (descr.endsWith('u8')) return BigUint64Array;
+    // Fallback
+    return Float64Array;
+}
+
+async function loadSparcPack(file) {
+    const ab = await file.arrayBuffer();
+    const zip = parseZipStored(ab);
+    const names = zip.list();
+    const out = {};
+
+    // Metadata
+    const headerBytes = zip.getFile('header.json');
+    if (headerBytes) {
+        const header = JSON.parse(decodeUTF8(headerBytes));
+        // Extract metadata from header object
+        if (header.metadata) {
+            out.metadata = header.metadata;
+        }
+    }
+
+    for (const name of names) {
+        if (!name.endsWith('.npy')) continue;
+        const base = name.replace(/\.npy$/, '');
+        const u8 = zip.getFile(name);
+        const parsed = parseNPY(u8);
+        if (Array.isArray(parsed.shape) && parsed.shape.length > 1) {
+            out[base] = { data: parsed.data, shape: parsed.shape, dtype: parsed.dtype };
+        } else {
+            out[base] = parsed.data;
+        }
+    }
+
+    // Normalize expected names (aliases) if needed
+    const T = (out.time && (Array.isArray(out.time) || ArrayBuffer.isView(out.time))) ? out.time.length : null;
+    const pickAlias = (keys, pattern) => {
+        if (!T) return null;
+        // Prefer exact matches first
+        for (const k of keys) {
+            const v = out[k];
+            if (v && (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length === T) return v;
+        }
+        // Fallback: any key matching pattern
+        for (const key of Object.keys(out)) {
+            if (key === 'time' || key === 'metadata') continue;
+            if (!pattern.test(key)) continue;
+            const v = out[key];
+            if (v && (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length === T) return v;
+        }
+        return null;
+    };
+    if (!out.voltage) {
+        const v = pickAlias(['voltage','voltage_V','V','voltage_signal','voltage_measured'], /volt|^V$/i);
+        if (v) out.voltage = v;
+    }
+    if (!out.current) {
+        const i = pickAlias(['current','current_A','I','current_signal','current_measured'], /curr|^I$/i);
+        if (i) out.current = i;
+    }
+
+    return out;
+}
+
+
 class DashboardController {
     constructor() {
         this.data = null;
@@ -260,32 +491,37 @@ class DashboardController {
         console.log(`Loading file: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`);
 
         try {
-            // For large files, use FileReader with better error handling
-            const text = await this.readLargeFile(file);
-            console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
-
-            // Check if file is too large (> 500MB of text)
-            if (text.length > 500 * 1024 * 1024) {
-                const proceed = confirm(
-                    `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
-                    `Loading it may crash your browser. Continue anyway?`
-                );
-                if (!proceed) {
-                    throw new Error('Load cancelled by user');
+            const lowerName = (file.name || '').toLowerCase();
+            const isJson = lowerName.endsWith('.json');
+            if (isJson) {
+                // JSON path (legacy)
+                const text = await this.readLargeFile(file);
+                console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
+                if (text.length > 500 * 1024 * 1024) {
+                    const proceed = confirm(
+                        `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
+                        `Loading it may crash your browser. Continue anyway?`
+                    );
+                    if (!proceed) {
+                        throw new Error('Load cancelled by user');
+                    }
                 }
+                this.data = JSON.parse(text);
+            } else {
+                // Binary pack path (.npz/.zip of .npy arrays)
+                console.log('Reading binary pack...');
+                this.data = await loadSparcPack(file);
             }
-
-            this.data = JSON.parse(text);
 
             console.log('Data loaded:', this.data);
 
             // Validate data
-            if (!this.data.time || !Array.isArray(this.data.time)) {
+            if (!this.data.time || !(Array.isArray(this.data.time) || ArrayBuffer.isView(this.data.time))) {
                 throw new Error('Invalid data format: missing time array');
             }
 
             // Setup timeline
-            const maxFrame = this.data.time.length - 1;
+            const maxFrame = (this.data.time.length || 0) - 1;
             this.elements.timeline.max = maxFrame;
             this.currentFrame = 0;
 
@@ -497,16 +733,46 @@ class DashboardController {
 
     getFrameData(frameIndex) {
         // Extract data for current frame from all signals
+        const timeSeries = this.data.time;
         const frameData = {
-            time: this.data.time[frameIndex],
+            time: ArrayBuffer.isView(timeSeries) ? timeSeries[frameIndex] : timeSeries[frameIndex],
             frameIndex: frameIndex,
             totalFrames: this.data.time.length
         };
 
-        // Add all available signals
+        // Helper: is 1D series
+        const isSeries = (v) => Array.isArray(v) || ArrayBuffer.isView(v);
+
         for (const key in this.data) {
-            if (key !== 'metadata' && Array.isArray(this.data[key])) {
-                frameData[key] = this.data[key][frameIndex];
+            if (key === 'metadata') continue;
+            const value = this.data[key];
+
+            // Matrix object from NPY (shape [T, N])
+            if (value && value.shape && ArrayBuffer.isView(value.data)) {
+                if (Array.isArray(value.shape) && value.shape.length === 2) {
+                    const cols = value.shape[1];
+                    const start = frameIndex * cols;
+                    const end = start + cols;
+                    // Convert TypedArray subarray to regular array for compatibility
+                    const subarray = value.data.subarray(start, end);
+                    frameData[key] = Array.from(subarray);
+                }
+                continue;
+            }
+
+            // Plain series
+            if (isSeries(value)) {
+                frameData[key] = value[frameIndex];
+            }
+        }
+
+        // Synthesize spark_status triple when provided as split arrays
+        if (!frameData.spark_status) {
+            const s = this.data.spark_status_state;
+            const l = this.data.spark_status_location_mm;
+            const e = this.data.spark_status_extra;
+            if (s && l && e && isSeries(s) && isSeries(l) && isSeries(e)) {
+                frameData.spark_status = [s[frameIndex], l[frameIndex], e[frameIndex]];
             }
         }
 
@@ -516,8 +782,8 @@ class DashboardController {
     updateTimeDisplay() {
         if (!this.data) return;
 
-        const currentTime = this.data.time[this.currentFrame] / 1000; // Convert µs to ms
-        const totalTime = this.data.time[this.data.time.length - 1] / 1000;
+        const currentTime = Number(this.data.time[this.currentFrame]) / 1000; // Convert µs to ms
+        const totalTime = Number(this.data.time[this.data.time.length - 1]) / 1000;
 
         const formatTime = (ms) => {
             const seconds = Math.floor(ms / 1000);
@@ -1269,9 +1535,11 @@ class OscilloscopePanel extends BasePanel {
         const level = this.trigger.level;
         const rising = this.trigger.slope !== 'falling';
         for (let i = Math.max(start + 1, 1); i <= end; i++) {
-            const prev = sourceSeries[i - 1];
-            const curr = sourceSeries[i];
-            if (typeof prev !== 'number' || typeof curr !== 'number') continue;
+            const prevRaw = sourceSeries[i - 1];
+            const currRaw = sourceSeries[i];
+            const prev = (typeof prevRaw === 'bigint') ? Number(prevRaw) : prevRaw;
+            const curr = (typeof currRaw === 'bigint') ? Number(currRaw) : currRaw;
+            if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
             if (rising) {
                 if (prev < level && curr >= level) return i;
             } else {
@@ -1337,6 +1605,24 @@ class OscilloscopePanel extends BasePanel {
         const voltageSeries = this.data.voltage || [];
         const currentSeries = this.data.current || [];
         const sparkStatus = this.data.spark_status || [];
+        
+        // Debug: log series info on first draw
+        if (!this._loggedSeriesInfo) {
+            console.log('Oscilloscope series info:', {
+                voltage: voltageSeries ? `${voltageSeries.constructor.name}, length=${voltageSeries.length}` : 'missing',
+                current: currentSeries ? `${currentSeries.constructor.name}, length=${currentSeries.length}` : 'missing',
+                voltageSample: voltageSeries && voltageSeries.length > 0 ? voltageSeries[0] : 'N/A',
+                currentSample: currentSeries && currentSeries.length > 0 ? currentSeries[0] : 'N/A',
+                voltageType: voltageSeries && voltageSeries.length > 0 ? typeof voltageSeries[0] : 'N/A',
+                currentType: currentSeries && currentSeries.length > 0 ? typeof currentSeries[0] : 'N/A'
+            });
+            this._loggedSeriesInfo = true;
+        }
+        
+        // Ensure we have valid series (TypedArrays or regular arrays)
+        if (!currentSeries || currentSeries.length === 0) {
+            console.warn('Oscilloscope: current series missing or empty');
+        }
 
         // Visible range in data (may be shorter than full window at the beginning)
         const start = this.sampleStartIndex;
@@ -1520,11 +1806,12 @@ class OscilloscopePanel extends BasePanel {
         let min = Infinity, max = -Infinity;
         for (let i = start; i <= end; i++) {
             const v = arr[i];
-            if (typeof v !== 'number') continue;
-            if (v < min) min = v;
-            if (v > max) max = v;
+            const num = (typeof v === 'bigint') ? Number(v) : v;
+            if (!Number.isFinite(num)) continue;
+            if (num < min) min = num;
+            if (num > max) max = num;
         }
-        if (!isFinite(min) || !isFinite(max) || min === max) {
+        if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
             min = fallbackMin; max = Math.max(fallbackMax, min + 1);
         }
         return { min, max };
@@ -1562,13 +1849,14 @@ class OscilloscopePanel extends BasePanel {
             // Find min/max in bucket
             for (let j = i; j <= bucketEnd; j++) {
                 const v = series[j];
-                if (typeof v === 'number') {
-                    if (v < bucketMin) bucketMin = v;
-                    if (v > bucketMax) bucketMax = v;
+                const num = (typeof v === 'bigint') ? Number(v) : v;
+                if (Number.isFinite(num)) {
+                    if (num < bucketMin) bucketMin = num;
+                    if (num > bucketMax) bucketMax = num;
                 }
             }
             
-            if (!isFinite(bucketMin)) continue;
+            if (!Number.isFinite(bucketMin)) continue;
             
             // Draw vertical line from min to max at this x position
             const x = xToPx(i + bucketSize / 2);
@@ -1795,7 +2083,12 @@ class TopViewPanel extends BasePanel {
         // Initialize spark angle map
         this.sparkAngles = new Map();
 
-        if (!data || !data.spark_status || !data.wire_position || !data.workpiece_position) return;
+        if (!data) return;
+        const hasLegacySpark = Array.isArray(data.spark_status);
+        const hasSplitSpark = (data.spark_status_state && (Array.isArray(data.spark_status_state) || ArrayBuffer.isView(data.spark_status_state))) &&
+                              (data.spark_status_location_mm && (Array.isArray(data.spark_status_location_mm) || ArrayBuffer.isView(data.spark_status_location_mm)));
+        if (!hasLegacySpark && !hasSplitSpark) return;
+        if (!data.wire_position || !data.workpiece_position) return;
 
         // Get base overcut for comparison (in µm)
         // NOTE: base_overcut in metadata is already PER SIDE (not total), so don't divide by 2
@@ -1913,24 +2206,36 @@ class TopViewPanel extends BasePanel {
         let sumGap = 0;
         let gapCount = 0;
 
-        data.spark_status.forEach((status, frameIndex) => {
-            if (status && status[0] === 1 && status[1] !== null) {
-                // Calculate gap at this frame (µm)
-                const wirePos = data.wire_position[frameIndex] || 0;
-                const workpiecePos = data.workpiece_position[frameIndex] || 0;
-                const gapUM = workpiecePos - wirePos;
-
-                // Track gap statistics
-                minGap = Math.min(minGap, gapUM);
-                maxGap = Math.max(maxGap, gapUM);
-                sumGap += gapUM;
-                gapCount++;
-
-                // Sample angle from gap-dependent distribution
-                const angle = sampleAngle(gapUM);
-                this.sparkAngles.set(frameIndex, angle);
+        const totalFrames = data.time ? data.time.length : (hasLegacySpark ? data.spark_status.length : data.spark_status_state.length);
+        if (hasLegacySpark) {
+            data.spark_status.forEach((status, frameIndex) => {
+                if (status && status[0] === 1 && status[1] !== null) {
+                    const wirePos = data.wire_position[frameIndex] || 0;
+                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
+                    const gapUM = workpiecePos - wirePos;
+                    minGap = Math.min(minGap, gapUM);
+                    maxGap = Math.max(maxGap, gapUM);
+                    sumGap += gapUM; gapCount++;
+                    const angle = sampleAngle(gapUM);
+                    this.sparkAngles.set(frameIndex, angle);
+                }
+            });
+        } else if (hasSplitSpark) {
+            const s = data.spark_status_state;
+            for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+                const state = s[frameIndex];
+                if (state === 1) {
+                    const wirePos = data.wire_position[frameIndex] || 0;
+                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
+                    const gapUM = workpiecePos - wirePos;
+                    minGap = Math.min(minGap, gapUM);
+                    maxGap = Math.max(maxGap, gapUM);
+                    sumGap += gapUM; gapCount++;
+                    const angle = sampleAngle(gapUM);
+                    this.sparkAngles.set(frameIndex, angle);
+                }
             }
-        });
+        }
 
         const avgGap = sumGap / gapCount;
 
@@ -2730,10 +3035,12 @@ class ThermalProfilePanel extends BasePanel {
         const profileX = marginLeft + wireVisWidth + 40;
         const profileWidth = plotWidth - wireVisWidth - 40;
 
-        // X-axis: temperature
-        const tempScale = profileWidth / (this.tempMaxC - this.tempMinC);
+        // X-axis: temperature (span 0-500°C for ticks, but keep color mapping at 20-500°C)
+        const xAxisMinC = 0;
+        const xAxisMaxC = 500;
+        const tempScale = profileWidth / (xAxisMaxC - xAxisMinC);
         const tempToX = (tempC) => {
-            return profileX + (tempC - this.tempMinC) * tempScale;
+            return profileX + (tempC - xAxisMinC) * tempScale;
         };
 
         // Draw shaded workpiece region
@@ -2799,9 +3106,8 @@ class ThermalProfilePanel extends BasePanel {
         }
 
         // X-axis ticks and labels (temperature)
-        const numXTicks = 5;
-        for (let i = 0; i <= numXTicks; i++) {
-            const tempC = this.tempMinC + (i / numXTicks) * (this.tempMaxC - this.tempMinC);
+        // Fixed ticks from 0 to 500 in steps of 50
+        for (let tempC = 0; tempC <= 500; tempC += 50) {
             const x = tempToX(tempC);
 
             // Tick
