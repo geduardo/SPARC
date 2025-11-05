@@ -137,7 +137,7 @@ def run_quickstart_sim(
             print(
                 f"[INFO] Current override: {current_override} A -> closest mode: I{current_mode} ({current_values[closest_idx]} A)"
             )
-    
+
     # Set current mode if specified
     env.state.current_mode = f"I{current_mode}"
 
@@ -527,7 +527,7 @@ def create_animation(
     min_pos = np.min(pos_mm)
     # Total length is approximately the range plus one segment
     total_length_mm = max_pos + segment_len_mm - min_pos
-    
+
     # Calculate workpiece height from total length and buffer lengths
     # Formula: total_length = buffer_bottom + workpiece_height + buffer_top
     workpiece_height_mm = total_length_mm - buffer_bottom_mm - buffer_top_mm
@@ -616,7 +616,7 @@ def create_animation(
     rectangles = []
     initial_positions = pos_mm[animation_frame_indices[0], :]
     initial_temps = wire_temp_c[animation_frame_indices[0], :]
-    
+
     # Add small overlap (5%) to segment height to prevent gaps between segments
     segment_height_viz = segment_len_mm * 1.05
 
@@ -666,13 +666,13 @@ def create_animation(
         linewidth=2,
         label="Workpiece Top",
     )
-    
+
     # Contact lines on wire plot
     contact_offset_bottom = getattr(wire_params, "contact_offset_bottom", 10.0)  # mm
     contact_offset_top = getattr(wire_params, "contact_offset_top", 10.0)  # mm
     contact_bottom_pos_mm = buffer_bottom_mm - contact_offset_bottom
     contact_top_pos_mm = buffer_bottom_mm + workpiece_height_mm + contact_offset_top
-    
+
     ax_wire.axhline(
         contact_bottom_pos_mm,
         color="gray",
@@ -689,7 +689,7 @@ def create_animation(
         label="Top Contact",
         linewidth=2,
     )
-    
+
     ax_wire.set_xlim(-visual_thickness * 4, visual_thickness * 4)
     ax_wire.set_xticks([])
     ax_wire.set_xlabel("")
@@ -722,7 +722,7 @@ def create_animation(
         color="gray",
         label="Workpiece",
     )
-    
+
     # Contact lines on temperature profile plot
     ax_temp.axhline(
         contact_bottom_pos_mm,
@@ -740,7 +740,7 @@ def create_animation(
         label="Top Contact",
         linewidth=2,
     )
-    
+
     ax_temp.set_xlabel("Temperature (°C)")
     ax_temp.set_ylabel("Position along wire (mm from bottom)")
 
@@ -976,14 +976,14 @@ def main():
             duration_us=args.duration,
             control_mode=args.mode,
             controller=args.controller,
-        out_basename=args.out,
-        verbose=args.verbose,
-        segments=args.segments,
-        segment_len_mm=args.segment_len,
-        workpiece_height=args.workpiece_height,
-        current_mode=args.current_mode,
-        current_override=args.current,
-    )
+            out_basename=args.out,
+            verbose=args.verbose,
+            segments=args.segments,
+            segment_len_mm=args.segment_len,
+            workpiece_height=args.workpiece_height,
+            current_mode=args.current_mode,
+            current_override=args.current,
+        )
 
     if args.export_csv:
         export_csv(data_path, args.csv_out, max_segments=args.csv_segments)
