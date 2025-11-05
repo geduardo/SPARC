@@ -131,9 +131,11 @@ def setup_logger(
         "wire_position",
         "wire_velocity",
         "workpiece_position",
-        "target_delta",
-        "debris_concentration",
-        "dielectric_flow_rate",
+        # Generator settings (kept for future real-time modification)
+        "target_voltage",
+        "current_mode",
+        "ON_time",
+        "OFF_time",
         "is_short_circuit",
         "flow_rate",  # Dimensionless flow condition (0-1)
         "spark_status",  # [status, location_mm, count] for visualization
@@ -155,7 +157,7 @@ def setup_logger(
     elif log_strategy == "both":
         signals_to_log = base_signals + [
             "wire_temperature",
-            "wire_average_temperature",
+            # wire_average_temperature removed - can be computed from wire_temperature
             "wire_head_idx",
             "wire_offset_mm",
             "wire_material_positions_mm",
