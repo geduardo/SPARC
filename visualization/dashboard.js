@@ -2710,7 +2710,7 @@ class ThermalProfilePanel extends BasePanel {
 
         // Visualization settings
         this.showEdges = false; // Show edges around segments
-        this.tempMinC = 20;
+        this.tempMinC = 0;
         this.tempMaxC = 500;
 
         // Color map cache
@@ -2871,12 +2871,6 @@ class ThermalProfilePanel extends BasePanel {
         // Check if we have wire temperature and position data
         if (!frameData || !frameData.wire_temperature || !frameData.wire_material_positions_mm) {
             // Draw placeholder message
-            this.drawText('Lagrangian Wire Thermal Profile', w/2, h/2 - 20, {
-                color: '#7c6f64',
-                font: 'bold 16px sans-serif',
-                align: 'center',
-                baseline: 'middle'
-            });
             this.drawText('No wire temperature data available', w/2, h/2 + 10, {
                 color: '#9d0006',
                 font: '14px sans-serif',
@@ -2924,11 +2918,13 @@ class ThermalProfilePanel extends BasePanel {
             }
         }
 
+        const segmentSizeUm = segmentLenMM * 1000;
+
         // Define margins and plotting area
-        const marginLeft = 80;
+        const marginLeft = 90;
         const marginRight = 100; // Extra space for colorbar
         const marginTop = 40;
-        const marginBottom = 40;
+        const marginBottom = 45;
         const plotWidth = w - marginLeft - marginRight;
         const plotHeight = h - marginTop - marginBottom;
 
@@ -2944,9 +2940,9 @@ class ThermalProfilePanel extends BasePanel {
             return marginTop + (posMM - visibleMinPos) * yScale;
         };
 
-        // Calculate temperature range - FIXED at 20-500°C
+        // Calculate temperature range - fixed at 0-500 deg C
         const tempsC = wireTemperatures.map(t => t - 273.15);
-        this.tempMinC = 20;  // Fixed minimum
+        this.tempMinC = 0;  // Fixed minimum for axis origin
         this.tempMaxC = 500; // Fixed maximum
 
         // Draw wire thermal field visualization (left side)
@@ -3032,8 +3028,9 @@ class ThermalProfilePanel extends BasePanel {
         this.ctx.setLineDash([]);
 
         // Draw temperature profile line (right side)
-        const profileX = marginLeft + wireVisWidth + 40;
-        const profileWidth = plotWidth - wireVisWidth - 40;
+        const profileGap = 60;
+        const profileX = marginLeft + wireVisWidth + profileGap;
+        const profileWidth = plotWidth - wireVisWidth - profileGap;
 
         // X-axis: temperature
         const tempScale = profileWidth / (this.tempMaxC - this.tempMinC);
@@ -3124,34 +3121,38 @@ class ThermalProfilePanel extends BasePanel {
         }
 
         // Axis labels
-        this.drawText('Position (mm)', marginLeft - 10, marginTop - 15, {
-            color: '#3c3836',
-            font: 'bold 12px sans-serif',
-            align: 'left'
-        });
+        this.ctx.save();
+        this.ctx.translate(marginLeft + wireVisWidth + profileGap / 2 - 12, marginTop + plotHeight / 2);
+        this.ctx.rotate(-Math.PI / 2);
+        this.ctx.fillStyle = '#3c3836';
+        this.ctx.font = 'bold 14px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText('Position (mm)', 0, 0);
+        this.ctx.restore();
 
         this.drawText('Temperature (°C)', profileX + profileWidth / 2, h - marginBottom + 30, {
             color: '#3c3836',
-            font: 'bold 12px sans-serif',
+            font: 'bold 14px sans-serif',
             align: 'center'
         });
-
         // Draw colorbar
-        const colorbarX = w - marginRight + 20;
+        const colorbarX = w - marginRight + 30;
         const colorbarWidth = 20;
         const colorbarHeight = plotHeight;
         const colorbarY = marginTop;
 
         // Draw colorbar gradient
         const numColorSteps = 50;
+        const stepHeight = colorbarHeight / numColorSteps;
         for (let i = 0; i < numColorSteps; i++) {
-            const tempC = this.tempMinC + (i / numColorSteps) * (this.tempMaxC - this.tempMinC);
+            const fraction = i / numColorSteps;
+            const tempC = this.tempMinC + fraction * (this.tempMaxC - this.tempMinC);
             const color = this.getHotColor(tempC, this.tempMinC, this.tempMaxC);
-            const y = colorbarY + colorbarHeight - (i / numColorSteps) * colorbarHeight;
-            const stepHeight = colorbarHeight / numColorSteps;
+            const y = colorbarY + colorbarHeight - (i + 1) * stepHeight;
 
             this.ctx.fillStyle = color;
-            this.ctx.fillRect(colorbarX, y, colorbarWidth, stepHeight + 1);
+            this.ctx.fillRect(colorbarX, y, colorbarWidth, stepHeight);
         }
 
         // Colorbar border
@@ -3181,22 +3182,24 @@ class ThermalProfilePanel extends BasePanel {
         }
 
         // Title and stats
-        this.drawText('Wire Thermal Profile (Lagrangian)', w/2, 15, {
-            color: '#427b58',
-            font: 'bold 14px sans-serif',
-            align: 'center',
-            baseline: 'top'
-        });
-
         // Stats
         const avgTempC = tempsC.reduce((a, b) => a + b, 0) / tempsC.length;
         const actualMaxTempC = Math.max(...tempsC);
-        const statsText = `Segments: ${nSegments} | Avg: ${avgTempC.toFixed(1)}°C | Max: ${actualMaxTempC.toFixed(1)}°C`;
-        this.drawText(statsText, 10, h - 10, {
-            color: '#7c6f64',
-            font: '11px monospace',
-            align: 'left',
-            baseline: 'bottom'
+        const statsLines = [
+            `Segments: ${nSegments}`,
+            `Segment size: ${segmentSizeUm.toFixed(1)} um`,
+            `Avg: ${avgTempC.toFixed(1)}°C`,
+            `Max: ${actualMaxTempC.toFixed(1)}°C`
+        ];
+        const statsX = w - marginRight - 5;
+        const statsY = marginTop + 5;
+        statsLines.forEach((line, idx) => {
+            this.drawText(line, statsX, statsY + idx * 14, {
+                color: '#7c6f64',
+                font: '11px monospace',
+                align: 'right',
+                baseline: 'top'
+            });
         });
     }
 }
