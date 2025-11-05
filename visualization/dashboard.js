@@ -495,18 +495,18 @@ class DashboardController {
             const isJson = lowerName.endsWith('.json');
             if (isJson) {
                 // JSON path (legacy)
-                const text = await this.readLargeFile(file);
-                console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
-                if (text.length > 500 * 1024 * 1024) {
-                    const proceed = confirm(
-                        `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
-                        `Loading it may crash your browser. Continue anyway?`
-                    );
-                    if (!proceed) {
-                        throw new Error('Load cancelled by user');
-                    }
+            const text = await this.readLargeFile(file);
+            console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
+            if (text.length > 500 * 1024 * 1024) {
+                const proceed = confirm(
+                    `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
+                    `Loading it may crash your browser. Continue anyway?`
+                );
+                if (!proceed) {
+                    throw new Error('Load cancelled by user');
                 }
-                this.data = JSON.parse(text);
+            }
+            this.data = JSON.parse(text);
             } else {
                 // Binary pack path (.npz/.zip of .npy arrays)
                 console.log('Reading binary pack...');
@@ -2208,18 +2208,18 @@ class TopViewPanel extends BasePanel {
 
         const totalFrames = data.time ? data.time.length : (hasLegacySpark ? data.spark_status.length : data.spark_status_state.length);
         if (hasLegacySpark) {
-            data.spark_status.forEach((status, frameIndex) => {
-                if (status && status[0] === 1 && status[1] !== null) {
-                    const wirePos = data.wire_position[frameIndex] || 0;
-                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
-                    const gapUM = workpiecePos - wirePos;
-                    minGap = Math.min(minGap, gapUM);
-                    maxGap = Math.max(maxGap, gapUM);
+        data.spark_status.forEach((status, frameIndex) => {
+            if (status && status[0] === 1 && status[1] !== null) {
+                const wirePos = data.wire_position[frameIndex] || 0;
+                const workpiecePos = data.workpiece_position[frameIndex] || 0;
+                const gapUM = workpiecePos - wirePos;
+                minGap = Math.min(minGap, gapUM);
+                maxGap = Math.max(maxGap, gapUM);
                     sumGap += gapUM; gapCount++;
-                    const angle = sampleAngle(gapUM);
-                    this.sparkAngles.set(frameIndex, angle);
-                }
-            });
+                const angle = sampleAngle(gapUM);
+                this.sparkAngles.set(frameIndex, angle);
+            }
+        });
         } else if (hasSplitSpark) {
             const s = data.spark_status_state;
             for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
@@ -3035,12 +3035,10 @@ class ThermalProfilePanel extends BasePanel {
         const profileX = marginLeft + wireVisWidth + 40;
         const profileWidth = plotWidth - wireVisWidth - 40;
 
-        // X-axis: temperature (span 0-500°C for ticks, but keep color mapping at 20-500°C)
-        const xAxisMinC = 0;
-        const xAxisMaxC = 500;
-        const tempScale = profileWidth / (xAxisMaxC - xAxisMinC);
+        // X-axis: temperature
+        const tempScale = profileWidth / (this.tempMaxC - this.tempMinC);
         const tempToX = (tempC) => {
-            return profileX + (tempC - xAxisMinC) * tempScale;
+            return profileX + (tempC - this.tempMinC) * tempScale;
         };
 
         // Draw shaded workpiece region
@@ -3106,7 +3104,7 @@ class ThermalProfilePanel extends BasePanel {
         }
 
         // X-axis ticks and labels (temperature)
-        // Fixed ticks from 0 to 500 in steps of 50
+        // Draw ticks from 0 to 500°C in steps of 50°C
         for (let tempC = 0; tempC <= 500; tempC += 50) {
             const x = tempToX(tempC);
 

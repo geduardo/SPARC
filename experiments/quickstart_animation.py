@@ -42,22 +42,57 @@ def run_quickstart_sim(
     *,
     segments: int | None = None,
     segment_len_mm: float | None = None,
+    workpiece_height: float = 20.0,
+    current_mode: int = 7,
+    current_override: float | None = None,
 ):
+    # Import necessary modules
+    from src.wedm.core.env_config import EnvironmentConfig
+
     # Determine environment and wire parameters
     if segment_len_mm is not None:
-        wire_params = WireModuleParameters(segment_len=float(segment_len_mm))
-        env = WireEDMEnv(mechanics_control_mode=control_mode, wire_params=wire_params)
+        wire_params = WireModuleParameters(
+            segment_len=float(segment_len_mm),
+            moving_segments=True,
+            buffer_len_bottom=20.0,
+            buffer_len_top=20.0,
+        )
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
+        # Override wire module with custom parameters
+        from src.wedm.modules.wire import WireModule
+
+        env.wire = WireModule(env, parameters=wire_params)
     elif segments is not None and segments > 0:
-        # Create a temp env to read total modeled length robustly
-        temp_env = WireEDMEnv(mechanics_control_mode=control_mode)
-        total_length_mm = temp_env.wire.total_L
-        # Compute segment length slightly below exact division to avoid flooring to N-1 due to FP
+        # Calculate segment length for desired number of segments
+        # Total wire length = buffer_bottom (20mm) + workpiece_height + buffer_top (20mm)
+        total_length_mm = 20.0 + workpiece_height + 20.0
+        # Compute segment length
         eps = 1e-9
         seg_len = max(1e-9, total_length_mm / float(segments) - eps)
-        wire_params = WireModuleParameters(segment_len=seg_len)
-        env = WireEDMEnv(mechanics_control_mode=control_mode, wire_params=wire_params)
+        wire_params = WireModuleParameters(
+            segment_len=seg_len,
+            moving_segments=True,
+            buffer_len_bottom=20.0,
+            buffer_len_top=20.0,
+        )
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
+        # Override wire module with custom parameters
+        from src.wedm.modules.wire import WireModule
+
+        env.wire = WireModule(env, parameters=wire_params)
     else:
-        env = WireEDMEnv(mechanics_control_mode=control_mode)
+        config = EnvironmentConfig(workpiece_height=workpiece_height)
+        env = WireEDMEnv(config=config)
+        # Override wire module with 20mm buffers
+        from src.wedm.modules.wire import WireModule
+
+        wire_params = WireModuleParameters(
+            buffer_len_bottom=20.0,
+            buffer_len_top=20.0,
+        )
+        env.wire = WireModule(env, parameters=wire_params)
 
     # Set initial conditions (same as initialize_environment in run_simulation.py)
     env.state.workpiece_position = 20.0  # um
@@ -65,6 +100,46 @@ def run_quickstart_sim(
     env.state.target_position = 5_000.0  # um
     env.state.spark_status = [0, None, 0]
     env.state.dielectric_temperature = 293.15  # Room temperature in K
+
+    # Set current mode - if current_override is provided, find closest matching mode
+    if current_override is not None:
+        # Current mapping: I1=30A, I2=35A, I3=40A, I4=50A, I5=60A, I6=68A, I7=80A,
+        # I8=95A, I9=110A, I10=130A, I11=155A, I12=180A, I13=215A, I14=255A,
+        # I15=305A, I16=360A, I17=425A, I18=500A, I19=600A
+        current_values = [
+            30,
+            35,
+            40,
+            50,
+            60,
+            68,
+            80,
+            95,
+            110,
+            130,
+            155,
+            180,
+            215,
+            255,
+            305,
+            360,
+            425,
+            500,
+            600,
+        ]
+        # Find closest current mode
+        closest_idx = min(
+            range(len(current_values)),
+            key=lambda i: abs(current_values[i] - current_override),
+        )
+        current_mode = closest_idx + 1  # I1 is index 1, not 0
+        if verbose:
+            print(
+                f"[INFO] Current override: {current_override} A -> closest mode: I{current_mode} ({current_values[closest_idx]} A)"
+            )
+    
+    # Set current mode if specified
+    env.state.current_mode = f"I{current_mode}"
 
     # Initialize wire temperature array
     if len(env.state.wire_temperature) == 0:
@@ -84,9 +159,208 @@ def run_quickstart_sim(
         verbose=verbose,
         logger_config=logger_config,
         controller_type=controller,
+        current_mode=current_mode,
     )
     # log_data is file path (numpy backend)
     return logger_config["backend"]["filepath"]
+
+
+def export_json(
+    npz_filepath: str, json_out: str, workpiece_height: float = 100.0
+) -> None:
+    """Export NPZ data to JSON format for web dashboard visualization."""
+    import json
+
+    try:
+        data = np.load(npz_filepath, allow_pickle=True)
+    except Exception as e:
+        print(f"Error loading data for JSON export: {e}")
+        return
+
+    print(f"[INFO] Converting NPZ to JSON for dashboard...")
+
+    # Build JSON structure
+    json_data = {}
+
+    # Convert all arrays to lists
+    for key in data.keys():
+        arr = data[key]
+        if isinstance(arr, np.ndarray):
+            # Convert to native Python types
+            if arr.dtype == np.float64 or arr.dtype == np.float32:
+                json_data[key] = arr.tolist()
+            elif arr.dtype == np.int64 or arr.dtype == np.int32:
+                json_data[key] = arr.tolist()
+            elif arr.dtype == object:
+                # Handle object arrays (like spark_status)
+                converted = []
+                for item in arr:
+                    if isinstance(item, np.ndarray):
+                        converted.append(item.tolist())
+                    elif isinstance(item, (list, tuple)):
+                        converted.append(list(item))
+                    elif item is None or (isinstance(item, float) and np.isnan(item)):
+                        converted.append(None)
+                    else:
+                        converted.append(item)
+                json_data[key] = converted
+            else:
+                json_data[key] = arr.tolist()
+
+    # Add metadata for visualization
+    from src.wedm.modules.wire import WireModuleParameters
+
+    wire_params = WireModuleParameters(
+        buffer_len_bottom=20.0,
+        buffer_len_top=20.0,
+    )
+
+    json_data["metadata"] = {
+        "workpiece_height": workpiece_height,
+        "buffer_len_bottom": getattr(wire_params, "buffer_len_bottom", 20.0),
+        "buffer_len_top": getattr(wire_params, "buffer_len_top", 20.0),
+        "contact_offset_bottom": getattr(wire_params, "contact_offset_bottom", 10.0),
+        "contact_offset_top": getattr(wire_params, "contact_offset_top", 10.0),
+        "wire_diameter": 0.25,  # mm
+    }
+
+    # Ensure output directory exists
+    json_path = pathlib.Path(json_out)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write JSON file (compact format to save space)
+    print(f"[INFO] Writing JSON to {json_path}...")
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, separators=(",", ":"))
+
+    file_size_mb = json_path.stat().st_size / (1024 * 1024)
+    print(f"[INFO] JSON exported: {json_path} ({file_size_mb:.2f} MB)")
+    print(
+        f"[INFO] Open visualization/dashboard.html in your browser and load this file"
+    )
+
+
+def export_pack(
+    npz_filepath: str, pack_out: str, workpiece_height: float = 100.0
+) -> None:
+    """Export data as a compact, lossless pack for the web dashboard.
+
+    Format: ZIP file containing:
+      - header.json: lists arrays, shapes, dtypes, and metadata
+      - one .npy file per array (NumPy binary, little-endian, no pickle)
+
+    Notes:
+      - Object arrays like spark_status are split into numeric 1D arrays:
+        spark_status_state (int8), spark_status_location_mm (float64), spark_status_extra (float64)
+      - All numeric arrays are written losslessly as-is.
+    """
+    import io
+    import json
+    import zipfile
+
+    try:
+        data = np.load(npz_filepath, allow_pickle=True)
+    except Exception as e:
+        print(f"Error loading data for pack export: {e}")
+        return
+
+    # Build metadata (align with visualization expectations)
+    from src.wedm.modules.wire import WireModuleParameters
+
+    wire_params = WireModuleParameters(
+        buffer_len_bottom=20.0,
+        buffer_len_top=20.0,
+    )
+
+    metadata = {
+        "workpiece_height": workpiece_height,
+        "buffer_len_bottom": getattr(wire_params, "buffer_len_bottom", 20.0),
+        "buffer_len_top": getattr(wire_params, "buffer_len_top", 20.0),
+        "contact_offset_bottom": getattr(wire_params, "contact_offset_bottom", 10.0),
+        "contact_offset_top": getattr(wire_params, "contact_offset_top", 10.0),
+        "wire_diameter": 0.25,
+    }
+
+    arrays_manifest: list[dict[str, Any]] = []
+
+    def add_numpy_to_zip(zf: zipfile.ZipFile, name: str, arr: np.ndarray) -> None:
+        # Enforce C order and native types; ensure no object dtype sneaks in
+        if arr.dtype == object:
+            raise ValueError(f"Cannot pack object dtype array directly: {name}")
+        arr_c = np.ascontiguousarray(arr)
+        buf = io.BytesIO()
+        # Write standard NPY without pickle
+        np.save(buf, arr_c, allow_pickle=False)
+        zf.writestr(f"{name}.npy", buf.getvalue())
+        arrays_manifest.append(
+            {
+                "name": name,
+                "dtype": str(arr_c.dtype),
+                "shape": list(arr_c.shape),
+            }
+        )
+
+    pack_path = pathlib.Path(pack_out)
+    pack_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use STORED (no compression) so the viewer can read bytes directly without a JS decompressor
+    with zipfile.ZipFile(
+        pack_path.as_posix(), mode="w", compression=zipfile.ZIP_STORED
+    ) as zf:
+        # First, write all numeric arrays as-is
+        keys = list(data.keys())
+        for key in keys:
+            arr = data[key]
+            # Handle object arrays separately (like spark_status)
+            if isinstance(arr, np.ndarray) and arr.dtype != object:
+                try:
+                    add_numpy_to_zip(zf, key, arr)
+                except Exception as e:
+                    print(f"[WARN] Skipping array '{key}': {e}")
+
+        # Special handling for spark_status (object array of 3-tuple-like entries)
+        if "spark_status" in data:
+            s = data["spark_status"]
+            try:
+                T = int(len(s))
+                state = np.zeros(T, dtype=np.int8)
+                loc_mm = np.full(T, np.nan, dtype=np.float64)
+                extra = np.full(T, np.nan, dtype=np.float64)
+                for i in range(T):
+                    item = s[i]
+                    if item is None:
+                        continue
+                    try:
+                        # Expect [state, location_mm, extra]
+                        if isinstance(item, (list, tuple, np.ndarray)):
+                            if len(item) > 0 and item[0] is not None:
+                                state[i] = int(item[0])
+                            if len(item) > 1 and item[1] is not None:
+                                loc_mm[i] = float(item[1])
+                            if len(item) > 2 and item[2] is not None:
+                                extra[i] = float(item[2])
+                    except Exception:
+                        # Ignore malformed entries
+                        pass
+                add_numpy_to_zip(zf, "spark_status_state", state)
+                add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
+                add_numpy_to_zip(zf, "spark_status_extra", extra)
+            except Exception as e:
+                print(f"[WARN] Failed to decompose 'spark_status': {e}")
+
+        # Header last
+        header = {
+            "format": "sparc_pack_v1",
+            "arrays": arrays_manifest,
+            "metadata": metadata,
+        }
+        zf.writestr("header.json", json.dumps(header))
+
+    file_size_mb = pack_path.stat().st_size / (1024 * 1024)
+    print(f"[INFO] Pack exported: {pack_path} ({file_size_mb:.2f} MB)")
+    print(
+        f"[INFO] Load this pack in the dashboard for efficient, lossless visualization"
+    )
 
 
 def export_csv(npz_filepath: str, csv_out: str, max_segments: int = 20) -> None:
@@ -170,7 +444,7 @@ def export_csv(npz_filepath: str, csv_out: str, max_segments: int = 20) -> None:
         comments="",
         fmt=fmt_list if len(fmt_list) > 1 else "%.6f",
     )
-    print(f"📝 CSV exported: {csv_path}")
+    print(f"[INFO] CSV exported: {csv_path}")
 
 
 def create_animation(
@@ -180,6 +454,7 @@ def create_animation(
     playback_speed: float = 1.0,
     target_video_duration_s: Optional[float] = None,
     target_video_fps: int = 20,
+    show_edges: bool = False,
 ) -> None:
     try:
         data = np.load(npz_filepath)
@@ -222,9 +497,12 @@ def create_animation(
     n_timesteps_data, n_segments = wire_temp_c.shape
 
     # Physical dimensions - compute segment length from first timestep positions
-    wire_params = WireModuleParameters()
-    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 30.0)
-    buffer_top_mm = getattr(wire_params, "buffer_len_top", 30.0)
+    wire_params = WireModuleParameters(
+        buffer_len_bottom=20.0,
+        buffer_len_top=20.0,
+    )
+    buffer_bottom_mm = getattr(wire_params, "buffer_len_bottom", 20.0)
+    buffer_top_mm = getattr(wire_params, "buffer_len_top", 20.0)
 
     # Compute segment length from position differences
     first_positions = pos_mm[0, :]
@@ -244,21 +522,21 @@ def create_animation(
     else:
         segment_len_mm = getattr(wire_params, "segment_len", 0.2)
 
-    # Get workpiece height (needed for total_length calculation)
-    workpiece_height_mm = (
-        getattr(getattr(wire_params, "__class__", object), "workpiece_height", 20.0)
-        if hasattr(wire_params, "workpiece_height")
-        else 20.0
-    )
-
     # Find max and min positions across all timesteps to determine total length
     max_pos = np.max(pos_mm)
     min_pos = np.min(pos_mm)
     # Total length is approximately the range plus one segment
-    total_length_mm = max(
-        max_pos + segment_len_mm - min_pos,
-        buffer_bottom_mm + workpiece_height_mm + buffer_top_mm,
-    )
+    total_length_mm = max_pos + segment_len_mm - min_pos
+    
+    # Calculate workpiece height from total length and buffer lengths
+    # Formula: total_length = buffer_bottom + workpiece_height + buffer_top
+    workpiece_height_mm = total_length_mm - buffer_bottom_mm - buffer_top_mm
+    # Ensure non-negative
+    if workpiece_height_mm < 0:
+        print(
+            f"[WARNING] Calculated workpiece_height ({workpiece_height_mm:.2f} mm) is negative, using default 20.0 mm"
+        )
+        workpiece_height_mm = 20.0
 
     # Playback timing
     sim_duration_ms_data = time_ms[-1] - time_ms[0] if n_timesteps_data > 1 else 0.0
@@ -338,16 +616,19 @@ def create_animation(
     rectangles = []
     initial_positions = pos_mm[animation_frame_indices[0], :]
     initial_temps = wire_temp_c[animation_frame_indices[0], :]
+    
+    # Add small overlap (5%) to segment height to prevent gaps between segments
+    segment_height_viz = segment_len_mm * 1.05
 
     for i in range(n_segments):
         y_start = initial_positions[i]
         rect = Rectangle(
             (-visual_thickness / 2, y_start),
             visual_thickness,
-            segment_len_mm,
+            segment_height_viz,
             facecolor=cmap(norm(initial_temps[i])),
-            edgecolor="black",
-            linewidth=0.5,
+            edgecolor="black" if show_edges else "none",
+            linewidth=0.5 if show_edges else 0,
         )
         ax_wire.add_patch(rect)
         rectangles.append(rect)
@@ -385,6 +666,30 @@ def create_animation(
         linewidth=2,
         label="Workpiece Top",
     )
+    
+    # Contact lines on wire plot
+    contact_offset_bottom = getattr(wire_params, "contact_offset_bottom", 10.0)  # mm
+    contact_offset_top = getattr(wire_params, "contact_offset_top", 10.0)  # mm
+    contact_bottom_pos_mm = buffer_bottom_mm - contact_offset_bottom
+    contact_top_pos_mm = buffer_bottom_mm + workpiece_height_mm + contact_offset_top
+    
+    ax_wire.axhline(
+        contact_bottom_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Bottom Contact",
+        linewidth=2,
+    )
+    ax_wire.axhline(
+        contact_top_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Top Contact",
+        linewidth=2,
+    )
+    
     ax_wire.set_xlim(-visual_thickness * 4, visual_thickness * 4)
     ax_wire.set_xticks([])
     ax_wire.set_xlabel("")
@@ -417,6 +722,25 @@ def create_animation(
         color="gray",
         label="Workpiece",
     )
+    
+    # Contact lines on temperature profile plot
+    ax_temp.axhline(
+        contact_bottom_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Bottom Contact",
+        linewidth=2,
+    )
+    ax_temp.axhline(
+        contact_top_pos_mm,
+        color="gray",
+        linestyle=":",
+        alpha=0.6,
+        label="Top Contact",
+        linewidth=2,
+    )
+    
     ax_temp.set_xlabel("Temperature (°C)")
     ax_temp.set_ylabel("Position along wire (mm from bottom)")
 
@@ -541,6 +865,27 @@ def main():
         help="Segment length in mm (overrides --segments)",
     )
     sim_group.add_argument(
+        "--workpiece-height",
+        type=float,
+        default=100.0,
+        dest="workpiece_height",
+        help="Workpiece height in mm (default: 100.0)",
+    )
+    sim_group.add_argument(
+        "--current-mode",
+        type=int,
+        default=17,
+        dest="current_mode",
+        help="Current mode setting (default: 17 for I17)",
+    )
+    sim_group.add_argument(
+        "--current",
+        type=float,
+        default=None,
+        dest="current",
+        help="Current in Amperes (overrides --current-mode by finding closest matching mode). Example: --current 215 sets I13 (215A)",
+    )
+    sim_group.add_argument(
         "--verbose", action="store_true", help="Verbose simulation logs"
     )
 
@@ -574,6 +919,11 @@ def main():
     anim_group.add_argument(
         "--target-video-fps", type=int, default=20, help="Target FPS for saved video"
     )
+    anim_group.add_argument(
+        "--show-edges",
+        action="store_true",
+        help="Show edges/contours around thermal segments (default: False, edges hidden)",
+    )
     # CSV export
     anim_group.add_argument(
         "--export-csv",
@@ -592,6 +942,30 @@ def main():
         default=20,
         help="Max segments to include in CSV (default: 20)",
     )
+    # JSON export for dashboard
+    anim_group.add_argument(
+        "--log-json",
+        action="store_true",
+        help="Export data to JSON format for web dashboard",
+    )
+    anim_group.add_argument(
+        "--json-out",
+        type=str,
+        default="visualization/data/simulation_data.json",
+        help="JSON output filepath for dashboard (default: visualization/data/simulation_data.json)",
+    )
+    # Binary pack export for dashboard (lossless & compact)
+    anim_group.add_argument(
+        "--log-pack",
+        action="store_true",
+        help="Export data as compact binary pack (.npz zip of .npy arrays + metadata) for efficient dashboard loading",
+    )
+    anim_group.add_argument(
+        "--pack-out",
+        type=str,
+        default="visualization/data/simulation_data.npz",
+        help="Pack output filepath for dashboard (default: visualization/data/simulation_data.npz)",
+    )
 
     args = parser.parse_args()
 
@@ -602,14 +976,25 @@ def main():
             duration_us=args.duration,
             control_mode=args.mode,
             controller=args.controller,
-            out_basename=args.out,
-            verbose=args.verbose,
-            segments=args.segments,
-            segment_len_mm=args.segment_len,
-        )
+        out_basename=args.out,
+        verbose=args.verbose,
+        segments=args.segments,
+        segment_len_mm=args.segment_len,
+        workpiece_height=args.workpiece_height,
+        current_mode=args.current_mode,
+        current_override=args.current,
+    )
 
     if args.export_csv:
         export_csv(data_path, args.csv_out, max_segments=args.csv_segments)
+
+    if args.log_json:
+        # Limit to 5000 frames for browser compatibility (reduces file size)
+        # 5000 frames = 5ms at 1µs resolution, plenty for visualization
+        export_json(data_path, args.json_out, workpiece_height=args.workpiece_height)
+
+    if args.log_pack:
+        export_pack(data_path, args.pack_out, workpiece_height=args.workpiece_height)
 
     create_animation(
         data_path,
@@ -618,6 +1003,7 @@ def main():
         playback_speed=args.playback_speed,
         target_video_duration_s=args.target_video_duration if args.save else None,
         target_video_fps=args.target_video_fps,
+        show_edges=args.show_edges,
     )
 
 
