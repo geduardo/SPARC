@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // SPARC Visualization Dashboard - Main Controller
 // ============================================================================
 
@@ -2721,6 +2721,9 @@ class ThermalProfilePanel extends BasePanel {
         this.zoomY = 1.0; // Zoom factor for Y-axis (1.0 = show workpiece + 5mm buffers)
         this.isDragging = false;
         this.lastMouseY = 0;
+        // Cached wire extents for zoom-limits (mm)
+        this.lastWireMin = null;
+        this.lastWireMax = null;
     }
 
     init() {
@@ -2745,8 +2748,9 @@ class ThermalProfilePanel extends BasePanel {
         const zoomFactor = e.deltaY > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
 
         // Limit zoom range
-        const newZoom = Math.max(0.1, Math.min(5.0, this.zoomY * zoomFactor));
-        this.zoomY = newZoom;
+        this.zoomY = Math.max(0.1, Math.min(5.0, this.zoomY * zoomFactor));
+        // Enforce bounds so wire doesn't overgrow and ends stay hidden
+        this.enforceZoomAndPanConstraints();
 
         if (this.controller) {
             this.controller.drawFrame(this.controller.currentFrame);
@@ -2770,6 +2774,8 @@ class ThermalProfilePanel extends BasePanel {
         const mmPerPixel = visibleHeightMM / h;
 
         this.cameraY -= deltaY * mmPerPixel;
+        // Clamp camera after panning
+        this.enforceZoomAndPanConstraints();
 
         if (this.controller) {
             this.controller.drawFrame(this.controller.currentFrame);
@@ -2784,6 +2790,8 @@ class ThermalProfilePanel extends BasePanel {
         // Reset camera to default
         this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
         this.zoomY = 1.0;
+        // Apply constraints after reset
+        this.enforceZoomAndPanConstraints();
 
         if (this.controller) {
             this.controller.drawFrame(this.controller.currentFrame);
@@ -2815,6 +2823,53 @@ class ThermalProfilePanel extends BasePanel {
         // Recenter camera to workpiece center after loading new data
         this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
         this.zoomY = 1.0;
+        // Re-apply constraints (extents updated after first draw)
+        this.enforceZoomAndPanConstraints();
+    }
+
+    // Constrain zoom (min so wire thickness fits; max so ends stay hidden by 5mm)
+    enforceZoomAndPanConstraints() {
+        const w = this.canvas.width / window.devicePixelRatio;
+        const h = this.canvas.height / window.devicePixelRatio;
+
+        // Keep in sync with draw()
+        const marginLeft = 90;
+        const marginRight = 100;
+        const marginTop = 40;
+        const marginBottom = 45;
+        const plotWidth = Math.max(10, w - marginLeft - marginRight);
+        const plotHeight = Math.max(10, h - marginTop - marginBottom);
+
+        const baseVisibleHeightMM = this.workpieceHeightMM + 10; // include 5mm top/bottom cover
+
+        // 1) Zoom-in: wire thickness must fit wire lane
+        const wireVisWidth = plotWidth * 0.35;
+        const allowedWidthPx = Math.max(4, wireVisWidth - 8); // keep small gap
+        const thicknessK = this.wireDiameter * 25; // matches draw() thickness scale
+        // thicknessPx = thicknessK * yScale; yScale = plotHeight / (baseVisibleHeightMM * zoomY)
+        const minZoomForThickness = (thicknessK * plotHeight) / (allowedWidthPx * baseVisibleHeightMM);
+
+        // 2) Zoom-out: keep at least 5mm hidden above/below
+        const fallbackMin = (this.bufferBottomMM - this.contactOffsetBottom - 10);
+        const fallbackMax = (this.bufferBottomMM + this.workpieceHeightMM + this.contactOffsetTop + 10);
+        const wireMin = (this.lastWireMin != null) ? this.lastWireMin : fallbackMin;
+        const wireMax = (this.lastWireMax != null) ? this.lastWireMax : fallbackMax;
+        const totalWireSpan = Math.max(1e-3, wireMax - wireMin);
+        const maxVisible = Math.max(1e-3, totalWireSpan - 10);
+        const maxZoomForSpan = Math.max(0.1, maxVisible / baseVisibleHeightMM);
+
+        // Clamp zoom
+        const lower = Math.max(0.1, minZoomForThickness || 0.1);
+        const upper = Math.max(lower, Math.min(5.0, maxZoomForSpan || 5.0));
+        this.zoomY = Math.max(lower, Math.min(upper, this.zoomY));
+
+        // Clamp camera center
+        const visibleHeightMM = baseVisibleHeightMM * this.zoomY;
+        const minCenter = wireMin + 5 + visibleHeightMM / 2;
+        const maxCenter = wireMax - 5 - visibleHeightMM / 2;
+        if (minCenter <= maxCenter) {
+            this.cameraY = Math.max(minCenter, Math.min(maxCenter, this.cameraY));
+        }
     }
 
     /**
@@ -2889,6 +2944,9 @@ class ThermalProfilePanel extends BasePanel {
         const wireTemperatures = frameData.wire_temperature; // Array of temperatures in K
         const wirePositions = frameData.wire_material_positions_mm; // Array of positions in mm
         const nSegments = wireTemperatures.length;
+        // Cache extents for zoom constraints
+        this.lastWireMin = Math.min(...wirePositions);
+        this.lastWireMax = Math.max(...wirePositions);
 
         if (nSegments === 0) {
             this.drawText('No wire segments', w/2, h/2, {
@@ -3178,28 +3236,18 @@ class ThermalProfilePanel extends BasePanel {
                 font: '10px sans-serif',
                 align: 'left',
                 baseline: 'middle'
-            });
-        }
-
         // Title and stats
         // Stats
         const avgTempC = tempsC.reduce((a, b) => a + b, 0) / tempsC.length;
         const actualMaxTempC = Math.max(...tempsC);
-        const statsLines = [
-            `Segments: ${nSegments}`,
-            `Segment size: ${segmentSizeUm.toFixed(1)} um`,
-            `Avg: ${avgTempC.toFixed(1)}°C`,
-            `Max: ${actualMaxTempC.toFixed(1)}°C`
-        ];
-        const statsX = w - marginRight - 5;
-        const statsY = marginTop + 5;
-        statsLines.forEach((line, idx) => {
-            this.drawText(line, statsX, statsY + idx * 14, {
-                color: '#7c6f64',
-                font: '11px monospace',
-                align: 'right',
-                baseline: 'top'
-            });
+        const statsText = `Segments: ${nSegments} | Segment size: ${segmentSizeUm.toFixed(1)} um | Avg: ${avgTempC.toFixed(1)}°C | Max: ${actualMaxTempC.toFixed(1)}°C`;
+        const statsX = w - 10;
+        const statsY = 10;
+        this.drawText(statsText, statsX, statsY, {
+            color: '#7c6f64',
+            font: '11px monospace',
+            align: 'right',
+            baseline: 'top'
         });
     }
 }
