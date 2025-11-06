@@ -967,14 +967,31 @@ class SideViewPanel extends BasePanel {
     }
 
     setupControls() {
-        // Mouse wheel for zoom (when in independent mode)
+        // Mouse wheel for zoom
         this.canvas.addEventListener('wheel', (e) => {
-            if (!this.useIndependentCamera) return;
-
             e.preventDefault();
-            const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
-            this.independentZoomLevel *= zoomDelta;
-            this.independentZoomLevel = Math.max(0.5, Math.min(100, this.independentZoomLevel));
+            
+            if (this.useIndependentCamera) {
+                // Independent mode: control own zoom
+                const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
+                this.independentZoomLevel *= zoomDelta;
+                // Calculate max zoom to keep black rectangles outside view
+                // Black rectangles extend 100mm + 18.75mm (nozzle height) = 118.75mm from wire center
+                // Total vertical span needed: 2 * 118.75mm = 237.5mm minimum
+                // viewWidth = wireDiameter * zoomLevel should be < canvasHeight * 0.8
+                // Also ensure rectangles stay outside: workpieceThickness/2 + 118.75mm < viewWidth
+                const minViewHeight = (this.workpieceThickness / 2) + 118.75 + 20; // +20mm margin
+                const maxZoom = minViewHeight / this.wireDiameter;
+                this.independentZoomLevel = Math.max(0.05, Math.min(maxZoom, this.independentZoomLevel));
+            } else if (this.sharedCamera) {
+                // Linked mode: control shared camera zoom
+                const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
+                this.sharedCamera.zoomLevel *= zoomDelta;
+                // Calculate max zoom to keep black rectangles outside view
+                const minViewHeight = (this.workpieceThickness / 2) + 118.75 + 20; // +20mm margin
+                const maxZoom = minViewHeight / this.wireDiameter;
+                this.sharedCamera.zoomLevel = Math.max(0.05, Math.min(maxZoom, this.sharedCamera.zoomLevel));
+            }
 
             // Trigger redraw
             if (this.controller && this.controller.data) {
@@ -1273,9 +1290,12 @@ class SideViewPanel extends BasePanel {
         const wireBottomEnd = workpieceHalfThickness + radiusPx;
 
         // Nozzle dimensions - fixed size (independent of workpiece thickness)
-        const nozzleWidth = 6.0 * scale; // 6mm width at base (2x original)
-        const nozzleHeight = 2.0 * scale; // 2mm height (same as original)
-        const nozzleTopWidth = 1.6 * scale; // 1.6mm width at narrow end (2x original)
+        // Original: base 6.0mm, narrow 1.6mm, height 2.0mm
+        // Scale factor: 15 / 1.6 = 9.375x
+        // New dimensions maintain original proportions:
+        const nozzleWidth = 56.25 * scale; // 6.0 * 9.375 = 56.25mm width at base
+        const nozzleHeight = 18.75 * scale; // 2.0 * 9.375 = 18.75mm height (vertical)
+        const nozzleTopWidth = 15.0 * scale; // 15mm width at narrow end (contact with wire)
 
         // Upper nozzle (trapezoid pointing down) - ends at wire top
         this.ctx.fillStyle = '#7c6f64'; // Gruvbox darker gray
@@ -1294,6 +1314,26 @@ class SideViewPanel extends BasePanel {
         this.ctx.lineWidth = 1.5;
         this.ctx.stroke();
 
+        // Upper black rectangle (100mm extension above upper nozzle)
+        const extensionLength = 100.0 * scale; // 100mm extension
+        const upperRectTop = wireTopEnd - nozzleHeight;
+        this.ctx.fillStyle = '#000000'; // Black
+        this.ctx.fillRect(
+            wireCenterXPx - nozzleWidth / 2,
+            upperRectTop - extensionLength,
+            nozzleWidth,
+            extensionLength
+        );
+        // Black rectangle outline
+        this.ctx.strokeStyle = '#1d2021';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.strokeRect(
+            wireCenterXPx - nozzleWidth / 2,
+            upperRectTop - extensionLength,
+            nozzleWidth,
+            extensionLength
+        );
+
         // Lower nozzle (trapezoid pointing up) - ends at wire bottom
         this.ctx.fillStyle = '#7c6f64';
         this.ctx.beginPath();
@@ -1310,6 +1350,25 @@ class SideViewPanel extends BasePanel {
         this.ctx.strokeStyle = '#504945';
         this.ctx.lineWidth = 1.5;
         this.ctx.stroke();
+
+        // Lower black rectangle (100mm extension below lower nozzle)
+        const lowerRectBottom = wireBottomEnd + nozzleHeight;
+        this.ctx.fillStyle = '#000000'; // Black
+        this.ctx.fillRect(
+            wireCenterXPx - nozzleWidth / 2,
+            lowerRectBottom,
+            nozzleWidth,
+            extensionLength
+        );
+        // Black rectangle outline
+        this.ctx.strokeStyle = '#1d2021';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.strokeRect(
+            wireCenterXPx - nozzleWidth / 2,
+            lowerRectBottom,
+            nozzleWidth,
+            extensionLength
+        );
     }
 
     drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, sparkLocationMM, gapUM, decayFactor) {
@@ -1339,34 +1398,42 @@ class SideViewPanel extends BasePanel {
         const brightness = decayFactor; // 1.0 when new, fades to 0
         const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
         
-        // Spark thickness: 100 µm = 0.1 mm (as originally requested)
-        const sparkThickness = 0.1 * scale;
+        // Spark vertical thickness: 0.1mm in world space (scales with zoom)
+        const sparkVerticalMM = 0.1; // mm
+        const sparkVerticalPx = sparkVerticalMM * scale;
         
-        // Draw bright spark with multiple layers for visibility (only varying glow, not thickness)
-        // Layer 1: Wide outer glow (cool blue-white outer)
-        this.ctx.strokeStyle = `rgba(150, 200, 255, ${alpha * 0.4})`; // Light blue outer glow
-        this.ctx.lineWidth = sparkThickness * 3.0;
+        // Spark horizontal thickness: FIXED in pixels, but with minimum based on scaled size
+        const sparkHorizontalScaledPx = sparkVerticalMM * scale; // What it would be if scaled
+        const sparkHorizontalFixedPx = Math.max(3.0, sparkHorizontalScaledPx); // At least 3px, or scaled size
+        
+        // Draw spark as lines with variable thickness for more organic look
+        // Use lines instead of rectangles for less uniform appearance
+        
+        // Layer 1: Wide outer glow (cool blue-white outer) - more transparent
+        this.ctx.strokeStyle = `rgba(150, 200, 255, ${alpha * 0.2})`;
+        this.ctx.lineWidth = sparkHorizontalFixedPx * 5.0; // Horizontal width
+        this.ctx.shadowBlur = 20;
+        this.ctx.shadowColor = `rgba(180, 220, 255, ${alpha * 0.3})`;
+        this.ctx.lineCap = 'round'; // Round ends for softer look
+        this.ctx.beginPath();
+        this.ctx.moveTo(wireRightEdge, sparkY);
+        this.ctx.lineTo(sparkEndX, sparkY);
+        this.ctx.stroke();
+
+        // Layer 2: Medium glow (bright cyan-white) - more transparent
+        this.ctx.strokeStyle = `rgba(200, 230, 255, ${alpha * 0.4})`;
+        this.ctx.lineWidth = sparkHorizontalFixedPx * 3.0;
         this.ctx.shadowBlur = 15;
-        this.ctx.shadowColor = `rgba(180, 220, 255, ${alpha * 0.8})`;
+        this.ctx.shadowColor = `rgba(220, 240, 255, ${alpha * 0.5})`;
         this.ctx.beginPath();
         this.ctx.moveTo(wireRightEdge, sparkY);
         this.ctx.lineTo(sparkEndX, sparkY);
         this.ctx.stroke();
 
-        // Layer 2: Medium glow (bright cyan-white)
-        this.ctx.strokeStyle = `rgba(200, 230, 255, ${alpha * 0.7})`; // Cyan-white
-        this.ctx.lineWidth = sparkThickness * 2.0;
-        this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = `rgba(220, 240, 255, ${alpha})`;
-        this.ctx.beginPath();
-        this.ctx.moveTo(wireRightEdge, sparkY);
-        this.ctx.lineTo(sparkEndX, sparkY);
-        this.ctx.stroke();
-
-        // Layer 3: Bright core (100µm thickness - intense white-blue)
-        this.ctx.strokeStyle = `rgba(240, 250, 255, ${alpha * 0.95})`; // Very bright blue-white core
-        this.ctx.lineWidth = sparkThickness;
-        this.ctx.shadowBlur = 5;
+        // Layer 3: Bright core (intense white) - keep opaque
+        this.ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+        this.ctx.lineWidth = sparkHorizontalFixedPx * 0.8; // Slightly thinner for variation
+        this.ctx.shadowBlur = 8;
         this.ctx.shadowColor = `rgba(255, 255, 255, ${alpha})`;
         this.ctx.beginPath();
         this.ctx.moveTo(wireRightEdge, sparkY);
@@ -2856,10 +2923,10 @@ class ThermalProfilePanel extends BasePanel {
         const wireMax = (this.lastWireMax != null) ? this.lastWireMax : fallbackMax;
         const totalWireSpan = Math.max(1e-3, wireMax - wireMin);
         const maxVisible = Math.max(1e-3, totalWireSpan - 10);
-        const maxZoomForSpan = Math.max(0.1, maxVisible / baseVisibleHeightMM);
+        const maxZoomForSpan = Math.max(0.105, maxVisible / baseVisibleHeightMM);
 
-        // Clamp zoom
-        const lower = Math.max(0.1, minZoomForThickness || 0.1);
+        // Clamp zoom - min 0.105 (more zoomed out), max 5.0 (more zoomed in)
+        const lower = Math.max(0.105, minZoomForThickness || 0.105);
         const upper = Math.max(lower, Math.min(5.0, maxZoomForSpan || 5.0));
         this.zoomY = Math.max(lower, Math.min(upper, this.zoomY));
 
@@ -3236,6 +3303,9 @@ class ThermalProfilePanel extends BasePanel {
                 font: '10px sans-serif',
                 align: 'left',
                 baseline: 'middle'
+            });
+        }
+
         // Title and stats
         // Stats
         const avgTempC = tempsC.reduce((a, b) => a + b, 0) / tempsC.length;
