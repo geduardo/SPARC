@@ -196,11 +196,11 @@ def main():
     # Default buffers are 30mm each, workpiece is 100mm -> total 160mm
     # segment_len = 160mm / 200 = 0.8mm
     wire_params = WireModuleParameters(
-        segment_len=2,  # mm - this will give us 200 segments
+        segment_len=0.2,  # mm
         moving_segments=True,
     )
 
-    config = EnvironmentConfig(workpiece_height=10.0)
+    config = EnvironmentConfig(workpiece_height=100.0)
     env = WireEDMEnv(config=config)
 
     # Override wire module with custom parameters
@@ -216,7 +216,7 @@ def main():
     print("Wire breaking disabled for temperature tracking.")
 
     # Initialize controller
-    target_voltage = 40.0
+    target_voltage = 47.0
     controller = create_voltage_controller(target_voltage)
 
     # Voltage history tracking
@@ -445,6 +445,53 @@ def main():
     print(
         f"\nPlotting {len(completed_segments)} tracked segments (sampled every {sampling_interval_us/1000:.0f}ms)..."
     )
+
+    # Save heating curves to CSV files
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(completed_segments) > 0:
+        import csv
+        import os
+        
+        # Create output directory if it doesn't exist
+        csv_dir = "heating_curves"
+        os.makedirs(csv_dir, exist_ok=True)
+        
+        print(f"\nSaving heating curves to CSV files in '{csv_dir}/'...")
+        
+        for idx, segment in enumerate(completed_segments):
+            # Extract time and temperature data
+            times = [t for t, _ in segment["history"]]
+            temps = [T for _, T in segment["history"]]
+            
+            # Convert temperatures from K to °C
+            temps_celsius = [T - 273.15 for T in temps]
+            
+            # Calculate relative time (time since segment entered inlet) in milliseconds
+            inlet_time_us = segment["inlet_time_us"]
+            relative_times_ms = [(t - inlet_time_us) / 1000.0 for t in times]
+            
+            # Create CSV filename
+            csv_filename = os.path.join(csv_dir, f"segment_{idx+1:02d}_{timestamp}.csv")
+            
+            # Write CSV file
+            with open(csv_filename, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write header with metadata
+                writer.writerow(['# Segment Temperature History'])
+                writer.writerow([f'# Segment Number: {segment["segment_number"]}'])
+                writer.writerow([f'# Inlet Time (µs): {segment["inlet_time_us"]}'])
+                writer.writerow([f'# Outlet Time (µs): {segment.get("outlet_time_us", "N/A")}'])
+                writer.writerow([f'# Transit Time (ms): {relative_times_ms[-1]:.2f}'])
+                writer.writerow(['# '])
+                # Write column headers
+                writer.writerow(['Time_Since_Inlet_ms', 'Temperature_Celsius', 'Absolute_Time_us', 'Temperature_Kelvin'])
+                # Write data rows
+                for rel_t, temp_c, abs_t, temp_k in zip(relative_times_ms, temps_celsius, times, temps):
+                    writer.writerow([f'{rel_t:.6f}', f'{temp_c:.4f}', f'{abs_t:.1f}', f'{temp_k:.4f}'])
+            
+            print(f"  ✓ Saved: {csv_filename}")
+        
+        print(f"\n✓ All {len(completed_segments)} heating curves saved to CSV!")
 
     # Plot each segment's temperature history
     if len(completed_segments) > 0:

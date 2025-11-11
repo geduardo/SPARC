@@ -45,6 +45,7 @@ def run_quickstart_sim(
     workpiece_height: float = 20.0,
     current_mode: int = 7,
     current_override: float | None = None,
+    target_voltage: float = 30.0,
 ):
     # Import necessary modules
     from src.wedm.core.env_config import EnvironmentConfig
@@ -160,6 +161,7 @@ def run_quickstart_sim(
         logger_config=logger_config,
         controller_type=controller,
         current_mode=current_mode,
+        target_voltage=target_voltage,
     )
     # log_data is file path (numpy backend)
     return logger_config["backend"]["filepath"]
@@ -886,6 +888,13 @@ def main():
         help="Current in Amperes (overrides --current-mode by finding closest matching mode). Example: --current 215 sets I13 (215A)",
     )
     sim_group.add_argument(
+        "--target-voltage",
+        type=float,
+        default=30.0,
+        dest="target_voltage",
+        help="Target average voltage for voltage controller in V (default: 30.0)",
+    )
+    sim_group.add_argument(
         "--verbose", action="store_true", help="Verbose simulation logs"
     )
 
@@ -983,6 +992,7 @@ def main():
             workpiece_height=args.workpiece_height,
             current_mode=args.current_mode,
             current_override=args.current,
+            target_voltage=args.target_voltage,
         )
 
     if args.export_csv:
