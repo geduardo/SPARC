@@ -10,7 +10,8 @@ import {
     LARGE_FILE_WARNING_BYTES,
     MATERIAL_SEARCH_RADIUS,
     MATERIAL_TRACKING_FALLBACK_DISTANCE,
-    MATERIAL_TRACKING_MAX_DISTANCE
+    MATERIAL_TRACKING_MAX_DISTANCE,
+    COLORS
 } from './utils/constants.js';
 import { SideViewPanel } from './panels/SideViewPanel.js';
 import { OscilloscopePanel } from './panels/OscilloscopePanel.js';
@@ -190,8 +191,22 @@ export class DashboardController {
         if (this.elements.closeDamageWindow) {
             this.elements.closeDamageWindow.addEventListener('click', () => {
                 win.style.display = 'none';
+                // Clear tracking when window is closed
+                this.selectedMaterialTrace = null;
+                this.selectedSegmentClickIndex = null;
+                if (this.data) {
+                    this.drawFrame(this.currentFrame);
+                }
             });
         }
+
+        // Redraw plot when window is resized
+        const resizeObserver = new ResizeObserver(() => {
+            if (win.style.display !== 'none' && this.selectedMaterialTrace) {
+                this.drawDamagePlot();
+            }
+        });
+        resizeObserver.observe(win);
     }
 
     showDamagePlot() {
@@ -218,7 +233,7 @@ export class DashboardController {
         const w = rect.width, h = rect.height;
 
         ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = '#fbf1c7';
+        ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
 
         const damageData = this.data.wire_damage || this.data.damage;
@@ -260,7 +275,7 @@ export class DashboardController {
         const maxT = Math.abs(inlet - outlet) / speed;
         const maxY = 1.0;
 
-        const padL = 50, padR = 20, padT = 30, padB = 40;
+        const padL = 70, padR = 40, padT = 50, padB = 60;
         const graphW = w - padL - padR, graphH = h - padT - padB;
 
         let currIdx = -1;
@@ -276,16 +291,29 @@ export class DashboardController {
         }
         if (startIdx === -1) startIdx = 0;
 
-        ctx.strokeStyle = '#3c3836'; ctx.beginPath();
+        ctx.strokeStyle = COLORS.text; ctx.lineWidth = 1.5; ctx.beginPath();
         ctx.moveTo(padL, padT); ctx.lineTo(padL, h - padB); ctx.lineTo(w - padR, h - padB);
         ctx.stroke();
 
-        ctx.fillStyle = '#3c3836'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-        ctx.fillText('1.0', padL - 5, padT + 4); ctx.fillText('0', padL - 5, h - padB);
-        ctx.textAlign = 'center'; ctx.fillText('0 ms', padL, h - padB + 15);
-        ctx.fillText(maxT.toFixed(0) + ' ms', w - padR, h - padB + 15);
+        ctx.fillStyle = COLORS.text; ctx.font = '16px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText('1.0', padL - 8, padT + 6); ctx.fillText('0', padL - 8, h - padB + 6);
+        ctx.textAlign = 'center'; ctx.font = '15px sans-serif';
+        ctx.fillText('0 ms', padL, h - padB + 28);
+        ctx.fillText(maxT.toFixed(0) + ' ms', w - padR, h - padB + 28);
 
-        ctx.strokeStyle = '#d65d0e'; ctx.lineWidth = 2; ctx.beginPath();
+        // Axis labels
+        ctx.save();
+        ctx.translate(padL - 50, padT + graphH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Damage', 0, 0);
+        ctx.restore();
+
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText('Time (ms)', padL + graphW / 2, h - padB + 48);
+
+        ctx.strokeStyle = COLORS.danger; ctx.lineWidth = 2.5; ctx.beginPath();
         let first = true;
         for (let i = startIdx; i <= currIdx; i++) {
             const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
@@ -302,15 +330,15 @@ export class DashboardController {
             const tx = distFromInlet / speed;
             const cx = padL + (tx / maxT) * graphW;
             const cy = h - padB - (allD[currIdx] / maxY) * graphH;
-            ctx.setLineDash([4, 4]); ctx.strokeStyle = '#d65d0e';
+            ctx.setLineDash([4, 4]); ctx.strokeStyle = COLORS.danger; ctx.lineWidth = 1.5;
             ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, h - padB); ctx.stroke();
-            ctx.setLineDash([]); ctx.fillStyle = '#d65d0e';
-            ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.setLineDash([]); ctx.fillStyle = COLORS.danger;
+            ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
         }
 
         const clickIdx = this.selectedSegmentClickIndex !== undefined ? this.selectedSegmentClickIndex : '?';
-        ctx.fillStyle = '#427b58'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
-        ctx.fillText(`Segment #${clickIdx}`, padL + 10, padT - 15);
+        ctx.fillStyle = COLORS.text; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`Segment #${clickIdx}`, padL + 10, padT - 22);
     }
 
     traceMaterial(startFrame, startSegmentIndex) {
@@ -449,7 +477,7 @@ export class DashboardController {
 
     toggleViewsLink() {
         this.viewsLinked = !this.viewsLinked;
-        this.elements.linkViews.textContent = this.viewsLinked ? 'Linked Views' : 'Unlinked Views';
+        this.updateLinkViewsIcon();
 
         if (!this.viewsLinked) {
             this.panels.sideView.useIndependentCamera = true;
@@ -461,6 +489,26 @@ export class DashboardController {
 
         if (this.data) {
             this.drawFrame(this.currentFrame);
+        }
+    }
+
+    updateLinkViewsIcon() {
+        const btn = this.elements.linkViews;
+        if (this.viewsLinked) {
+            // Linked icon (chain links connected)
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>`;
+            btn.style.color = 'var(--accent)';
+        } else {
+            // Unlinked icon (broken chain)
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                <line x1="2" y1="2" x2="22" y2="22"/>
+            </svg>`;
+            btn.style.color = 'var(--text-muted)';
         }
     }
 
@@ -566,12 +614,28 @@ export class DashboardController {
         }
 
         this.isPlaying = !this.isPlaying;
-        this.elements.playPause.textContent = this.isPlaying ? 'Pause' : 'Play';
+        this.updatePlayPauseIcon();
 
         if (this.isPlaying) {
             this.play();
         } else {
             this.pause();
+        }
+    }
+
+    updatePlayPauseIcon() {
+        const btn = this.elements.playPause;
+        if (this.isPlaying) {
+            // Pause icon (two vertical bars)
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="4" width="4" height="16"/>
+                <rect x="14" y="4" width="4" height="16"/>
+            </svg>`;
+        } else {
+            // Play icon (triangle)
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>`;
         }
     }
 
@@ -626,7 +690,7 @@ export class DashboardController {
     resetTimeline() {
         this.pause();
         this.isPlaying = false;
-        this.elements.playPause.textContent = 'Play';
+        this.updatePlayPauseIcon();
         this.seekTo(0);
     }
 

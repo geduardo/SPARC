@@ -480,16 +480,28 @@ export class SideViewPanel extends BasePanel {
         const lineHeight = 16;
         let y = padding;
 
-        this.drawText('SIDE VIEW', padding, y, { color: '#427b58', font: 'bold 11px sans-serif' });
-        y += lineHeight;
-
         const wireEdgePos = frameData.wire_position || 0;
         const workpieceEdgePos = frameData.workpiece_position || 0;
         const gap = workpieceEdgePos - wireEdgePos;
 
-        this.drawText(`Gap: ${gap.toFixed(1)} um`, padding, y, { color: '#076678', font: '11px monospace' });
+        this.drawText(`Wire D: ${this.wireDiameter.toFixed(3)} mm`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
         y += lineHeight;
 
-        this.drawText(`WP Thickness: ${this.workpieceThickness.toFixed(1)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
+        this.drawText(`Wire Pos: ${wireEdgePos.toFixed(1)} um`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`WP Pos: ${workpieceEdgePos.toFixed(1)} um`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`Gap: ${gap.toFixed(1)} um`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
+        y += lineHeight;
+
+        this.drawText(`WP Thickness: ${this.workpieceThickness.toFixed(1)} mm`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
+        y += lineHeight;
+
+        if (frameData.debris_density !== undefined) {
+            const debrisPercent = (frameData.debris_density * 100).toFixed(1);
+            this.drawText(`Debris: ${debrisPercent}%`, padding, y, { color: COLORS.textMuted, font: '11px monospace' });
+        }
     }
 }

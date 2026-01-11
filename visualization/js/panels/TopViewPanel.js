@@ -480,41 +480,6 @@ export class TopViewPanel extends BasePanel {
 
     drawInfoOverlay(w, h, gap, wirePos, workpiecePos, frontierRadius, frameData) {
         const padding = 10;
-        const lineHeight = 16;
-        let y = padding;
-
-        this.drawText('TOP VIEW', padding, y, { color: '#427b58', font: 'bold 11px sans-serif' });
-        y += lineHeight;
-
-        this.drawText(`Wire Pos: ${wirePos.toFixed(1)} um`, padding, y, { color: '#d79921', font: '11px monospace' });
-        y += lineHeight;
-
-        this.drawText(`WP Pos: ${workpiecePos.toFixed(1)} um`, padding, y, { color: '#7c6f64', font: '11px monospace' });
-        y += lineHeight;
-
-        this.drawText(`Gap: ${gap.toFixed(1)} um`, padding, y, { color: '#076678', font: '11px monospace' });
-        y += lineHeight;
-
-        this.drawText(`Wire D: ${this.wireDiameter.toFixed(3)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
-        y += lineHeight;
-
-        this.drawText(`Frontier R: ${frontierRadius.toFixed(3)} mm`, padding, y, { color: '#7c6f64', font: '11px monospace' });
-        y += lineHeight;
-
-        this.drawText(`Zoom: ${this.zoomLevel.toFixed(1)}x`, padding, y, { color: '#427b58', font: '11px monospace' });
-        y += lineHeight;
-
-        if (frameData.debris_density !== undefined) {
-            const debrisPercent = (frameData.debris_density * 100).toFixed(1);
-            this.drawText(`Debris: ${debrisPercent}%`, padding, y, { color: '#d65d0e', font: '11px monospace' });
-            y += lineHeight;
-        }
-
-        if (frameData.spark_status && frameData.spark_status[0] === 1) {
-            this.drawText('SPARK', padding, y, { color: '#8f3f71', font: 'bold 11px sans-serif' });
-        } else if (frameData.spark_status && frameData.spark_status[0] === -1) {
-            this.drawText('SHORT', padding, y, { color: '#9d0006', font: 'bold 11px sans-serif' });
-        }
 
         // Scale reference
         let scaleBarLength, scaleBarLabel;

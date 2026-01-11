@@ -595,15 +595,17 @@ export class ThermalProfilePanel extends BasePanel {
             const pos = wirePositions[segIdx];
             const y = posToY(pos);
             const rectH = Math.ceil(segmentHeightViz) + 2;
+            const x = wireVisCenterX - visualThickness / 2;
 
             this.ctx.strokeStyle = COLORS.accent;
-            this.ctx.lineWidth = 2;
-            this.ctx.strokeRect(wireVisCenterX - visualThickness / 2 - 2, y, visualThickness + 4, rectH);
+            this.ctx.lineWidth = 4;
+            this.ctx.strokeRect(Math.floor(x) - 3, Math.floor(y) - 1, Math.ceil(visualThickness) + 6, rectH + 2);
 
             this.ctx.fillStyle = COLORS.accent;
-            this.ctx.font = 'bold 10px sans-serif';
-            this.ctx.textAlign = 'left';
-            this.ctx.fillText("SELECTED", wireVisCenterX + visualThickness / 2 + 10, y + rectH / 2 + 4);
+            this.ctx.font = 'bold 11px sans-serif';
+            this.ctx.textAlign = 'right';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText("SELECTED", Math.floor(x) - 12, Math.floor(y) + rectH / 2);
         }
     }
 }
