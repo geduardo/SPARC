@@ -4,307 +4,46 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SPARC - Wire EDM Visualization Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #fbf1c7;
-            color: #3c3836;
-            overflow: hidden;
-        }
-
-        #container {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            padding: 10px;
-            gap: 10px;
-        }
-
-        /* Header with controls */
-        #controls {
-            background: #ebdbb2;
-            padding: 15px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            box-shadow: 0 2px 8px rgba(60,56,54,0.15);
-        }
-
-        #controls h1 {
-            font-size: 1.2rem;
-            margin-right: auto;
-            color: #427b58;
-        }
-
-        .control-group {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        button {
-            background: #d5c4a1;
-            border: none;
-            color: #3c3836;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: background 0.2s;
-        }
-
-        button:hover {
-            background: #bdae93;
-        }
-
-        button:active {
-            background: #a89984;
-        }
-
-        #timeline {
-            flex: 1;
-            min-width: 200px;
-            cursor: pointer;
-        }
-
-        #frameCounter {
-            font-family: 'Courier New', monospace;
-            font-size: 0.95rem;
-            min-width: 100px;
-            color: #d65d0e;
-            font-weight: bold;
-        }
-
-        #timeDisplay {
-            font-family: 'Courier New', monospace;
-            font-size: 0.95rem;
-            min-width: 120px;
-            color: #427b58;
-        }
-
-        #loadData {
-            background: #8ec07c;
-            color: #3c3836;
-            font-weight: bold;
-        }
-
-        #loadData:hover {
-            background: #b8bb26;
-        }
-
-        /* Dashboard grid */
-        #dashboard {
-            flex: 1;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: 1fr 1fr;
-            gap: 10px;
-            min-height: 0;
-        }
-
-        .panel {
-            background: #f9f5d7;
-            border-radius: 8px;
-            padding: 15px;
-            display: flex;
-            flex-direction: column;
-            box-shadow: 0 2px 8px rgba(60,56,54,0.15);
-            overflow: hidden;
-        }
-        
-        .panel.oscilloscope-panel {
-            background: #2a2a2a;
-            padding: 0;
-        }
-        
-        .panel.oscilloscope-panel .panel-header {
-            padding: 15px;
-        }
-        
-        .panel.oscilloscope-panel .canvas-container {
-            padding: 0 15px 15px 15px;
-        }
-
-        .panel-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #ebdbb2;
-        }
-
-        .panel-title {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: #427b58;
-        }
-
-        .panel-info {
-            font-size: 0.75rem;
-            color: #7c6f64;
-        }
-
-        .canvas-container {
-            flex: 1;
-            position: relative;
-            min-height: 0;
-        }
-
-        /* Oscilloscope layout */
-        .osc-layout {
-            display: flex;
-            height: 100%;
-            gap: 10px;
-        }
-        .osc-plot {
-            flex: 1;
-            position: relative;
-            min-width: 0;
-        }
-        .osc-sidebar {
-            width: 132px;
-            background: #3a3a3a;
-            border-radius: 6px;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            border: 1px solid #555;
-            position: relative;
-        }
-        .osc-sidebar .group {
-            background: #2a2a2a;
-            border: 1px solid #555;
-            border-radius: 4px;
-            padding: 6px;
-            margin: 8px;
-        }
-        .osc-sidebar .group:first-child {
-            margin-top: 10px;
-        }
-        .osc-sidebar .group-title {
-            font-size: 0.75rem;
-            color: #4fc3ff;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-        .osc-sidebar .group#ch2Controls .group-title {
-            color: #ff6aa0;
-        }
-        .osc-sidebar label {
-            display: block;
-            font-size: 0.7rem;
-            color: #c0c0c0;
-            margin-bottom: 2px;
-            margin-top: 4px;
-        }
-        .osc-sidebar select, .osc-sidebar input[type="number"] {
-            width: 100%;
-            padding: 4px 6px;
-            border-radius: 3px;
-            border: 1px solid #555;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            font-size: 0.75rem;
-        }
-
-        canvas {
-            width: 100%;
-            height: 100%;
-            border-radius: 4px;
-        }
-
-        /* Loading overlay */
-        #loadingOverlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(251, 241, 199, 0.9);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-
-        #loadingOverlay.hidden {
-            display: none;
-        }
-
-        .loading-content {
-            text-align: center;
-            color: #3c3836;
-        }
-
-        .spinner {
-            border: 4px solid #ebdbb2;
-            border-top: 4px solid #8ec07c;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        #fileInput {
-            display: none;
-        }
-    </style>
+    <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
     <div id="container">
         <!-- Controls Bar -->
         <div id="controls">
-            <h1>⚡ SPARC Dashboard</h1>
+            <h1>SPARC Dashboard</h1>
 
-            <button id="loadData">📁 Load Data</button>
+            <button id="loadData">Load Data</button>
             <input type="file" id="fileInput" accept=".json,.npz,.zip">
 
             <div class="control-group">
-                <button id="playPause">▶ Play</button>
-                <button id="reset">↻ Reset</button>
+                <button id="playPause">Play</button>
+                <button id="reset">Reset</button>
             </div>
 
             <div class="control-group">
-                <button id="prevFrame">◀ Prev</button>
-                <button id="nextFrame">Next ▶</button>
+                <button id="prevFrame">Prev</button>
+                <button id="nextFrame">Next</button>
             </div>
 
             <div class="control-group">
-                <button id="linkViews">🔗 Linked Views</button>
+                <button id="linkViews">Linked Views</button>
             </div>
 
             <div class="control-group">
-                <label for="speedControl" style="font-size: 0.85rem; color: #7c6f64;">Speed:</label>
-                <select id="speedControl" style="padding: 6px 10px; border-radius: 4px; border: 1px solid #bdae93; background: #f9f5d7; cursor: pointer;">
-                    <option value="1">1 µs/s</option>
-                    <option value="30">30 µs/s</option>
-                    <option value="60" selected>60 µs/s</option>
-                    <option value="120">120 µs/s</option>
-                    <option value="240">240 µs/s</option>
-                    <option value="480">480 µs/s</option>
-                    <option value="1000">1000 µs/s</option>
-                    <option value="10000">10,000 µs/s</option>
-                    <option value="100000">100,000 µs/s</option>
-                    <option value="1000000">1,000,000 µs/s</option>
+                <label for="speedControl">Speed:</label>
+                <select id="speedControl">
+                    <option value="1">1 us/s</option>
+                    <option value="30">30 us/s</option>
+                    <option value="60" selected>60 us/s</option>
+                    <option value="120">120 us/s</option>
+                    <option value="240">240 us/s</option>
+                    <option value="480">480 us/s</option>
+                    <option value="1000">1000 us/s</option>
+                    <option value="10000">10,000 us/s</option>
+                    <option value="100000">100,000 us/s</option>
+                    <option value="1000000">1,000,000 us/s</option>
                 </select>
             </div>
-
-            
 
             <input type="range" id="timeline" min="0" max="100" value="0">
 
@@ -318,7 +57,7 @@
             <div class="panel">
                 <div class="panel-header">
                     <span class="panel-title">Side View</span>
-                    <button id="toggleSideViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
+                    <button id="toggleSideViewSparks" class="toggle-btn toggle-on">Sparks ON</button>
                     <span class="panel-info" id="sideViewInfo">Wire + Workpiece</span>
                 </div>
                 <div class="canvas-container">
@@ -341,7 +80,7 @@
             <div class="panel">
                 <div class="panel-header">
                     <span class="panel-title">Top View</span>
-                    <button id="toggleTopViewSparks" style="padding: 4px 8px; font-size: 0.8rem; background: #8ec07c; border: none; border-radius: 3px; cursor: pointer;">⚡ Sparks ON</button>
+                    <button id="toggleTopViewSparks" class="toggle-btn toggle-on">Sparks ON</button>
                     <span class="panel-info" id="topViewInfo">Debris Concentration</span>
                 </div>
                 <div class="canvas-container">
@@ -351,45 +90,45 @@
 
             <!-- Panel 4: Oscilloscope -->
             <div class="panel oscilloscope-panel">
-                <div class="panel-header" style="background: #3a3a3a; border-bottom: 2px solid #555;">
-                    <span class="panel-title" style="color: #e0e0e0;">Virtual Oscilloscope</span>
+                <div class="panel-header osc-header">
+                    <span class="panel-title">Virtual Oscilloscope</span>
                     <div class="control-group">
-                        <label for="timebaseControl" style="font-size: 0.8rem; color: #c0c0c0;">Timebase:</label>
-                        <select id="timebaseControl" style="padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; cursor: pointer; font-size: 0.75rem; width: 90px;">
+                        <label for="timebaseControl">Timebase:</label>
+                        <select id="timebaseControl" class="osc-select">
                             <option value="auto" selected>Auto</option>
-                            <option value="1">1 µs/div</option>
-                            <option value="5">5 µs/div</option>
-                            <option value="10">10 µs/div</option>
-                            <option value="20">20 µs/div</option>
-                            <option value="50">50 µs/div</option>
-                            <option value="100">100 µs/div</option>
-                            <option value="200">200 µs/div</option>
-                            <option value="500">500 µs/div</option>
+                            <option value="1">1 us/div</option>
+                            <option value="5">5 us/div</option>
+                            <option value="10">10 us/div</option>
+                            <option value="20">20 us/div</option>
+                            <option value="50">50 us/div</option>
+                            <option value="100">100 us/div</option>
+                            <option value="200">200 us/div</option>
+                            <option value="500">500 us/div</option>
                             <option value="1000">1 ms/div</option>
                             <option value="2000">2 ms/div</option>
                             <option value="5000">5 ms/div</option>
                             <option value="10000">10 ms/div</option>
                         </select>
                     </div>
-            <div class="control-group">
-                <label for="triggerEnable" style="font-size: 0.75rem; color: #c0c0c0; margin-right: 4px;">Trigger:</label>
-                <input type="checkbox" id="triggerEnable" style="margin-right: 6px;">
-                <label for="triggerSource" style="font-size: 0.7rem; color: #c0c0c0; margin-right: 3px;">Source:</label>
-                <select id="triggerSource" style="padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; cursor: pointer; font-size: 0.75rem; width: 70px; margin-right: 6px;">
-                    <option value="ch1" selected>Ch1</option>
-                    <option value="ch2">Ch2</option>
-                </select>
-                <label for="triggerSlope" style="font-size: 0.7rem; color: #c0c0c0; margin-right: 3px;">Edge:</label>
-                <select id="triggerSlope" style="padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; cursor: pointer; font-size: 0.75rem; width: 75px; margin-right: 6px;">
-                    <option value="rising" selected>Rising</option>
-                    <option value="falling">Falling</option>
-                </select>
-                <label for="triggerLevel" style="font-size: 0.7rem; color: #c0c0c0; margin-right: 3px;">Level:</label>
-                <input type="number" id="triggerLevel" step="0.1" value="50" style="width: 60px; padding: 4px 5px; border-radius: 3px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; font-size: 0.75rem; margin-right: 6px;">
-                <label for="triggerDelay" style="font-size: 0.7rem; color: #c0c0c0; margin-right: 3px;">Delay (µs):</label>
-                <input type="number" id="triggerDelay" step="1" value="0" style="width: 60px; padding: 4px 5px; border-radius: 3px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; font-size: 0.75rem;">
-            </div>
-                    <button id="toggleOscilloscope" style="padding: 6px 14px; font-size: 1rem; background: #cc0000; border: none; border-radius: 3px; cursor: pointer; color: #fff; font-weight: bold; width: 80px; text-align: center; font-family: 'Consolas', 'Monaco', 'Courier New', monospace;">⏻ OFF</button>
+                    <div class="control-group">
+                        <label for="triggerEnable">Trigger:</label>
+                        <input type="checkbox" id="triggerEnable">
+                        <label for="triggerSource">Source:</label>
+                        <select id="triggerSource" class="osc-select osc-select-sm">
+                            <option value="ch1" selected>Ch1</option>
+                            <option value="ch2">Ch2</option>
+                        </select>
+                        <label for="triggerSlope">Edge:</label>
+                        <select id="triggerSlope" class="osc-select osc-select-sm">
+                            <option value="rising" selected>Rising</option>
+                            <option value="falling">Falling</option>
+                        </select>
+                        <label for="triggerLevel">Level:</label>
+                        <input type="number" id="triggerLevel" class="osc-input" step="0.1" value="50">
+                        <label for="triggerDelay">Delay (us):</label>
+                        <input type="number" id="triggerDelay" class="osc-input" step="1" value="0">
+                    </div>
+                    <button id="toggleOscilloscope" class="osc-power-btn osc-power-off">OFF</button>
                 </div>
                 <div class="canvas-container">
                     <div class="osc-layout">
@@ -437,12 +176,12 @@
     </div>
 
     <!-- Floating Plot Window -->
-    <div id="damagePlotWindow" style="display: none; position: absolute; top: 100px; left: 100px; width: 500px; height: 350px; background: #fbf1c7; border: 2px solid #427b58; border-radius: 8px; box-shadow: 0 4px 12px rgba(60,56,54,0.3); z-index: 2000; flex-direction: column;">
-        <div class="window-header" style="background: #ebdbb2; padding: 10px; border-bottom: 1px solid #d5c4a1; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-            <span class="window-title" style="font-weight: bold; color: #427b58;">Segment Damage History</span>
-            <button id="closePlotWindow" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #cc0000; padding: 0 5px;">&times;</button>
+    <div id="damagePlotWindow" style="display: none;">
+        <div class="window-header">
+            <span class="window-title">Segment Damage History</span>
+            <button id="closePlotWindow">&times;</button>
         </div>
-        <div class="window-content" style="flex: 1; padding: 10px; min-height: 0;">
+        <div class="window-content">
             <canvas id="damagePlotCanvas"></canvas>
         </div>
     </div>
@@ -455,6 +194,6 @@
         </div>
     </div>
 
-    <script src="dashboard.js"></script>
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>
