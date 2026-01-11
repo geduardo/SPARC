@@ -10,28 +10,55 @@
     <div id="container">
         <!-- Controls Bar -->
         <div id="controls">
-            <h1>SPARC Dashboard</h1>
+            <h1>SPARC</h1>
 
-            <button id="loadData">Load Data</button>
+            <button id="loadData" class="icon-btn" title="Load Data">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+            </button>
             <input type="file" id="fileInput" accept=".json,.npz,.zip">
 
             <div class="control-group">
-                <button id="playPause">Play</button>
-                <button id="reset">Reset</button>
+                <button id="playPause" class="icon-btn" title="Play/Pause">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                </button>
+                <button id="reset" class="icon-btn" title="Reset">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                        <path d="M3 3v5h5"/>
+                    </svg>
+                </button>
             </div>
 
             <div class="control-group">
-                <button id="prevFrame">Prev</button>
-                <button id="nextFrame">Next</button>
+                <button id="prevFrame" class="icon-btn" title="Previous Frame">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                </button>
+                <button id="nextFrame" class="icon-btn" title="Next Frame">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                </button>
             </div>
 
             <div class="control-group">
-                <button id="linkViews">Linked Views</button>
+                <button id="linkViews" class="icon-btn" title="Link Views">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                    </svg>
+                </button>
             </div>
 
             <div class="control-group">
-                <label for="speedControl">Speed:</label>
-                <select id="speedControl">
+                <select id="speedControl" title="Playback Speed">
                     <option value="1">1 us/s</option>
                     <option value="30">30 us/s</option>
                     <option value="60" selected>60 us/s</option>
@@ -47,8 +74,8 @@
 
             <input type="range" id="timeline" min="0" max="100" value="0">
 
-            <div id="frameCounter">Frame: 0 / 0</div>
-            <div id="timeDisplay">00:00.000 / 00:00.000</div>
+            <div id="frameCounter">0 / 0</div>
+            <div id="timeDisplay">00:00.000</div>
         </div>
 
         <!-- Dashboard Grid -->
@@ -56,9 +83,14 @@
             <!-- Panel 1: Side View -->
             <div class="panel">
                 <div class="panel-header">
-                    <span class="panel-title">Side View</span>
+                    <div class="panel-title-group">
+                        <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                        </svg>
+                        <span class="panel-title">Side View</span>
+                    </div>
                     <button id="toggleSideViewSparks" class="toggle-btn toggle-on">Sparks ON</button>
-                    <span class="panel-info" id="sideViewInfo">Wire + Workpiece</span>
                 </div>
                 <div class="canvas-container">
                     <canvas id="sideViewCanvas"></canvas>
@@ -68,8 +100,12 @@
             <!-- Panel 2: Thermal Profile -->
             <div class="panel">
                 <div class="panel-header">
-                    <span class="panel-title">Wire Thermal Profile</span>
-                    <span class="panel-info" id="thermalInfo">Temperature Distribution</span>
+                    <div class="panel-title-group">
+                        <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>
+                        </svg>
+                        <span class="panel-title">Thermal Profile</span>
+                    </div>
                 </div>
                 <div class="canvas-container">
                     <canvas id="thermalCanvas"></canvas>
@@ -79,9 +115,14 @@
             <!-- Panel 3: Top View -->
             <div class="panel">
                 <div class="panel-header">
-                    <span class="panel-title">Top View</span>
+                    <div class="panel-title-group">
+                        <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="9"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                        <span class="panel-title">Top View</span>
+                    </div>
                     <button id="toggleTopViewSparks" class="toggle-btn toggle-on">Sparks ON</button>
-                    <span class="panel-info" id="topViewInfo">Debris Concentration</span>
                 </div>
                 <div class="canvas-container">
                     <canvas id="topViewCanvas"></canvas>
@@ -91,7 +132,13 @@
             <!-- Panel 4: Oscilloscope -->
             <div class="panel oscilloscope-panel">
                 <div class="panel-header osc-header">
-                    <span class="panel-title">Virtual Oscilloscope</span>
+                    <div class="panel-title-group">
+                        <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="3" width="20" height="14" rx="2"/>
+                            <path d="M6 12h2l2-4 2 8 2-4h4"/>
+                        </svg>
+                        <span class="panel-title">Oscilloscope</span>
+                    </div>
                     <div class="control-group">
                         <label for="timebaseControl">Timebase:</label>
                         <select id="timebaseControl" class="osc-select">

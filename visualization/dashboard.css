@@ -62,26 +62,25 @@ body {
 /* Header with controls */
 #controls {
     background: var(--bg-secondary);
-    padding: 12px 16px;
+    padding: 10px 16px;
     border-radius: 8px;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     box-shadow: var(--shadow);
     border: 1px solid var(--border);
 }
 
 #controls h1 {
-    font-size: 1.1rem;
+    font-size: 1rem;
     font-weight: 600;
-    margin-right: auto;
     color: var(--text-primary);
     letter-spacing: -0.02em;
 }
 
 .control-group {
     display: flex;
-    gap: 8px;
+    gap: 4px;
     align-items: center;
 }
 
@@ -104,6 +103,51 @@ button:hover {
 
 button:active {
     background: #ced4da;
+}
+
+/* Icon buttons */
+.icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    position: relative;
+}
+
+.icon-btn svg {
+    width: 20px;
+    height: 20px;
+    pointer-events: none;
+}
+
+.icon-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.icon-btn:active {
+    background: var(--border);
+}
+
+#linkViews {
+    color: var(--accent);
+}
+
+#loadData.icon-btn {
+    background: var(--accent);
+    color: #ffffff;
+}
+
+#loadData.icon-btn:hover {
+    background: var(--accent-hover);
+    color: #ffffff;
 }
 
 #timeline {
@@ -141,29 +185,15 @@ button:active {
 
 #frameCounter {
     font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-    font-size: 0.85rem;
-    min-width: 100px;
-    color: var(--accent);
-    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
 }
 
 #timeDisplay {
     font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-    font-size: 0.85rem;
-    min-width: 120px;
-    color: var(--text-secondary);
-}
-
-#loadData {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #ffffff;
-    font-weight: 600;
-}
-
-#loadData:hover {
-    background: var(--accent-hover);
-    border-color: var(--accent-hover);
+    font-size: 0.8rem;
+    color: var(--text-muted);
 }
 
 /* Dashboard grid */
@@ -217,11 +247,24 @@ button:active {
     border-bottom: 1px solid var(--border);
 }
 
+.panel-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.panel-icon {
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
 .panel-title {
-    font-size: 0.85rem;
-    font-weight: 600;
+    font-size: 0.9rem;
+    font-weight: 500;
     color: var(--text-primary);
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
 }
 
 .panel-info {
@@ -363,12 +406,16 @@ canvas {
     left: 100px;
     width: 500px;
     height: 350px;
+    min-width: 350px;
+    min-height: 250px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: var(--shadow-md);
     z-index: 2000;
     flex-direction: column;
+    resize: both;
+    overflow: hidden;
 }
 
 #damagePlotWindow .window-header {
@@ -441,6 +488,11 @@ canvas {
 .osc-header {
     background: var(--bg-dark-secondary) !important;
     border-bottom: 1px solid var(--border-dark) !important;
+}
+
+.osc-header .panel-icon {
+    color: var(--text-light);
+    opacity: 0.7;
 }
 
 .osc-header .panel-title {
