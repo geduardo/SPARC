@@ -19,9 +19,11 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from src.wedm.envs import WireEDMEnv
 from src.wedm.utils.logger import SimulationLogger, LoggerConfig
+from src.wedm.modules.wire import WireModuleParameters
+from src.wedm.core.env_config import EnvironmentConfig
 
 
-def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7):  # µm
+def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7, on_time: float = 2.0, off_time: float = 33.0):  # µm
     """Create adaptive gap controller that works with both control modes."""
 
     def controller(env: WireEDMEnv) -> Dict[str, Any]:
@@ -42,19 +44,18 @@ def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7):  # �
                 "target_voltage": np.array([80.0], dtype=np.float32),
                 # Current mode selection (1-19 maps directly to I1-I19):
                 # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
-                # Other options: 5=I5(60A→1A), 9=I9(110A→3A), 17=I17(425A→11A), 19=I19(600A→17A)
                 "current_mode": np.array(
                     [current_mode], dtype=np.int32
                 ),
-                "ON_time": np.array([2.0], dtype=np.float32),
-                "OFF_time": np.array([33.0], dtype=np.float32),
+                "ON_time": np.array([on_time], dtype=np.float32),
+                "OFF_time": np.array([off_time], dtype=np.float32),
             },
         }
 
     return controller
 
 
-def create_voltage_controller(target_voltage: float = 30.0, current_mode: int = 7):  # V
+def create_voltage_controller(target_voltage: float = 30.0, current_mode: int = 7, on_time: float = 2.0, off_time: float = 33.0):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
 
     # PI controller state
@@ -101,8 +102,8 @@ def create_voltage_controller(target_voltage: float = 30.0, current_mode: int = 
             "generator_control": {
                 "target_voltage": np.array([80.0], dtype=np.float32),
                 "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([2.0], dtype=np.float32),
-                "OFF_time": np.array([33.0], dtype=np.float32),
+                "ON_time": np.array([on_time], dtype=np.float32),
+                "OFF_time": np.array([off_time], dtype=np.float32),
             },
         }
 
@@ -114,6 +115,7 @@ def setup_logger(
     log_to_file: bool = True,
     log_strategy: str = "full_field",
     enable_plotting: bool = False,
+    filepath: str = "visualization/data/smoke_test_results.npz",
 ) -> LoggerConfig:
     """
     Setup logger configuration with flexible temperature logging strategy.
@@ -123,6 +125,7 @@ def setup_logger(
         log_to_file: Whether to log to file
         log_strategy: "full_field", "zone_mean", or "both"
         enable_plotting: Whether plotting will be used (affects memory logging)
+        filepath: Target location for log files
     """
     base_signals = [
         "time",
@@ -146,6 +149,7 @@ def setup_logger(
     if log_strategy == "full_field":
         signals_to_log = base_signals + [
             "wire_temperature",
+            "wire_damage",  # Accumulated damage per segment (0-1)
             # Movement diagnostics for animation with circular buffer
             "wire_head_idx",
             "wire_offset_mm",
@@ -157,6 +161,7 @@ def setup_logger(
     elif log_strategy == "both":
         signals_to_log = base_signals + [
             "wire_temperature",
+            "wire_damage",  # Accumulated damage per segment (0-1)
             # wire_average_temperature removed - can be computed from wire_temperature
             "wire_head_idx",
             "wire_offset_mm",
@@ -171,8 +176,8 @@ def setup_logger(
             "log_frequency": {"type": "every_step"},
             "backend": {
                 "type": "numpy",
-                "filepath": f"logs/smoke_test_{control_mode}_control.npz",
-                "compress": True,
+                "filepath": filepath,
+                "compress": False,  # Uncompressed for visualization dashboard compatibility
             },
         }
     else:
@@ -188,7 +193,7 @@ def setup_logger(
 
 
 def initialize_environment(
-    control_mode: str, seed: int = 0, log_strategy: str = "full_field"
+    control_mode: str, seed: int = 0, log_strategy: str = "full_field", segment_len_um: float = 200.0, workpiece_height_mm: float = 20.0
 ) -> WireEDMEnv:
     """
     Initialize and setup the EDM environment with appropriate wire configuration.
@@ -197,20 +202,35 @@ def initialize_environment(
         control_mode: "position" or "velocity"
         seed: Random seed
         log_strategy: "full_field", "zone_mean", or "both"
+        segment_len_um: Length of each wire segment in micrometers
+        workpiece_height_mm: Height of workpiece in mm
     """
-    # Now using the standard environment with built-in optimizations
-    env = WireEDMEnv(mechanics_control_mode=control_mode)
-    env.reset(seed=seed)
+    # Configure wire parameters
+    wire_params = WireModuleParameters()
+    wire_params.segment_len = segment_len_um / 1000.0  # Convert µm to mm
 
-    # Configure wire module based on logging strategy
+    # Configure environment
+    env_config = EnvironmentConfig()
+    env_config.workpiece_height = workpiece_height_mm
+
+    # Configure zone mean calculation based on logging strategy
     if log_strategy in ["zone_mean", "both"]:
-        # Replace wire module with zone mean calculation enabled
-        from src.wedm.modules.wire import WireModule
-
-        env.wire = WireModule(env, compute_zone_mean=True)
+        wire_params.compute_zone_mean = True
         print(f"[INFO] Zone mean calculation: ENABLED (strategy: {log_strategy})")
     else:
+        wire_params.compute_zone_mean = False
         print(f"[INFO] Zone mean calculation: DISABLED (strategy: {log_strategy})")
+
+    print(f"[INFO] Wire segment length: {wire_params.segment_len:.4f} mm ({segment_len_um:.1f} µm)")
+    print(f"[INFO] Workpiece height: {env_config.workpiece_height:.2f} mm")
+
+    # Initialize environment with custom parameters
+    env = WireEDMEnv(
+        mechanics_control_mode=control_mode,
+        wire_params=wire_params,
+        config=env_config
+    )
+    env.reset(seed=seed)
 
     # Set initial conditions
     env.state.workpiece_position = 70.0  # µm
@@ -234,6 +254,8 @@ def run_simulation(
     controller_type: str = "gap",
     target_voltage: float = 30.0,
     current_mode: int = 7,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
 ) -> Tuple[Any, float, int]:
     """Run the core simulation loop."""
     print(
@@ -252,9 +274,13 @@ def run_simulation(
 
     # Create the appropriate controller
     if controller_type == "gap":
-        controller = create_gap_controller(current_mode=current_mode)
+        controller = create_gap_controller(
+            current_mode=current_mode, on_time=on_time, off_time=off_time
+        )
     else:  # voltage
-        controller = create_voltage_controller(target_voltage, current_mode=current_mode)
+        controller = create_voltage_controller(
+            target_voltage, current_mode=current_mode, on_time=on_time, off_time=off_time
+        )
 
     # For voltage controller, maintain voltage history over last 1ms
     voltage_history = []
@@ -796,8 +822,56 @@ def main():
         default=30.0,
         help="Target average voltage for voltage controller in V (default: 30.0)",
     )
+    parser.add_argument(
+        "--segment-len",
+        type=float,
+        default=200.0,
+        help="Length of wire segments for thermal model in µm (default: 200.0)",
+    )
+    parser.add_argument(
+        "--workpiece-height",
+        type=float,
+        default=20.0,
+        help="Height of workpiece in mm (default: 20.0)",
+    )
+    # Generator arguments
+    parser.add_argument(
+        "-I", "--current-mode",
+        type=float,
+        nargs="+",
+        help="Generator current mode (index 1-19). Can also take ON time as second value: -I 17 15 (default index: 7)",
+    )
+    parser.add_argument(
+        "-Ton", "--on-time",
+        type=float,
+        default=2.0,
+        help="Pulse ON time in µs (default: 2.0)",
+    )
+    parser.add_argument(
+        "--off-time",
+        type=float,
+        default=33.0,
+        help="Pulse OFF time in µs (default: 33.0)",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        default="visualization/data/smoke_test_results.npz",
+        help="Output filepath for log data (default: visualization/data/smoke_test_results.npz)",
+    )
 
     args = parser.parse_args()
+
+    # Process flexible -I argument
+    current_mode = 7
+    on_time = args.on_time
+    if args.current_mode:
+        if len(args.current_mode) >= 1:
+            current_mode = int(args.current_mode[0])
+        if len(args.current_mode) >= 2:
+            on_time = args.current_mode[1]
+            print(f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs")
 
     # Setup
     logger_config = setup_logger(
@@ -805,8 +879,15 @@ def main():
         log_to_file=not args.no_log,
         log_strategy=args.log_strategy,
         enable_plotting=args.plot,
+        filepath=args.output
     )
-    env = initialize_environment(args.mode, seed=0, log_strategy=args.log_strategy)
+    env = initialize_environment(
+        args.mode, 
+        seed=0, 
+        log_strategy=args.log_strategy,
+        segment_len_um=args.segment_len,
+        workpiece_height_mm=args.workpiece_height
+    )
 
     # Run simulation
     log_data, wall_time, sim_time_us = run_simulation(
@@ -816,6 +897,9 @@ def main():
         logger_config,
         args.controller,
         args.target_voltage,
+        current_mode,
+        on_time,
+        args.off_time,
     )
 
     # Print average speed over last 100ms

@@ -6,6 +6,8 @@ import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
 import copy  # For deep-copying mutable signals like lists
+import io
+import zipfile
 
 if TYPE_CHECKING:
     from ..core.state import EDMState
@@ -206,21 +208,15 @@ class SimulationLogger:
             self._finalize_json()
         elif self.config["backend"]["type"] == "numpy":
             filepath_str = self.config["backend"]["filepath"]
-            should_compress = self.config["backend"].get("compress", False)
 
             if not self.log_data:
                 print("No data collected, skipping .npz file creation.")
                 return
 
             # Convert lists to numpy arrays
-            numpy_data = {}
+            numpy_data: Dict[str, np.ndarray] = {}
             for signal_name, data_list in self.log_data.items():
                 try:
-                    # Attempt to convert, ensuring all elements can form a consistent NumPy array
-                    # This is crucial if logged values are, e.g., mixed types or variable-length arrays themselves
-                    # For simple scalar series, this is usually fine.
-                    # If a signal itself is a list/array per step, np.array(data_list) creates an object array if ragged,
-                    # or a 2D+ array if consistent.
                     numpy_data[signal_name] = np.array(data_list)
                 except Exception as e:
                     print(
@@ -236,14 +232,8 @@ class SimulationLogger:
             output_path = pathlib.Path(filepath_str)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            try:
-                if should_compress:
-                    np.savez_compressed(output_path, **numpy_data)
-                else:
-                    np.savez(output_path, **numpy_data)
-                print(f"Logged data saved to {output_path}")
-            except Exception as e:
-                print(f"Error saving data to {output_path}: {e}")
+            # Export as sparc_pack_v1 format for dashboard compatibility
+            self._finalize_numpy_pack(output_path, numpy_data)
 
     def _finalize_json(self):
         """
@@ -320,6 +310,114 @@ class SimulationLogger:
             print(f"Logged data saved to {output_path}")
         except Exception as e:
             print(f"Error saving data to {output_path}: {e}")
+
+    def _finalize_numpy_pack(self, output_path: pathlib.Path, numpy_data: Dict[str, np.ndarray]) -> None:
+        """Export data as sparc_pack_v1 format for web dashboard compatibility.
+
+        Format: ZIP file containing:
+          - header.json: lists arrays, shapes, dtypes, and metadata
+          - one .npy file per array (NumPy binary, little-endian, no pickle)
+
+        Notes:
+          - Object arrays like spark_status are split into numeric 1D arrays:
+            spark_status_state (int8), spark_status_location_mm (float64), spark_status_extra (float64)
+          - All numeric arrays are written losslessly as-is.
+        """
+        # Build metadata from environment config
+        metadata = {}
+        if self.env and hasattr(self.env, 'config'):
+            try:
+                metadata = {
+                    "workpiece_height": float(self.env.config.workpiece_height),
+                    "wire_diameter": float(self.env.config.wire_diameter),
+                }
+            except Exception as e:
+                print(f"Warning: Could not extract env config for metadata: {e}")
+
+        # Add wire module parameters if available
+        if self.env and hasattr(self.env, 'wire') and hasattr(self.env.wire, 'params'):
+            try:
+                wire_params = self.env.wire.params
+                metadata["buffer_len_bottom"] = float(getattr(wire_params, "buffer_len_bottom", 20.0))
+                metadata["buffer_len_top"] = float(getattr(wire_params, "buffer_len_top", 20.0))
+                metadata["contact_offset_bottom"] = float(getattr(wire_params, "contact_offset_bottom", 10.0))
+                metadata["contact_offset_top"] = float(getattr(wire_params, "contact_offset_top", 10.0))
+            except Exception as e:
+                print(f"Warning: Could not extract wire params for metadata: {e}")
+
+        # Set defaults if not already set
+        metadata.setdefault("workpiece_height", 20.0)
+        metadata.setdefault("buffer_len_bottom", 20.0)
+        metadata.setdefault("buffer_len_top", 20.0)
+        metadata.setdefault("contact_offset_bottom", 10.0)
+        metadata.setdefault("contact_offset_top", 10.0)
+        metadata.setdefault("wire_diameter", 0.25)
+
+        arrays_manifest = []
+
+        def add_numpy_to_zip(zf: zipfile.ZipFile, name: str, arr: np.ndarray) -> None:
+            """Add a numpy array to the zip file as .npy format."""
+            if arr.dtype == object:
+                raise ValueError(f"Cannot pack object dtype array directly: {name}")
+            arr_c = np.ascontiguousarray(arr)
+            buf = io.BytesIO()
+            np.save(buf, arr_c, allow_pickle=False)
+            zf.writestr(f"{name}.npy", buf.getvalue())
+            arrays_manifest.append({
+                "name": name,
+                "dtype": str(arr_c.dtype),
+                "shape": list(arr_c.shape),
+            })
+
+        # Use STORED (no compression) so the viewer can read bytes directly
+        with zipfile.ZipFile(output_path.as_posix(), mode="w", compression=zipfile.ZIP_STORED) as zf:
+            # Write all numeric arrays
+            for key, arr in numpy_data.items():
+                if isinstance(arr, np.ndarray) and arr.dtype != object:
+                    try:
+                        add_numpy_to_zip(zf, key, arr)
+                    except Exception as e:
+                        print(f"[WARN] Skipping array '{key}': {e}")
+
+            # Special handling for spark_status (object array of 3-tuple-like entries)
+            if "spark_status" in numpy_data:
+                s = numpy_data["spark_status"]
+                if s.dtype == object:
+                    try:
+                        T = int(len(s))
+                        state = np.zeros(T, dtype=np.int8)
+                        loc_mm = np.full(T, np.nan, dtype=np.float64)
+                        extra = np.full(T, np.nan, dtype=np.float64)
+                        for i in range(T):
+                            item = s[i]
+                            if item is None:
+                                continue
+                            try:
+                                if isinstance(item, (list, tuple, np.ndarray)):
+                                    if len(item) > 0 and item[0] is not None:
+                                        state[i] = int(item[0])
+                                    if len(item) > 1 and item[1] is not None:
+                                        loc_mm[i] = float(item[1])
+                                    if len(item) > 2 and item[2] is not None:
+                                        extra[i] = float(item[2])
+                            except Exception:
+                                pass
+                        add_numpy_to_zip(zf, "spark_status_state", state)
+                        add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
+                        add_numpy_to_zip(zf, "spark_status_extra", extra)
+                    except Exception as e:
+                        print(f"[WARN] Failed to decompose 'spark_status': {e}")
+
+            # Write header.json last
+            header = {
+                "format": "sparc_pack_v1",
+                "arrays": arrays_manifest,
+                "metadata": metadata,
+            }
+            zf.writestr("header.json", json.dumps(header))
+
+        file_size_mb = output_path.stat().st_size / (1024 * 1024)
+        print(f"Logged data saved to {output_path} ({file_size_mb:.2f} MB) [sparc_pack_v1 format]")
 
     def get_data(self) -> Dict[str, List[Any]] | str | None:
         """
