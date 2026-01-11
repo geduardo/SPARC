@@ -29,8 +29,11 @@ class WireModuleParameters:
     )
     contact_offset_top: float = 10.0  # [mm] Distance of upper contact above workpiece
 
+    # ── Machine Settings ──
+    wire_tension_force: float = 12.0  # [N] Wire tension force
+
     # ── Heat Transfer Parameters ──
-    base_convection_coefficient: float = 14000  # [W/m²·K] Base convection coefficient
+    base_convection_coefficient: float = 10000  # [W/m²·K] Base convection coefficient
     plasma_efficiency: float = (
         0.25  # [dimensionless] Fraction of electrical power converted to heat in plasma
     )
@@ -50,13 +53,11 @@ class WireModuleParameters:
         True  # Use circular buffer movement model instead of advection
     )
 
-    # ── Critical Temperature Parameters ──
-    critical_temp_threshold: float = (
-        0.9  # [dimensionless] Fraction of melting point considered critical
-    )
-    wire_breaking_temp_factor: float = (
-        1.1  # [dimensionless] Factor above melting point for wire breaking
-    )
+    # ── Damage Model Parameters (from CIRP-HPC 2026 paper) ──
+    damage_rate_constant: float = 7.168e-5  # [s⁻¹·MPa⁻ⁿ] Rate constant k
+    damage_stress_exponent: float = 6.734  # [-] Stress exponent n
+    damage_activation_energy: float = 143.1e3  # [J/mol] Activation energy Q
+    gas_constant: float = 8.314  # [J/(mol·K)] Universal gas constant R
 
 
 # Numba-compiled functions for performance-critical calculations
@@ -260,11 +261,11 @@ class WireModule(EDMModule):
         else:
             self.zone_size = 1
 
-        # ── Temperature Monitoring ──
-        self.critical_temperature = (
-            self.wire_material.melting_point * self.params.critical_temp_threshold
-        )
-        self.breaking_temperature = self.wire_material.breaking_temperature
+        # ── Damage Model - Wire Stress Calculation ──
+        # sigma = F / A where A = pi * r^2 (already computed as self.S in m²)
+        self.wire_stress_mpa = (
+            self.params.wire_tension_force / self.S
+        ) / 1e6  # Convert Pa to MPa
 
         # Cache for last computed zone mean
         self._last_zone_mean = self.params.spool_T
@@ -541,8 +542,8 @@ class WireModule(EDMModule):
             for i in range(self.n_segments):
                 self.segments[i].temperature = float(T_vec[i])
 
-        # ── Temperature Monitoring and Wire Breaking ──
-        self._check_wire_breaking(state, T_vec)
+        # ── Damage Accumulation and Wire Breaking ──
+        self._accumulate_damage(state, T_vec)
 
         # Expose movement diagnostics and positions
         try:
@@ -552,6 +553,8 @@ class WireModule(EDMModule):
             state.wire_material_positions_mm = self._y_start_mm.copy()
             # Sync temperature back to state array
             state.wire_temperature[:] = T_vec
+            # Sync damage array to state for logging/visualization
+            state.wire_damage = self._damage.copy()
         except Exception:
             pass
 
@@ -593,18 +596,43 @@ class WireModule(EDMModule):
                 h_eff_enhanced
             )
 
-    def _check_wire_breaking(self, state: EDMState, T: np.ndarray) -> None:
-        """Check if wire should break due to temperature."""
-        max_temp = np.max(T)
+    def _accumulate_damage(self, state: EDMState, T: np.ndarray) -> None:
+        """Accumulate damage using thermomechanical model from CIRP-HPC 2026.
 
-        # Track time in critical temperature range
-        if max_temp > self.critical_temperature:
-            state.time_in_critical_temp += 1
-        else:
-            state.time_in_critical_temp = 0
+        Damage rate: D_dot = k * sigma^n * exp(-Q / (R * T))
+        Wire breaks when any segment reaches D >= 1.0
+        """
+        # Pre-computed constants
+        k = self.params.damage_rate_constant
+        n = self.params.damage_stress_exponent
+        Q = self.params.damage_activation_energy
+        R = self.params.gas_constant
+        sigma = self.wire_stress_mpa
+        dt = self.dt_sim  # Time step in seconds
 
-        # Wire breaks if temperature exceeds breaking point
-        if max_temp > self.breaking_temperature:
+        # Stress term (constant for all segments)
+        stress_term = k * (sigma**n)
+
+        # Temperature-dependent damage rate for each segment
+        # Only accumulate damage where T > threshold (423K = 150C)
+        # Below this temperature, damage is negligible per the paper
+        T_threshold = 423.0  # K (150C)
+
+        for i in range(self.n_segments):
+            if T[i] > T_threshold:
+                # Arrhenius term
+                arrhenius = np.exp(-Q / (R * T[i]))
+                # Damage increment
+                d_damage = stress_term * arrhenius * dt
+                # Accumulate damage
+                self._damage[i] += d_damage
+                self.segments[i].damage = float(self._damage[i])
+
+        # Check for wire breakage - any segment reaching D >= 1 triggers breakage
+        max_damage = np.max(self._damage)
+        state.wire_max_damage = float(max_damage)
+
+        if max_damage >= 1.0:
             state.is_wire_broken = True
 
     def _compute_zone_mean_fast(self, T: np.ndarray) -> float:

@@ -116,21 +116,21 @@ function parseNPY(u8) {
     const dataOffset = headerStart + headerLen;
 
     const ctor = dtypeToTypedArrayConstructor(descr);
-    const numel = shape.reduce((a,b)=> a*b, 1);
+    const numel = shape.reduce((a, b) => a * b, 1);
     const byteLen = numel * ctor.BYTES_PER_ELEMENT;
     const elementSize = ctor.BYTES_PER_ELEMENT;
     const actualOffset = u8.byteOffset + dataOffset;
-    
+
     // Check if offset is aligned to element size (required for typed arrays)
     const needsCopy = (actualOffset % elementSize) !== 0;
-    
+
     let dataView;
     if (needsCopy || fortran) {
         // Copy to aligned buffer (required for alignment or Fortran-order conversion)
         const alignedData = new Uint8Array(byteLen);
         alignedData.set(u8.subarray(dataOffset, dataOffset + byteLen));
         dataView = new ctor(alignedData.buffer, alignedData.byteOffset, numel);
-        
+
         if (fortran && shape.length > 1) {
             // Convert Fortran-order to C-order copy
             const cpy = new ctor(numel);
@@ -221,11 +221,11 @@ async function loadSparcPack(file) {
         return null;
     };
     if (!out.voltage) {
-        const v = pickAlias(['voltage','voltage_V','V','voltage_signal','voltage_measured'], /volt|^V$/i);
+        const v = pickAlias(['voltage', 'voltage_V', 'V', 'voltage_signal', 'voltage_measured'], /volt|^V$/i);
         if (v) out.voltage = v;
     }
     if (!out.current) {
-        const i = pickAlias(['current','current_A','I','current_signal','current_measured'], /curr|^I$/i);
+        const i = pickAlias(['current', 'current_A', 'I', 'current_signal', 'current_measured'], /curr|^I$/i);
         if (i) out.current = i;
     }
 
@@ -282,7 +282,10 @@ class DashboardController {
             voltageOffset: document.getElementById('voltageOffset'),
             currentOffset: document.getElementById('currentOffset'),
             vPerDiv: document.getElementById('vPerDiv'),
-            iPerDiv: document.getElementById('iPerDiv')
+            iPerDiv: document.getElementById('iPerDiv'),
+            damageWindow: document.getElementById('damagePlotWindow'),
+            closeDamageWindow: document.getElementById('closePlotWindow'),
+            damageCanvas: document.getElementById('damagePlotCanvas')
         };
 
         // Setup event listeners
@@ -364,13 +367,272 @@ class DashboardController {
         // Setup keyboard controls
         this.setupKeyboardControls();
 
+        // Setup damage window controls
+        this.setupDamageWindow();
+
         console.log('Dashboard initialized. Load a simulation data file to begin.');
+    }
+
+    setupDamageWindow() {
+        // Drag functionality
+        const win = this.elements.damageWindow;
+        if (!win) return;
+
+        const header = win.querySelector('.window-header');
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        header.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            initialLeft = win.offsetLeft;
+            initialTop = win.offsetTop;
+            header.style.cursor = 'grabbing';
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            win.style.left = `${initialLeft + dx}px`;
+            win.style.top = `${initialTop + dy}px`;
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            if (header) header.style.cursor = 'move';
+        });
+
+        // Close button
+        if (this.elements.closeDamageWindow) {
+            this.elements.closeDamageWindow.addEventListener('click', () => {
+                win.style.display = 'none';
+            });
+        }
+    }
+
+    showDamagePlot() {
+        if (!this.data || !this.selectedMaterialTrace) return;
+        const win = this.elements.damageWindow;
+        if (!win) return;
+
+        win.style.display = 'flex';
+        this.drawDamagePlot();
+    }
+
+    drawDamagePlot() {
+        if (!this.data || !this.selectedMaterialTrace) return;
+        const canvas = this.elements.damageCanvas;
+        if (!canvas) return;
+
+        const trace = this.selectedMaterialTrace;
+
+        // Setup canvas
+        const ctx = canvas.getContext('2d');
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width * window.devicePixelRatio;
+        canvas.height = rect.height * window.devicePixelRatio;
+        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        const w = rect.width, h = rect.height;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#fbf1c7';
+        ctx.fillRect(0, 0, w, h);
+
+        const damageData = this.data.wire_damage || this.data.damage;
+        const positionsData = this.data.wire_material_positions_mm;
+        const timeData = this.data.time;
+
+        if (!damageData || !positionsData || !timeData) return;
+
+        // boundaries from metadata
+        let inlet = 160, outlet = 0;
+        if (this.data.metadata) {
+            const hWP = this.data.metadata.workpiece_height || 100;
+            const bBot = this.data.metadata.buffer_len_bottom || 30;
+            const bTop = this.data.metadata.buffer_len_top || 30;
+            inlet = bBot + hWP + bTop; // Top
+            outlet = 0; // Bottom
+        }
+
+        // Extract series
+        const frames = Array.from(trace.keys()).sort((a, b) => a - b);
+        const allT = [], allD = [], allP = [];
+        const isD64 = damageData.data && damageData.shape, isP64 = positionsData.data && positionsData.shape;
+        const dCols = isD64 ? damageData.shape[1] : 0, pCols = isP64 ? positionsData.shape[1] : 0;
+
+        for (const f of frames) {
+            const k = trace.get(f);
+            allT.push(Number(timeData[f]) / 1e3); // ms
+            allD.push(isD64 ? damageData.data[f * dCols + k] : (damageData[f] ? damageData[f][k] : 0));
+            allP.push(isP64 ? positionsData.data[f * pCols + k] : (positionsData[f] ? positionsData[f][k] : 0));
+        }
+
+        if (allT.length < 2) return;
+
+        // Detect direction & entrance point
+        const movesDown = allP[allP.length - 1] < allP[0];
+        const entrancePos = movesDown ? Math.max(inlet, outlet) : Math.min(inlet, outlet);
+
+        let speed = 0.001;
+        const dt = allT[allT.length - 1] - allT[0], dp = Math.abs(allP[allP.length - 1] - allP[0]);
+        if (dt > 1 && dp > 0.001) speed = dp / dt;
+
+        const maxT = Math.abs(inlet - outlet) / speed;
+        const maxY = 1.0;
+
+        const padL = 50, padR = 20, padT = 30, padB = 40;
+        const graphW = w - padL - padR, graphH = h - padT - padB;
+
+        let currIdx = -1;
+        for (let i = 0; i < frames.length; i++) {
+            if (frames[i] <= this.currentFrame) currIdx = i; else break;
+        }
+
+        let startIdx = -1;
+        for (let i = 0; i < allP.length; i++) {
+            if (movesDown ? (allP[i] <= entrancePos) : (allP[i] >= entrancePos)) {
+                startIdx = i; break;
+            }
+        }
+        if (startIdx === -1) startIdx = 0;
+
+        ctx.strokeStyle = '#3c3836'; ctx.beginPath();
+        ctx.moveTo(padL, padT); ctx.lineTo(padL, h - padB); ctx.lineTo(w - padR, h - padB);
+        ctx.stroke();
+
+        ctx.fillStyle = '#3c3836'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText('1.0', padL - 5, padT + 4); ctx.fillText('0', padL - 5, h - padB);
+        ctx.textAlign = 'center'; ctx.fillText('0 ms', padL, h - padB + 15);
+        ctx.fillText(maxT.toFixed(0) + ' ms', w - padR, h - padB + 15);
+
+        ctx.strokeStyle = '#d65d0e'; ctx.lineWidth = 2; ctx.beginPath();
+        let first = true;
+        for (let i = startIdx; i <= currIdx; i++) {
+            // Signed distance: how far have we traveled since the entrance?
+            const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
+            const tx = distFromInlet / speed;
+
+            const px = padL + (tx / maxT) * graphW;
+            const py = h - padB - (allD[i] / maxY) * graphH;
+            if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+
+        if (currIdx >= startIdx) {
+            const distFromInlet = movesDown ? (entrancePos - allP[currIdx]) : (allP[currIdx] - entrancePos);
+            const tx = distFromInlet / speed;
+            const cx = padL + (tx / maxT) * graphW;
+            const cy = h - padB - (allD[currIdx] / maxY) * graphH;
+            ctx.setLineDash([4, 4]); ctx.strokeStyle = '#d65d0e';
+            ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, h - padB); ctx.stroke();
+            ctx.setLineDash([]); ctx.fillStyle = '#d65d0e';
+            ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+        }
+
+        const clickIdx = this.selectedSegmentClickIndex !== undefined ? this.selectedSegmentClickIndex : '?';
+        ctx.fillStyle = '#427b58'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`Segment #${clickIdx}`, padL + 10, padT - 15);
+    }
+    /**
+     * Trace a physical material chunk across all frames.
+     */
+    traceMaterial(startFrame, startSegmentIndex) {
+        const trace = new Map();
+        if (!this.data || !this.data.wire_material_positions_mm) return trace;
+
+        const positionsData = this.data.wire_material_positions_mm;
+        const numFrames = this.data.time.length;
+        const isTyped = positionsData.data && positionsData.shape;
+        const numCols = isTyped ? positionsData.shape[1] : 0;
+
+        const getPt = (f, k) => isTyped ? positionsData.data[f * numCols + k] : (positionsData[f] ? positionsData[f][k] : undefined);
+        const getLen = (f) => isTyped ? numCols : (positionsData[f] ? positionsData[f].length : 0);
+
+        if (getLen(startFrame) <= startSegmentIndex) return trace;
+
+        let currIdx = startSegmentIndex;
+        let prevPos = getPt(startFrame, startSegmentIndex);
+        trace.set(startFrame, startSegmentIndex);
+
+        // Forward Trace
+        for (let f = startFrame + 1; f < numFrames; f++) {
+            const n = getLen(f); if (n === 0) break;
+            let bestK = -1;
+            let bestDist = Infinity;
+
+            // 1. Search locally first (25 segments radius)
+            const searchRadius = 25;
+            const startK = Math.max(0, currIdx - searchRadius);
+            const endK = Math.min(n - 1, currIdx + searchRadius);
+
+            for (let k = startK; k <= endK; k++) {
+                const d = Math.abs(getPt(f, k) - prevPos);
+                if (d < bestDist) { bestDist = d; bestK = k; }
+            }
+
+            // 2. Global fallback if movement is extremely large
+            if (bestK === -1 || bestDist > 2.0) {
+                for (let k = 0; k < n; k++) {
+                    const d = Math.abs(getPt(f, k) - prevPos);
+                    if (d < bestDist) { bestDist = d; bestK = k; }
+                }
+            }
+
+            if (bestK !== -1 && bestDist < 10.0) {
+                currIdx = bestK;
+                prevPos = getPt(f, bestK);
+                trace.set(f, currIdx);
+            } else {
+                console.warn(`traceMaterial: lost track at frame ${f}`);
+                break;
+            }
+        }
+
+        // Backward Trace
+        currIdx = startSegmentIndex;
+        prevPos = getPt(startFrame, startSegmentIndex);
+        for (let f = startFrame - 1; f >= 0; f--) {
+            const n = getLen(f); if (n === 0) break;
+            let bestK = -1;
+            let bestDist = Infinity;
+
+            const searchRadius = 25;
+            const startK = Math.max(0, currIdx - searchRadius);
+            const endK = Math.min(n - 1, currIdx + searchRadius);
+
+            for (let k = startK; k <= endK; k++) {
+                const d = Math.abs(getPt(f, k) - prevPos);
+                if (d < bestDist) { bestDist = d; bestK = k; }
+            }
+
+            if (bestK === -1 || bestDist > 2.0) {
+                for (let k = 0; k < n; k++) {
+                    const d = Math.abs(getPt(f, k) - prevPos);
+                    if (d < bestDist) { bestDist = d; bestK = k; }
+                }
+            }
+
+            if (bestK !== -1 && bestDist < 10.0) {
+                currIdx = bestK;
+                prevPos = getPt(f, bestK);
+                trace.set(f, currIdx);
+            } else {
+                console.warn(`traceMaterial: lost track backward at frame ${f}`);
+                break;
+            }
+        }
+
+        console.log(`traceMaterial: Traced ${trace.size} frames for segment ${startSegmentIndex}`);
+        return trace;
     }
 
     setupKeyboardControls() {
         window.addEventListener('keydown', (e) => {
             console.log('Key pressed:', e.key, 'Data loaded:', !!this.data);
-            
+
             if (!this.data) return;
 
             // Arrow right: next frame
@@ -488,25 +750,25 @@ class DashboardController {
         if (!file) return;
 
         this.showLoading(true);
-        console.log(`Loading file: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`);
+        console.log(`Loading file: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
 
         try {
             const lowerName = (file.name || '').toLowerCase();
             const isJson = lowerName.endsWith('.json');
             if (isJson) {
                 // JSON path (legacy)
-            const text = await this.readLargeFile(file);
-            console.log(`File read complete, parsing JSON... (${(text.length / (1024*1024)).toFixed(2)} MB)`);
-            if (text.length > 500 * 1024 * 1024) {
-                const proceed = confirm(
-                    `Warning: This file is very large (${(text.length / (1024*1024)).toFixed(0)} MB). ` +
-                    `Loading it may crash your browser. Continue anyway?`
-                );
-                if (!proceed) {
-                    throw new Error('Load cancelled by user');
+                const text = await this.readLargeFile(file);
+                console.log(`File read complete, parsing JSON... (${(text.length / (1024 * 1024)).toFixed(2)} MB)`);
+                if (text.length > 500 * 1024 * 1024) {
+                    const proceed = confirm(
+                        `Warning: This file is very large (${(text.length / (1024 * 1024)).toFixed(0)} MB). ` +
+                        `Loading it may crash your browser. Continue anyway?`
+                    );
+                    if (!proceed) {
+                        throw new Error('Load cancelled by user');
+                    }
                 }
-            }
-            this.data = JSON.parse(text);
+                this.data = JSON.parse(text);
             } else {
                 // Binary pack path (.npz/.zip of .npy arrays)
                 console.log('Reading binary pack...');
@@ -560,7 +822,7 @@ class DashboardController {
             reader.onprogress = (e) => {
                 if (e.lengthComputable) {
                     const percent = ((e.loaded / e.total) * 100).toFixed(1);
-                    console.log(`Reading file: ${percent}% (${(e.loaded / (1024*1024)).toFixed(2)} MB / ${(e.total / (1024*1024)).toFixed(2)} MB)`);
+                    console.log(`Reading file: ${percent}% (${(e.loaded / (1024 * 1024)).toFixed(2)} MB / ${(e.total / (1024 * 1024)).toFixed(2)} MB)`);
                 }
             };
 
@@ -701,6 +963,10 @@ class DashboardController {
         Object.values(this.panels).forEach(panel => {
             panel.draw(frameData, frameIndex);
         });
+
+        if (this.selectedMaterialTrace && this.elements.damageWindow && this.elements.damageWindow.style.display !== 'none') {
+            this.drawDamagePlot();
+        }
     }
 
     drawFrameWithAccumulatedSparks(startFrame, endFrame) {
@@ -729,6 +995,10 @@ class DashboardController {
         Object.values(this.panels).forEach(panel => {
             panel.draw(finalFrameData, endFrame);
         });
+
+        if (this.selectedMaterialTrace && this.elements.damageWindow && this.elements.damageWindow.style.display !== 'none') {
+            this.drawDamagePlot();
+        }
     }
 
     getFrameData(frameIndex) {
@@ -792,7 +1062,7 @@ class DashboardController {
         };
 
         // Update frame counter
-        this.elements.frameCounter.textContent = 
+        this.elements.frameCounter.textContent =
             `Frame: ${this.currentFrame + 1} / ${this.data.time.length}`;
 
         // Update time display
@@ -962,7 +1232,7 @@ class SideViewPanel extends BasePanel {
                 this.workpieceThickness = data.metadata.workpiece_height;
             }
         }
-        
+
         console.log('SideViewPanel setData - workpieceThickness:', this.workpieceThickness, 'mm');
     }
 
@@ -970,7 +1240,7 @@ class SideViewPanel extends BasePanel {
         // Mouse wheel for zoom
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            
+
             if (this.useIndependentCamera) {
                 // Independent mode: control own zoom
                 const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
@@ -1014,7 +1284,7 @@ class SideViewPanel extends BasePanel {
 
                 // Get scale
                 const zoomLevel = this.useIndependentCamera ? this.independentZoomLevel :
-                                 (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
+                    (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
                 const w = this.canvas.width / window.devicePixelRatio;
                 const viewWidth = this.wireDiameter * zoomLevel;
                 const scale = (w * 0.8) / viewWidth;
@@ -1073,7 +1343,7 @@ class SideViewPanel extends BasePanel {
         this.ctx.fillRect(0, 0, w, h);
 
         if (!frameData) {
-            this.drawText('Side View', w/2, h/2, {
+            this.drawText('Side View', w / 2, h / 2, {
                 color: '#427b58',
                 font: 'bold 16px sans-serif',
                 align: 'center',
@@ -1084,9 +1354,9 @@ class SideViewPanel extends BasePanel {
 
         // Get camera position (either from shared camera or independent)
         const cameraX = this.useIndependentCamera ? this.independentCameraX :
-                       (this.sharedCamera ? this.sharedCamera.cameraX : 0);
+            (this.sharedCamera ? this.sharedCamera.cameraX : 0);
         const zoomLevel = this.useIndependentCamera ? this.independentZoomLevel :
-                         (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
+            (this.sharedCamera ? this.sharedCamera.zoomLevel : 3.0);
 
         // Scale calculation
         const viewWidth = this.wireDiameter * zoomLevel;
@@ -1378,7 +1648,7 @@ class SideViewPanel extends BasePanel {
 
         // Spark position: from wire right edge
         const wireRightEdge = wireCenterXPx + radiusPx;
-        
+
         // Ensure minimum spark length of 50µm for visibility
         const minSparkLengthUM = 50.0; // µm
         const actualGapMM = gapUM / 1000.0; // Convert gap to mm
@@ -1397,18 +1667,18 @@ class SideViewPanel extends BasePanel {
         // Spark appearance with decay
         const brightness = decayFactor; // 1.0 when new, fades to 0
         const alpha = Math.pow(brightness, 0.5); // Square root for slower visual fade
-        
+
         // Spark vertical thickness: 0.1mm in world space (scales with zoom)
         const sparkVerticalMM = 0.1; // mm
         const sparkVerticalPx = sparkVerticalMM * scale;
-        
+
         // Spark horizontal thickness: FIXED in pixels, but with minimum based on scaled size
         const sparkHorizontalScaledPx = sparkVerticalMM * scale; // What it would be if scaled
         const sparkHorizontalFixedPx = Math.max(3.0, sparkHorizontalScaledPx); // At least 3px, or scaled size
-        
+
         // Draw spark as lines with variable thickness for more organic look
         // Use lines instead of rectangles for less uniform appearance
-        
+
         // Layer 1: Wide outer glow (cool blue-white outer) - more transparent
         this.ctx.strokeStyle = `rgba(150, 200, 255, ${alpha * 0.2})`;
         this.ctx.lineWidth = sparkHorizontalFixedPx * 5.0; // Horizontal width
@@ -1637,7 +1907,7 @@ class OscilloscopePanel extends BasePanel {
         const vTopY1 = vTopY0 + chH;
         const cBotY0 = vTopY1 + channelGap;
         const cBotY1 = cBotY0 + chH;
-        
+
         // Store grid positions for sidebar alignment
         this.channelGridPositions = {
             ch1Y0: vTopY0,
@@ -1648,7 +1918,7 @@ class OscilloscopePanel extends BasePanel {
         };
 
         if (!this.isEnabled) {
-            this.drawText('Oscilloscope OFF', w/2, h/2, {
+            this.drawText('Oscilloscope OFF', w / 2, h / 2, {
                 color: '#888', font: 'bold 16px sans-serif', align: 'center', baseline: 'middle'
             });
             // Align controls even when off
@@ -1657,7 +1927,7 @@ class OscilloscopePanel extends BasePanel {
         }
 
         if (!this.data) {
-            this.drawText('Oscilloscope', w/2, h/2, {
+            this.drawText('Oscilloscope', w / 2, h / 2, {
                 color: '#076678', font: 'bold 16px sans-serif', align: 'center', baseline: 'middle'
             });
             // Align controls even when no data
@@ -1672,7 +1942,7 @@ class OscilloscopePanel extends BasePanel {
         const voltageSeries = this.data.voltage || [];
         const currentSeries = this.data.current || [];
         const sparkStatus = this.data.spark_status || [];
-        
+
         // Debug: log series info on first draw
         if (!this._loggedSeriesInfo) {
             console.log('Oscilloscope series info:', {
@@ -1685,7 +1955,7 @@ class OscilloscopePanel extends BasePanel {
             });
             this._loggedSeriesInfo = true;
         }
-        
+
         // Ensure we have valid series (TypedArrays or regular arrays)
         if (!currentSeries || currentSeries.length === 0) {
             console.warn('Oscilloscope: current series missing or empty');
@@ -1797,43 +2067,43 @@ class OscilloscopePanel extends BasePanel {
         // Timebase label bottom-center
         const timebaseLabel = this.mode === 'manual' && this.usPerDiv ? `${this.usPerDiv} µs/div` : 'Auto';
         this.drawText(timebaseLabel, w / 2, h - 12, { color: 'rgba(220,220,220,0.8)', font: '10px monospace', align: 'center' });
-        
+
         this.lastDrawnFrame = frameIndex;
-        
+
         // Align sidebar controls with channel grids (after drawing)
         this.alignSidebarControls();
     }
-    
-    
+
+
     alignSidebarControls() {
         const ch1Controls = document.getElementById('ch1Controls');
         const ch2Controls = document.getElementById('ch2Controls');
-        
+
         if (!ch1Controls || !ch2Controls) return;
         if (!this.channelGridPositions) return;
-        
+
         const pos = this.channelGridPositions;
         const canvasRect = this.canvas.getBoundingClientRect();
-        
+
         // Calculate center positions of each channel grid
         const ch1Center = pos.ch1Y0 + (pos.ch1Y1 - pos.ch1Y0) / 2;
         const ch2Center = pos.ch2Y0 + (pos.ch2Y1 - pos.ch2Y0) / 2;
-        
+
         // Get control heights
         const ch1Height = ch1Controls.offsetHeight;
         const ch2Height = ch2Controls.offsetHeight;
-        
+
         // Calculate top positions to center controls on grids
         const ch1Top = ch1Center - ch1Height / 2;
         const ch2Top = ch2Center - ch2Height / 2;
-        
+
         // Apply positions (relative to sidebar container)
         ch1Controls.style.position = 'absolute';
         ch1Controls.style.top = `${ch1Top}px`;
         ch1Controls.style.left = '8px';
         ch1Controls.style.right = '8px';
         ch1Controls.style.margin = '0';
-        
+
         ch2Controls.style.position = 'absolute';
         ch2Controls.style.top = `${ch2Top}px`;
         ch2Controls.style.left = '8px';
@@ -1898,21 +2168,21 @@ class OscilloscopePanel extends BasePanel {
 
         this.ctx.strokeStyle = color;
         this.ctx.lineWidth = lineWidth;
-        
+
         // Only use glow for reasonable point counts
         const useGlow = glowColor && targetBuckets < 1000;
         if (useGlow) {
             this.ctx.shadowBlur = 8;
             this.ctx.shadowColor = glowColor;
         }
-        
+
         this.ctx.beginPath();
         let penDown = false;
-        
+
         for (let i = start; i <= end; i += bucketSize) {
             let bucketMin = Infinity, bucketMax = -Infinity;
             const bucketEnd = Math.min(end, i + bucketSize - 1);
-            
+
             // Find min/max in bucket
             for (let j = i; j <= bucketEnd; j++) {
                 const v = series[j];
@@ -1922,28 +2192,28 @@ class OscilloscopePanel extends BasePanel {
                     if (num > bucketMax) bucketMax = num;
                 }
             }
-            
+
             if (!Number.isFinite(bucketMin)) continue;
-            
+
             // Draw vertical line from min to max at this x position
             const x = xToPx(i + bucketSize / 2);
             const y0 = yToPx(bucketMin);
             const y1 = yToPx(bucketMax);
-            
+
             if (!penDown) {
                 this.ctx.moveTo(x, y0);
                 penDown = true;
             } else {
                 this.ctx.lineTo(x, y0);
             }
-            
+
             if (Math.abs(y1 - y0) > 0.5) {
                 this.ctx.lineTo(x, y1);
             }
         }
-        
+
         this.ctx.stroke();
-        
+
         if (useGlow) {
             this.ctx.shadowBlur = 0;
         }
@@ -2065,7 +2335,7 @@ class TopViewPanel extends BasePanel {
             const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
             this.zoomLevel *= zoomDelta;
             this.zoomLevel = Math.max(0.05, Math.min(10000, this.zoomLevel)); // Clamp between 0.05x and 50x (allows viewing full workpiece)
-            
+
             // Trigger redraw
             if (this.controller && this.controller.data) {
                 this.controller.drawFrame(this.controller.currentFrame);
@@ -2087,7 +2357,7 @@ class TopViewPanel extends BasePanel {
                 this.cameraX -= dx / this.scale; // Convert screen pixels to world space
                 this.lastMouseX = e.offsetX;
                 this.lastMouseY = e.offsetY;
-                
+
                 // Trigger redraw
                 if (this.controller && this.controller.data) {
                     this.controller.drawFrame(this.controller.currentFrame);
@@ -2110,7 +2380,7 @@ class TopViewPanel extends BasePanel {
             this.zoomLevel = 15.0;
             this.autoPan = true;
             this.cameraX = 0;
-            
+
             // Trigger redraw
             if (this.controller && this.controller.data) {
                 this.controller.drawFrame(this.controller.currentFrame);
@@ -2153,7 +2423,7 @@ class TopViewPanel extends BasePanel {
         if (!data) return;
         const hasLegacySpark = Array.isArray(data.spark_status);
         const hasSplitSpark = (data.spark_status_state && (Array.isArray(data.spark_status_state) || ArrayBuffer.isView(data.spark_status_state))) &&
-                              (data.spark_status_location_mm && (Array.isArray(data.spark_status_location_mm) || ArrayBuffer.isView(data.spark_status_location_mm)));
+            (data.spark_status_location_mm && (Array.isArray(data.spark_status_location_mm) || ArrayBuffer.isView(data.spark_status_location_mm)));
         if (!hasLegacySpark && !hasSplitSpark) return;
         if (!data.wire_position || !data.workpiece_position) return;
 
@@ -2211,7 +2481,7 @@ class TopViewPanel extends BasePanel {
 
             // Debug logging for first few sparks
             if (sampleCount < maxSamples) {
-                const mode = pSides === 0.0 ? 'FRONT' : pSides === 1.0 ? 'SIDES' : `TRANSITION (${(pSides*100).toFixed(0)}% sides)`;
+                const mode = pSides === 0.0 ? 'FRONT' : pSides === 1.0 ? 'SIDES' : `TRANSITION (${(pSides * 100).toFixed(0)}% sides)`;
                 console.log(`  Spark ${sampleCount}: gap=${gapUM.toFixed(2)}µm → ${mode}`);
                 sampleCount++;
             }
@@ -2225,25 +2495,25 @@ class TopViewPanel extends BasePanel {
                 const k = 20.0; // Concentration parameter
 
                 // Choose which pole (north +π/2 or south -π/2) randomly
-                const pole = Math.random() < 0.5 ? Math.PI/2 : -Math.PI/2;
+                const pole = Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
 
                 // Sample angle around the chosen pole using exponential distribution
                 // Map the exponential from [-π/2, π/2] to be centered at the pole
                 let offset;
                 if (u < 0.5) {
                     // Negative side from pole
-                    offset = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+                    offset = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
                 } else {
                     // Positive side from pole
-                    offset = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+                    offset = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
                 }
 
                 // Add offset to pole position
                 angle = pole + offset;
 
                 // Wrap angle to [-π, π]
-                if (angle > Math.PI) angle -= 2*Math.PI;
-                if (angle < -Math.PI) angle += 2*Math.PI;
+                if (angle > Math.PI) angle -= 2 * Math.PI;
+                if (angle < -Math.PI) angle += 2 * Math.PI;
             } else {
                 // Small gap: sparks concentrated at front (θ=0, perpendicular to workpiece)
                 // Use original exponential distribution from initial implementation
@@ -2254,14 +2524,14 @@ class TopViewPanel extends BasePanel {
                 // HARD CONSTRAINT: θ ∈ (-π/2, π/2)
                 if (u < 0.5) {
                     // Negative side
-                    angle = -Math.log(1 - 2*u*(1 - Math.exp(-k*Math.PI/2))) / k;
+                    angle = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
                 } else {
                     // Positive side
-                    angle = Math.log(2*(u-0.5)*(1 - Math.exp(-k*Math.PI/2)) + Math.exp(-k*Math.PI/2)) / k;
+                    angle = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
                 }
 
                 // HARD CONSTRAINT: angles MUST be strictly between -90° and +90°
-                angle = Math.max(-Math.PI/2 + 0.001, Math.min(Math.PI/2 - 0.001, angle));
+                angle = Math.max(-Math.PI / 2 + 0.001, Math.min(Math.PI / 2 - 0.001, angle));
             }
 
             return angle;
@@ -2275,18 +2545,18 @@ class TopViewPanel extends BasePanel {
 
         const totalFrames = data.time ? data.time.length : (hasLegacySpark ? data.spark_status.length : data.spark_status_state.length);
         if (hasLegacySpark) {
-        data.spark_status.forEach((status, frameIndex) => {
-            if (status && status[0] === 1 && status[1] !== null) {
-                const wirePos = data.wire_position[frameIndex] || 0;
-                const workpiecePos = data.workpiece_position[frameIndex] || 0;
-                const gapUM = workpiecePos - wirePos;
-                minGap = Math.min(minGap, gapUM);
-                maxGap = Math.max(maxGap, gapUM);
+            data.spark_status.forEach((status, frameIndex) => {
+                if (status && status[0] === 1 && status[1] !== null) {
+                    const wirePos = data.wire_position[frameIndex] || 0;
+                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
+                    const gapUM = workpiecePos - wirePos;
+                    minGap = Math.min(minGap, gapUM);
+                    maxGap = Math.max(maxGap, gapUM);
                     sumGap += gapUM; gapCount++;
-                const angle = sampleAngle(gapUM);
-                this.sparkAngles.set(frameIndex, angle);
-            }
-        });
+                    const angle = sampleAngle(gapUM);
+                    this.sparkAngles.set(frameIndex, angle);
+                }
+            });
         } else if (hasSplitSpark) {
             const s = data.spark_status_state;
             for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
@@ -2314,7 +2584,7 @@ class TopViewPanel extends BasePanel {
         console.log(`\n=== Results ===`);
         console.log(`Total sparks: ${this.sparkAngles.size}`);
         console.log(`Distribution: ${frontCount} pure FRONT (0°), ${transitionCount} TRANSITION, ${sidesCount} pure SIDES (±90°)`);
-        console.log(`${((frontCount/this.sparkAngles.size)*100).toFixed(1)}% front, ${((transitionCount/this.sparkAngles.size)*100).toFixed(1)}% transition, ${((sidesCount/this.sparkAngles.size)*100).toFixed(1)}% sides`);
+        console.log(`${((frontCount / this.sparkAngles.size) * 100).toFixed(1)}% front, ${((transitionCount / this.sparkAngles.size) * 100).toFixed(1)}% transition, ${((sidesCount / this.sparkAngles.size) * 100).toFixed(1)}% sides`);
     }
 
     draw(frameData, frameIndex) {
@@ -2332,7 +2602,7 @@ class TopViewPanel extends BasePanel {
         this.scale = (w * 0.8) / viewWidth;
 
         if (!frameData) {
-            this.drawText('Top View - No Data', w/2, h/2, {
+            this.drawText('Top View - No Data', w / 2, h / 2, {
                 color: '#888',
                 font: '14px sans-serif',
                 align: 'center',
@@ -2547,7 +2817,7 @@ class TopViewPanel extends BasePanel {
         // === Draw frontier face (uncut semicircle) ===
         this.ctx.fillStyle = '#bdae93'; // Gruvbox gray
         this.ctx.beginPath();
-        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI/2, Math.PI/2);
+        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI / 2, Math.PI / 2);
         this.ctx.lineTo(frontierCenterXPx + maxDim, frontierRadiusPx);
         this.ctx.lineTo(frontierCenterXPx + maxDim, -frontierRadiusPx);
         this.ctx.closePath();
@@ -2571,7 +2841,7 @@ class TopViewPanel extends BasePanel {
 
         // Frontier semicircular edge
         this.ctx.beginPath();
-        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI/2, Math.PI/2);
+        this.ctx.arc(frontierCenterXPx, 0, frontierRadiusPx, -Math.PI / 2, Math.PI / 2);
         this.ctx.stroke();
 
         // === Texture lines on uncut workpiece ===
@@ -2788,7 +3058,8 @@ class ThermalProfilePanel extends BasePanel {
         this.zoomY = 1.0; // Zoom factor for Y-axis (1.0 = show workpiece + 5mm buffers)
         this.isDragging = false;
         this.lastMouseY = 0;
-        // Cached wire extents for zoom-limits (mm)
+        // One-time click detection
+        this.selectedSegmentIndex = -1;
         this.lastWireMin = null;
         this.lastWireMax = null;
     }
@@ -2827,6 +3098,94 @@ class ThermalProfilePanel extends BasePanel {
     handleMouseDown(e) {
         this.isDragging = true;
         this.lastMouseY = e.offsetY;
+
+        // Check for click on segment
+        if (this.controller && this.controller.data) {
+            this.checkForSegmentClick(e.offsetX, e.offsetY);
+        }
+    }
+
+    checkForSegmentClick(mx, my) {
+        const frameData = this.controller.getFrameData(this.controller.currentFrame);
+        if (!frameData || !frameData.wire_material_positions_mm) return;
+
+        const positions = frameData.wire_material_positions_mm;
+        const nSegments = positions.length;
+        if (nSegments === 0) return;
+
+        // Use same geometry calculations as draw()
+        const w = this.canvas.width / window.devicePixelRatio;
+        const h = this.canvas.height / window.devicePixelRatio;
+        const marginLeft = 90;
+        const marginRight = 100;
+        const marginTop = 40;
+        const marginBottom = 45;
+        const plotWidth = w - marginLeft - marginRight;
+        const plotHeight = h - marginTop - marginBottom;
+
+        const baseVisibleHeightMM = this.workpieceHeightMM + 10;
+        const visibleHeightMM = baseVisibleHeightMM * this.zoomY;
+        const visibleMinPos = this.cameraY - visibleHeightMM / 2;
+        const visibleMaxPos = this.cameraY + visibleHeightMM / 2;
+
+        const yScale = plotHeight / (visibleMaxPos - visibleMinPos);
+        const posToY = (posMM) => marginTop + (posMM - visibleMinPos) * yScale;
+
+        const wireVisWidth = plotWidth * 0.35;
+        const wireVisCenterX = marginLeft + wireVisWidth / 2;
+        const visualThickness = this.wireDiameter * 25 * yScale; // matches draw()
+
+        // Check X bounds
+        if (Math.abs(mx - wireVisCenterX) > visualThickness / 2) return;
+
+        // Find segment
+        // Iterate or search. Since positions are sorted-ish, we can search.
+        // Assuming positions are sorted (monotonic along wire).
+        // Let's just iterate, nSegments isn't huge (usually < 1000).
+
+        // Need segment length to know height
+        // Calculate segment len same as draw()
+        let segmentLenMM = 0.2;
+        if (nSegments > 1) {
+            const sortedPos = [...positions].sort((a, b) => a - b);
+            const diffs = [];
+            for (let i = 1; i < sortedPos.length; i++) {
+                const diff = sortedPos[i] - sortedPos[i - 1];
+                if (diff > 1e-6) diffs.push(diff);
+            }
+            if (diffs.length > 0) {
+                diffs.sort((a, b) => a - b);
+                segmentLenMM = diffs[Math.floor(diffs.length / 2)];
+            }
+        }
+
+        const segmentHeightViz = segmentLenMM * yScale * 1.05; // Matches draw
+
+        for (let i = 0; i < nSegments; i++) {
+            const pos = positions[i];
+            const y = posToY(pos);
+            const halfH = segmentHeightViz / 2; // Actually draw uses fillRect(x, y, w, h), so y is top?
+            // draw: fillRect(x, Math.floor(y), w, h)
+            // Wait, y corresponds to pos. Is pos center or top?
+            // Usually pos is node center.
+            // If draw uses y as top-left corner, then pos is top-left?
+            // Line 3099: Math.floor(y) 
+            // So 'y' is the top of the rectangle. 
+            // So click Y must be between y and y + height.
+
+            const rectH = Math.ceil(segmentHeightViz) + 2;
+
+            if (my >= y && my <= y + rectH) {
+                // Clicked!
+                if (this.controller) {
+                    this.controller.selectedSegmentClickIndex = i;
+                    this.controller.selectedMaterialTrace = this.controller.traceMaterial(this.controller.currentFrame, i);
+                    this.controller.showDamagePlot();
+                    this.controller.drawFrame(this.controller.currentFrame);
+                }
+                return;
+            }
+        }
     }
 
     handleMouseMove(e) {
@@ -2993,13 +3352,13 @@ class ThermalProfilePanel extends BasePanel {
         // Check if we have wire temperature and position data
         if (!frameData || !frameData.wire_temperature || !frameData.wire_material_positions_mm) {
             // Draw placeholder message
-            this.drawText('No wire temperature data available', w/2, h/2 + 10, {
+            this.drawText('No wire temperature data available', w / 2, h / 2 + 10, {
                 color: '#9d0006',
                 font: '14px sans-serif',
                 align: 'center',
                 baseline: 'middle'
             });
-            this.drawText('Ensure log_strategy="full_field" when running simulation', w/2, h/2 + 35, {
+            this.drawText('Ensure log_strategy="full_field" when running simulation', w / 2, h / 2 + 35, {
                 color: '#7c6f64',
                 font: '12px sans-serif',
                 align: 'center',
@@ -3016,7 +3375,7 @@ class ThermalProfilePanel extends BasePanel {
         this.lastWireMax = Math.max(...wirePositions);
 
         if (nSegments === 0) {
-            this.drawText('No wire segments', w/2, h/2, {
+            this.drawText('No wire segments', w / 2, h / 2, {
                 color: '#9d0006',
                 font: '14px sans-serif',
                 align: 'center',
@@ -3031,7 +3390,7 @@ class ThermalProfilePanel extends BasePanel {
             const sortedPos = [...wirePositions].sort((a, b) => a - b);
             const diffs = [];
             for (let i = 1; i < sortedPos.length; i++) {
-                const diff = sortedPos[i] - sortedPos[i-1];
+                const diff = sortedPos[i] - sortedPos[i - 1];
                 if (diff > 1e-6) {
                     diffs.push(diff);
                 }
@@ -3100,6 +3459,18 @@ class ThermalProfilePanel extends BasePanel {
                 Math.ceil(visualThickness),
                 rectHeight
             );
+
+            // Highlight selected
+            if (i === this.selectedSegmentIndex) {
+                this.ctx.strokeStyle = '#ffffff';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(
+                    Math.floor(x),
+                    Math.floor(y),
+                    Math.ceil(visualThickness),
+                    rectHeight
+                );
+            }
 
             // Draw edges if enabled
             if (this.showEdges) {
@@ -3319,6 +3690,24 @@ class ThermalProfilePanel extends BasePanel {
             align: 'right',
             baseline: 'top'
         });
+
+        // ----------------- SELECTION HIGHLIGHT -----------------
+        const trace = this.controller.selectedMaterialTrace;
+        if (trace && trace.has(frameIndex)) {
+            const segIdx = trace.get(frameIndex);
+            const pos = wirePositions[segIdx];
+            const y = posToY(pos);
+            const rectH = Math.ceil(segmentHeightViz) + 2;
+
+            this.ctx.strokeStyle = '#ebdbb2';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(wireVisCenterX - visualThickness / 2 - 2, y, visualThickness + 4, rectH);
+
+            this.ctx.fillStyle = '#ebdbb2';
+            this.ctx.font = 'bold 10px sans-serif';
+            this.ctx.textAlign = 'left';
+            this.ctx.fillText("SELECTED", wireVisCenterX + visualThickness / 2 + 10, y + rectH / 2 + 4);
+        }
     }
 }
 

@@ -53,9 +53,9 @@ def create_voltage_controller(target_voltage: float = 47.0):
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
                 "target_voltage": np.array([80.0], dtype=np.float32),
-                "current_mode": np.array([13], dtype=np.int32),
+                "current_mode": np.array([17], dtype=np.int32),
                 "ON_time": np.array([2.0], dtype=np.float32),
-                "OFF_time": np.array([33.0], dtype=np.float32),
+                "OFF_time": np.array([18.0], dtype=np.float32),
             },
         }
 
@@ -196,11 +196,11 @@ def main():
     # Default buffers are 30mm each, workpiece is 100mm -> total 160mm
     # segment_len = 160mm / 200 = 0.8mm
     wire_params = WireModuleParameters(
-        segment_len=0.2,  # mm
+        segment_len=0.5,  # mm
         moving_segments=True,
     )
 
-    config = EnvironmentConfig(workpiece_height=100.0)
+    config = EnvironmentConfig(workpiece_height=30.0)
     env = WireEDMEnv(config=config)
 
     # Override wire module with custom parameters
@@ -209,14 +209,13 @@ def main():
     env.wire = WireModule(env, parameters=wire_params)
 
     # Disable wire breaking for this tracking script
-    # Set breaking temperature to a very high value (effectively disabling it)
-    env.wire.breaking_temperature = (
-        1e6  # K (effectively infinite - wire will never break)
-    )
-    print("Wire breaking disabled for temperature tracking.")
+    # Set wire tension to 0 so no damage accumulates (damage model requires stress)
+    env.wire.params.wire_tension_force = 0.0
+    env.wire.wire_stress_mpa = 0.0
+    print("Wire breaking disabled for temperature tracking (tension set to 0).")
 
     # Initialize controller
-    target_voltage = 47.0
+    target_voltage = 70.0
     controller = create_voltage_controller(target_voltage)
 
     # Voltage history tracking
@@ -451,46 +450,95 @@ def main():
     if len(completed_segments) > 0:
         import csv
         import os
-        
+
         # Create output directory if it doesn't exist
         csv_dir = "heating_curves"
         os.makedirs(csv_dir, exist_ok=True)
-        
+
         print(f"\nSaving heating curves to CSV files in '{csv_dir}/'...")
-        
+
         for idx, segment in enumerate(completed_segments):
             # Extract time and temperature data
             times = [t for t, _ in segment["history"]]
             temps = [T for _, T in segment["history"]]
-            
+
             # Convert temperatures from K to °C
             temps_celsius = [T - 273.15 for T in temps]
-            
+
             # Calculate relative time (time since segment entered inlet) in milliseconds
             inlet_time_us = segment["inlet_time_us"]
             relative_times_ms = [(t - inlet_time_us) / 1000.0 for t in times]
-            
+
             # Create CSV filename
             csv_filename = os.path.join(csv_dir, f"segment_{idx+1:02d}_{timestamp}.csv")
-            
+
+            # Get geometry from environment
+            total_wire_length = env.wire.total_L  # mm
+            buffer_bottom = env.wire.params.buffer_len_bottom  # mm
+            buffer_top = env.wire.params.buffer_len_top  # mm
+            workpiece_height = env.config.workpiece_height  # mm
+            contact_offset_bottom = env.wire.params.contact_offset_bottom  # mm
+            contact_offset_top = env.wire.params.contact_offset_top  # mm
+
+            # Calculate positions
+            pos_inlet = 0.0
+            pos_contact_lower = buffer_bottom - contact_offset_bottom
+            pos_workpiece_start = buffer_bottom
+            pos_workpiece_end = buffer_bottom + workpiece_height
+            pos_contact_upper = buffer_bottom + workpiece_height + contact_offset_top
+            pos_outlet = total_wire_length
+
             # Write CSV file
-            with open(csv_filename, 'w', newline='') as csvfile:
+            with open(csv_filename, "w", newline="") as csvfile:
                 writer = csv.writer(csvfile)
                 # Write header with metadata
-                writer.writerow(['# Segment Temperature History'])
+                writer.writerow(["# Segment Temperature History"])
                 writer.writerow([f'# Segment Number: {segment["segment_number"]}'])
-                writer.writerow([f'# Inlet Time (µs): {segment["inlet_time_us"]}'])
-                writer.writerow([f'# Outlet Time (µs): {segment.get("outlet_time_us", "N/A")}'])
-                writer.writerow([f'# Transit Time (ms): {relative_times_ms[-1]:.2f}'])
-                writer.writerow(['# '])
+                writer.writerow([f'# Inlet Time (us): {segment["inlet_time_us"]}'])
+                writer.writerow(
+                    [f'# Outlet Time (us): {segment.get("outlet_time_us", "N/A")}']
+                )
+                writer.writerow([f"# Transit Time (ms): {relative_times_ms[-1]:.2f}"])
+                writer.writerow(["# "])
+                # Write geometry metadata
+                writer.writerow(["# === Geometry (mm) ==="])
+                writer.writerow([f"# Total Wire Length (mm): {total_wire_length:.2f}"])
+                writer.writerow([f"# Workpiece Height (mm): {workpiece_height:.2f}"])
+                writer.writerow([f"# Buffer Bottom (mm): {buffer_bottom:.2f}"])
+                writer.writerow([f"# Buffer Top (mm): {buffer_top:.2f}"])
+                writer.writerow([f"# Pos Inlet (mm): {pos_inlet:.2f}"])
+                writer.writerow([f"# Pos Contact Lower (mm): {pos_contact_lower:.2f}"])
+                writer.writerow(
+                    [f"# Pos Workpiece Start (mm): {pos_workpiece_start:.2f}"]
+                )
+                writer.writerow([f"# Pos Workpiece End (mm): {pos_workpiece_end:.2f}"])
+                writer.writerow([f"# Pos Contact Upper (mm): {pos_contact_upper:.2f}"])
+                writer.writerow([f"# Pos Outlet (mm): {pos_outlet:.2f}"])
+                writer.writerow(["# "])
                 # Write column headers
-                writer.writerow(['Time_Since_Inlet_ms', 'Temperature_Celsius', 'Absolute_Time_us', 'Temperature_Kelvin'])
+                writer.writerow(
+                    [
+                        "Time_Since_Inlet_ms",
+                        "Temperature_Celsius",
+                        "Absolute_Time_us",
+                        "Temperature_Kelvin",
+                    ]
+                )
                 # Write data rows
-                for rel_t, temp_c, abs_t, temp_k in zip(relative_times_ms, temps_celsius, times, temps):
-                    writer.writerow([f'{rel_t:.6f}', f'{temp_c:.4f}', f'{abs_t:.1f}', f'{temp_k:.4f}'])
-            
+                for rel_t, temp_c, abs_t, temp_k in zip(
+                    relative_times_ms, temps_celsius, times, temps
+                ):
+                    writer.writerow(
+                        [
+                            f"{rel_t:.6f}",
+                            f"{temp_c:.4f}",
+                            f"{abs_t:.1f}",
+                            f"{temp_k:.4f}",
+                        ]
+                    )
+
             print(f"  ✓ Saved: {csv_filename}")
-        
+
         print(f"\n✓ All {len(completed_segments)} heating curves saved to CSV!")
 
     # Plot each segment's temperature history

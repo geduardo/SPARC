@@ -436,6 +436,17 @@
         </div>
     </div>
 
+    <!-- Floating Plot Window -->
+    <div id="damagePlotWindow" style="display: none; position: absolute; top: 100px; left: 100px; width: 500px; height: 350px; background: #fbf1c7; border: 2px solid #427b58; border-radius: 8px; box-shadow: 0 4px 12px rgba(60,56,54,0.3); z-index: 2000; flex-direction: column;">
+        <div class="window-header" style="background: #ebdbb2; padding: 10px; border-bottom: 1px solid #d5c4a1; display: flex; justify-content: space-between; align-items: center; cursor: move;">
+            <span class="window-title" style="font-weight: bold; color: #427b58;">Segment Damage History</span>
+            <button id="closePlotWindow" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #cc0000; padding: 0 5px;">&times;</button>
+        </div>
+        <div class="window-content" style="flex: 1; padding: 10px; min-height: 0;">
+            <canvas id="damagePlotCanvas"></canvas>
+        </div>
+    </div>
+
     <!-- Loading Overlay -->
     <div id="loadingOverlay" class="hidden">
         <div class="loading-content">
