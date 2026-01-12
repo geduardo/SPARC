@@ -298,7 +298,58 @@ export class TopViewPanel extends BasePanel {
         this.drawWire(wireCenterX, wireRadius, frameData);
 
         this.ctx.restore();
+        
+        const contamination = frameData.debris_concentration !== undefined ? frameData.debris_concentration : 
+                            (frameData.debris_density !== undefined ? frameData.debris_density : 0);
+        this.drawContaminationBar(w, h, contamination);
+
         this.drawInfoOverlay(w, h, gapUM, wireEdgePos, workpieceEdgePos, frontierRadius, frameData);
+    }
+
+    drawContaminationBar(w, h, level) {
+        const barWidth = 20;
+        const barHeight = h * 0.6; // 60% of screen height
+        const padding = 20;
+        const x = w - padding - barWidth;
+        const y = (h - barHeight) / 2;
+
+        // Label
+        this.ctx.save();
+        this.ctx.translate(x - 8, y + barHeight / 2);
+        this.ctx.rotate(-Math.PI / 2);
+        this.drawText('Contamination', 0, 0, {
+            color: COLORS.textMuted,
+            font: '14px sans-serif',
+            align: 'center',
+            baseline: 'bottom'
+        });
+        this.ctx.restore();
+
+        // Background container
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        this.ctx.fillRect(x, y, barWidth, barHeight);
+        
+        // Border
+        this.ctx.strokeStyle = COLORS.textMuted;
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(x, y, barWidth, barHeight);
+
+        // Fill
+        // Assuming level is 0-1. If it's small (like 0.12), we might want to scale it?
+        // For now, let's assume 0-1 and clamp.
+        const clampedLevel = Math.max(0, Math.min(1, level));
+        const fillHeight = barHeight * clampedLevel;
+        
+        // Gradient for severity
+        // Green (low) -> Yellow (med) -> Red (high) ?? 
+        // Or Brown for dirt? 
+        // Let's use a brown/grey gradient
+        const gradient = this.ctx.createLinearGradient(0, y + barHeight, 0, y);
+        gradient.addColorStop(0, '#a8a29e'); // Light brownish grey
+        gradient.addColorStop(1, '#57534e'); // Dark brownish grey
+        
+        this.ctx.fillStyle = gradient;
+        this.ctx.fillRect(x, y + barHeight - fillHeight, barWidth, fillHeight);
     }
 
     drawWire(wireX, wireRadius, frameData) {
