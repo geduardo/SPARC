@@ -91,8 +91,10 @@ class DielectricModule(EDMModule):
         gap_mm = gap_um * 0.001  # Convert to mm
         self.cavity_volume = self.cavity_volume_coeff * gap_mm
 
-        # Add debris from fresh spark events (only real sparks, not short circuits)
-        if state.spark_status[0] == 1 and state.spark_status[2] == 0:
+        # Add debris from fresh discharge events (both sparks AND short circuits)
+        # Both discharge types create craters and generate debris
+        is_fresh_discharge = (state.spark_status[0] == 1 or state.spark_status[0] == -1) and state.spark_status[2] == 0
+        if is_fresh_discharge:
             # Use crater volume from material module if available
             crater_volume = state.last_crater_volume
             if crater_volume > 0:
