@@ -191,9 +191,10 @@ export class DashboardController {
         if (this.elements.closeDamageWindow) {
             this.elements.closeDamageWindow.addEventListener('click', () => {
                 win.style.display = 'none';
-                // Clear tracking when window is closed
+                // Clear tracking and cache when window is closed
                 this.selectedMaterialTrace = null;
                 this.selectedSegmentClickIndex = null;
+                this.damagePlotCache = null;
                 if (this.data) {
                     this.drawFrame(this.currentFrame);
                 }
@@ -215,7 +216,105 @@ export class DashboardController {
         if (!win) return;
 
         win.style.display = 'flex';
+        // Precompute plot data once when showing the plot
+        this.precomputeDamagePlotData();
         this.drawDamagePlot();
+    }
+
+    precomputeDamagePlotData() {
+        if (!this.data || !this.selectedMaterialTrace) {
+            this.damagePlotCache = null;
+            return;
+        }
+
+        const trace = this.selectedMaterialTrace;
+        const damageData = this.data.wire_damage || this.data.damage;
+        const positionsData = this.data.wire_material_positions_mm;
+        const temperatureData = this.data.wire_temperature;
+        const timeData = this.data.time;
+
+        if (!damageData || !positionsData || !timeData) {
+            this.damagePlotCache = null;
+            return;
+        }
+
+        let inlet = 160, outlet = 0;
+        if (this.data.metadata) {
+            const hWP = this.data.metadata.workpiece_height || 100;
+            const bBot = this.data.metadata.buffer_len_bottom || 30;
+            const bTop = this.data.metadata.buffer_len_top || 30;
+            inlet = bBot + hWP + bTop;
+            outlet = 0;
+        }
+
+        const frames = Array.from(trace.keys()).sort((a, b) => a - b);
+        const allT = [], allD = [], allP = [], allTemp = [];
+        const isD64 = damageData.data && damageData.shape, isP64 = positionsData.data && positionsData.shape;
+        const isTemp64 = temperatureData && temperatureData.data && temperatureData.shape;
+        const dCols = isD64 ? damageData.shape[1] : 0, pCols = isP64 ? positionsData.shape[1] : 0;
+        const tempCols = isTemp64 ? temperatureData.shape[1] : 0;
+
+        for (const f of frames) {
+            const k = trace.get(f);
+            allT.push(Number(timeData[f]) / 1e3);
+            allD.push(isD64 ? damageData.data[f * dCols + k] : (damageData[f] ? damageData[f][k] : 0));
+            allP.push(isP64 ? positionsData.data[f * pCols + k] : (positionsData[f] ? positionsData[f][k] : 0));
+
+            // Extract temperature (convert from K to C)
+            if (temperatureData) {
+                const tempK = isTemp64 ? temperatureData.data[f * tempCols + k] : (temperatureData[f] ? temperatureData[f][k] : 273.15);
+                allTemp.push(tempK - 273.15);
+            } else {
+                allTemp.push(0);
+            }
+        }
+
+        if (allT.length < 2) {
+            this.damagePlotCache = null;
+            return;
+        }
+
+        const movesDown = allP[allP.length - 1] < allP[0];
+        const entrancePos = movesDown ? Math.max(inlet, outlet) : Math.min(inlet, outlet);
+
+        let speed = 0.001;
+        const dt = allT[allT.length - 1] - allT[0], dp = Math.abs(allP[allP.length - 1] - allP[0]);
+        if (dt > 1 && dp > 0.001) speed = dp / dt;
+
+        const maxT = Math.abs(inlet - outlet) / speed;
+
+        let startIdx = -1;
+        for (let i = 0; i < allP.length; i++) {
+            if (movesDown ? (allP[i] <= entrancePos) : (allP[i] >= entrancePos)) {
+                startIdx = i; break;
+            }
+        }
+        if (startIdx === -1) startIdx = 0;
+
+        // Precompute normalized X coordinates for each point
+        const normalizedX = [];
+        for (let i = 0; i < allP.length; i++) {
+            const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
+            normalizedX.push(distFromInlet / speed / maxT);
+        }
+
+        // Find max temperature for scaling (using loop to avoid stack overflow with large arrays)
+        let maxTemp = 500; // At least 500C for scale
+        for (let i = 0; i < allTemp.length; i++) {
+            if (allTemp[i] > maxTemp) maxTemp = allTemp[i];
+        }
+        const hasTemperature = temperatureData !== undefined && temperatureData !== null;
+
+        this.damagePlotCache = {
+            frames,
+            allD,
+            allTemp,
+            normalizedX,
+            startIdx,
+            maxT,
+            maxTemp,
+            hasTemperature
+        };
     }
 
     drawDamagePlot() {
@@ -223,7 +322,13 @@ export class DashboardController {
         const canvas = this.elements.damageCanvas;
         if (!canvas) return;
 
-        const trace = this.selectedMaterialTrace;
+        // Use cached data if available
+        if (!this.damagePlotCache) {
+            this.precomputeDamagePlotData();
+            if (!this.damagePlotCache) return;
+        }
+
+        const { frames, allD, allTemp, normalizedX, startIdx, maxT, maxTemp, hasTemperature } = this.damagePlotCache;
 
         const ctx = canvas.getContext('2d');
         const rect = canvas.parentElement.getBoundingClientRect();
@@ -236,109 +341,141 @@ export class DashboardController {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
 
-        const damageData = this.data.wire_damage || this.data.damage;
-        const positionsData = this.data.wire_material_positions_mm;
-        const timeData = this.data.time;
-
-        if (!damageData || !positionsData || !timeData) return;
-
-        let inlet = 160, outlet = 0;
-        if (this.data.metadata) {
-            const hWP = this.data.metadata.workpiece_height || 100;
-            const bBot = this.data.metadata.buffer_len_bottom || 30;
-            const bTop = this.data.metadata.buffer_len_top || 30;
-            inlet = bBot + hWP + bTop;
-            outlet = 0;
-        }
-
-        const frames = Array.from(trace.keys()).sort((a, b) => a - b);
-        const allT = [], allD = [], allP = [];
-        const isD64 = damageData.data && damageData.shape, isP64 = positionsData.data && positionsData.shape;
-        const dCols = isD64 ? damageData.shape[1] : 0, pCols = isP64 ? positionsData.shape[1] : 0;
-
-        for (const f of frames) {
-            const k = trace.get(f);
-            allT.push(Number(timeData[f]) / 1e3);
-            allD.push(isD64 ? damageData.data[f * dCols + k] : (damageData[f] ? damageData[f][k] : 0));
-            allP.push(isP64 ? positionsData.data[f * pCols + k] : (positionsData[f] ? positionsData[f][k] : 0));
-        }
-
-        if (allT.length < 2) return;
-
-        const movesDown = allP[allP.length - 1] < allP[0];
-        const entrancePos = movesDown ? Math.max(inlet, outlet) : Math.min(inlet, outlet);
-
-        let speed = 0.001;
-        const dt = allT[allT.length - 1] - allT[0], dp = Math.abs(allP[allP.length - 1] - allP[0]);
-        if (dt > 1 && dp > 0.001) speed = dp / dt;
-
-        const maxT = Math.abs(inlet - outlet) / speed;
         const maxY = 1.0;
-
-        const padL = 70, padR = 40, padT = 50, padB = 60;
+        const padL = 70, padR = hasTemperature ? 70 : 40, padT = 50, padB = 60;
         const graphW = w - padL - padR, graphH = h - padT - padB;
 
+        // Find current frame index using binary search
         let currIdx = -1;
-        for (let i = 0; i < frames.length; i++) {
-            if (frames[i] <= this.currentFrame) currIdx = i; else break;
-        }
-
-        let startIdx = -1;
-        for (let i = 0; i < allP.length; i++) {
-            if (movesDown ? (allP[i] <= entrancePos) : (allP[i] >= entrancePos)) {
-                startIdx = i; break;
+        let lo = 0, hi = frames.length - 1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (frames[mid] <= this.currentFrame) {
+                currIdx = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
             }
         }
-        if (startIdx === -1) startIdx = 0;
 
-        ctx.strokeStyle = COLORS.text; ctx.lineWidth = 1.5; ctx.beginPath();
-        ctx.moveTo(padL, padT); ctx.lineTo(padL, h - padB); ctx.lineTo(w - padR, h - padB);
+        // Draw left Y-axis (Damage)
+        ctx.strokeStyle = COLORS.danger; ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(padL, padT); ctx.lineTo(padL, h - padB);
         ctx.stroke();
 
-        ctx.fillStyle = COLORS.text; ctx.font = '16px sans-serif'; ctx.textAlign = 'right';
-        ctx.fillText('1.0', padL - 8, padT + 6); ctx.fillText('0', padL - 8, h - padB + 6);
-        ctx.textAlign = 'center'; ctx.font = '15px sans-serif';
-        ctx.fillText('0 ms', padL, h - padB + 28);
-        ctx.fillText(maxT.toFixed(0) + ' ms', w - padR, h - padB + 28);
+        // Draw X-axis
+        ctx.strokeStyle = COLORS.text; ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(padL, h - padB); ctx.lineTo(w - padR, h - padB);
+        ctx.stroke();
 
-        // Axis labels
+        // Left Y-axis labels (Damage)
+        ctx.fillStyle = COLORS.danger; ctx.font = '14px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText('1.0', padL - 8, padT + 5);
+        ctx.fillText('0.5', padL - 8, padT + graphH / 2 + 4);
+        ctx.fillText('0', padL - 8, h - padB + 5);
+
+        // X-axis labels
+        ctx.fillStyle = COLORS.text; ctx.textAlign = 'center'; ctx.font = '14px sans-serif';
+        ctx.fillText('0', padL, h - padB + 20);
+        ctx.fillText(maxT.toFixed(0) + ' ms', w - padR, h - padB + 20);
+
+        // Left Y-axis title (Damage)
         ctx.save();
         ctx.translate(padL - 50, padT + graphH / 2);
         ctx.rotate(-Math.PI / 2);
-        ctx.font = 'bold 16px sans-serif';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillStyle = COLORS.danger;
         ctx.textAlign = 'center';
         ctx.fillText('Damage', 0, 0);
         ctx.restore();
 
-        ctx.font = 'bold 16px sans-serif';
-        ctx.fillText('Time (ms)', padL + graphW / 2, h - padB + 48);
+        // X-axis title
+        ctx.fillStyle = COLORS.text;
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText('Time (ms)', padL + graphW / 2, h - padB + 42);
 
+        // Right Y-axis (Temperature) if available
+        if (hasTemperature) {
+            ctx.strokeStyle = COLORS.warning; ctx.lineWidth = 1.5; ctx.beginPath();
+            ctx.moveTo(w - padR, padT); ctx.lineTo(w - padR, h - padB);
+            ctx.stroke();
+
+            // Right Y-axis labels (Temperature)
+            ctx.fillStyle = COLORS.warning; ctx.font = '14px sans-serif'; ctx.textAlign = 'left';
+            const tempStep = maxTemp > 1000 ? 500 : (maxTemp > 500 ? 250 : 100);
+            const roundedMax = Math.ceil(maxTemp / tempStep) * tempStep;
+            ctx.fillText(roundedMax + 'C', w - padR + 8, padT + 5);
+            ctx.fillText((roundedMax / 2).toFixed(0) + 'C', w - padR + 8, padT + graphH / 2 + 4);
+            ctx.fillText('0C', w - padR + 8, h - padB + 5);
+
+            // Right Y-axis title (Temperature)
+            ctx.save();
+            ctx.translate(w - padR + 55, padT + graphH / 2);
+            ctx.rotate(Math.PI / 2);
+            ctx.font = 'bold 14px sans-serif';
+            ctx.fillStyle = COLORS.warning;
+            ctx.textAlign = 'center';
+            ctx.fillText('Temperature (C)', 0, 0);
+            ctx.restore();
+
+            // Draw temperature curve
+            const tempScale = Math.ceil(maxTemp / tempStep) * tempStep;
+            ctx.strokeStyle = COLORS.warning; ctx.lineWidth = 2; ctx.beginPath();
+            let first = true;
+            for (let i = startIdx; i <= currIdx; i++) {
+                const px = padL + normalizedX[i] * graphW;
+                const py = h - padB - (allTemp[i] / tempScale) * graphH;
+                if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+
+            // Temperature marker at current position
+            if (currIdx >= startIdx) {
+                const cx = padL + normalizedX[currIdx] * graphW;
+                const cyTemp = h - padB - (allTemp[currIdx] / tempScale) * graphH;
+                ctx.fillStyle = COLORS.warning;
+                ctx.beginPath(); ctx.arc(cx, cyTemp, 4, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        // Draw damage curve using precomputed normalized X
         ctx.strokeStyle = COLORS.danger; ctx.lineWidth = 2.5; ctx.beginPath();
-        let first = true;
+        let firstD = true;
         for (let i = startIdx; i <= currIdx; i++) {
-            const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
-            const tx = distFromInlet / speed;
-
-            const px = padL + (tx / maxT) * graphW;
+            const px = padL + normalizedX[i] * graphW;
             const py = h - padB - (allD[i] / maxY) * graphH;
-            if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+            if (firstD) { ctx.moveTo(px, py); firstD = false; } else ctx.lineTo(px, py);
         }
         ctx.stroke();
 
+        // Draw current position marker (vertical line and damage dot)
         if (currIdx >= startIdx) {
-            const distFromInlet = movesDown ? (entrancePos - allP[currIdx]) : (allP[currIdx] - entrancePos);
-            const tx = distFromInlet / speed;
-            const cx = padL + (tx / maxT) * graphW;
+            const cx = padL + normalizedX[currIdx] * graphW;
             const cy = h - padB - (allD[currIdx] / maxY) * graphH;
-            ctx.setLineDash([4, 4]); ctx.strokeStyle = COLORS.danger; ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]); ctx.strokeStyle = COLORS.gray4; ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, h - padB); ctx.stroke();
             ctx.setLineDash([]); ctx.fillStyle = COLORS.danger;
             ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
         }
 
+        // Title with segment info
         const clickIdx = this.selectedSegmentClickIndex !== undefined ? this.selectedSegmentClickIndex : '?';
-        ctx.fillStyle = COLORS.text; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'left';
-        ctx.fillText(`Segment #${clickIdx}`, padL + 10, padT - 22);
+        ctx.fillStyle = COLORS.text; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`Segment #${clickIdx}`, padL, padT - 18);
+
+        // Legend
+        const legendX = padL + 120;
+        ctx.fillStyle = COLORS.danger;
+        ctx.fillRect(legendX, padT - 28, 14, 14);
+        ctx.fillStyle = COLORS.text; ctx.font = '12px sans-serif';
+        ctx.fillText('Damage', legendX + 20, padT - 17);
+
+        if (hasTemperature) {
+            ctx.fillStyle = COLORS.warning;
+            ctx.fillRect(legendX + 85, padT - 28, 14, 14);
+            ctx.fillStyle = COLORS.text;
+            ctx.fillText('Temp', legendX + 105, padT - 17);
+        }
     }
 
     traceMaterial(startFrame, startSegmentIndex) {
@@ -426,6 +563,23 @@ export class DashboardController {
         return trace;
     }
 
+    /**
+     * Get segment ID - simply returns the index at the current frame.
+     */
+    getOriginalSegmentId(trace) {
+        if (!trace || trace.size === 0 || !this.data) return null;
+
+        // Just return the current index
+        const currentFrame = this.currentFrame;
+        if (trace.has(currentFrame)) {
+            return trace.get(currentFrame);
+        }
+
+        // Fallback to earliest frame index
+        const frames = Array.from(trace.keys()).sort((a, b) => a - b);
+        return trace.get(frames[0]);
+    }
+
     setupKeyboardControls() {
         window.addEventListener('keydown', (e) => {
             if (!this.data) return;
@@ -446,12 +600,16 @@ export class DashboardController {
         this.panels.topView = new TopViewPanel('topViewCanvas');
         this.panels.thermal = new ThermalProfilePanel('thermalCanvas');
 
+        // Link Side View horizontally with Top View
         this.panels.sideView.sharedCamera = this.panels.topView;
 
         Object.values(this.panels).forEach(panel => {
             panel.controller = this;
             panel.init();
         });
+
+        // Initialize link button icon
+        this.updateLinkViewsIcon();
 
         if (this.elements.timebaseControl) {
             this.setTimebase(this.elements.timebaseControl.value || 'auto');

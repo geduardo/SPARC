@@ -79,14 +79,14 @@ export class SideViewPanel extends BasePanel {
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
 
+            const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
+
             if (this.useIndependentCamera) {
-                const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
                 this.independentZoomLevel *= zoomDelta;
                 const minViewHeight = (this.workpieceThickness / 2) + NOZZLE_BUFFER_DISTANCE_MM + VIEW_MARGIN_MM;
                 const maxZoom = minViewHeight / this.wireDiameter;
                 this.independentZoomLevel = Math.max(0.05, Math.min(maxZoom, this.independentZoomLevel));
             } else if (this.sharedCamera) {
-                const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
                 this.sharedCamera.zoomLevel *= zoomDelta;
                 const minViewHeight = (this.workpieceThickness / 2) + NOZZLE_BUFFER_DISTANCE_MM + VIEW_MARGIN_MM;
                 const maxZoom = minViewHeight / this.wireDiameter;
@@ -117,7 +117,8 @@ export class SideViewPanel extends BasePanel {
                 const viewWidth = this.wireDiameter * zoomLevel;
                 const scale = (w * 0.8) / viewWidth;
 
-                this.cameraY -= dy / scale;
+                const deltaY_mm = dy / scale;
+                this.cameraY -= deltaY_mm;
 
                 if (this.useIndependentCamera) {
                     this.independentCameraX -= dx / scale;

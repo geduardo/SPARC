@@ -71,11 +71,9 @@ body {
     border: 1px solid var(--border);
 }
 
-#controls h1 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
+#logo {
+    height: 48px;
+    width: auto;
 }
 
 .control-group {
