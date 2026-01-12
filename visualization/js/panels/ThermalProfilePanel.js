@@ -131,8 +131,10 @@ export class ThermalProfilePanel extends BasePanel {
 
             if (my >= y && my <= y + rectH) {
                 if (this.controller) {
-                    this.controller.selectedSegmentClickIndex = i;
-                    this.controller.selectedMaterialTrace = this.controller.traceMaterial(this.controller.currentFrame, i);
+                    const trace = this.controller.traceMaterial(this.controller.currentFrame, i);
+                    this.controller.selectedMaterialTrace = trace;
+                    // Use the segment's index at the earliest frame for a consistent ID
+                    this.controller.selectedSegmentClickIndex = this.controller.getOriginalSegmentId(trace);
                     this.controller.showDamagePlot();
                     this.controller.drawFrame(this.controller.currentFrame);
                 }
@@ -151,7 +153,8 @@ export class ThermalProfilePanel extends BasePanel {
         const visibleHeightMM = (this.workpieceHeightMM + 10) * this.zoomY;
         const mmPerPixel = visibleHeightMM / h;
 
-        this.cameraY -= deltaY * mmPerPixel;
+        const deltaY_mm = deltaY * mmPerPixel;
+        this.cameraY -= deltaY_mm;
         this.enforceZoomAndPanConstraints();
 
         if (this.controller) {
@@ -597,15 +600,31 @@ export class ThermalProfilePanel extends BasePanel {
             const rectH = Math.ceil(segmentHeightViz) + 2;
             const x = wireVisCenterX - visualThickness / 2;
 
-            this.ctx.strokeStyle = COLORS.accent;
-            this.ctx.lineWidth = 4;
-            this.ctx.strokeRect(Math.floor(x) - 3, Math.floor(y) - 1, Math.ceil(visualThickness) + 6, rectH + 2);
-
-            this.ctx.fillStyle = COLORS.accent;
+            // Draw "TRACKING" text with arrow
+            const centerY = Math.floor(y) + rectH / 2;
+            this.ctx.fillStyle = COLORS.text;
             this.ctx.font = 'bold 11px sans-serif';
             this.ctx.textAlign = 'right';
             this.ctx.textBaseline = 'middle';
-            this.ctx.fillText("SELECTED", Math.floor(x) - 12, Math.floor(y) + rectH / 2);
+            this.ctx.fillText("TRACKING", Math.floor(x) - 18, centerY);
+
+            // Draw arrow pointing right (to the segment)
+            const arrowX = Math.floor(x) - 14;
+            const arrowSize = 5;
+            this.ctx.beginPath();
+            this.ctx.moveTo(arrowX, centerY);
+            this.ctx.lineTo(arrowX + arrowSize + 3, centerY);
+            this.ctx.strokeStyle = COLORS.text;
+            this.ctx.lineWidth = 2;
+            this.ctx.stroke();
+            // Arrow head
+            this.ctx.beginPath();
+            this.ctx.moveTo(arrowX + arrowSize + 3, centerY);
+            this.ctx.lineTo(arrowX + arrowSize - 2, centerY - 4);
+            this.ctx.lineTo(arrowX + arrowSize - 2, centerY + 4);
+            this.ctx.closePath();
+            this.ctx.fillStyle = COLORS.text;
+            this.ctx.fill();
         }
     }
 }
