@@ -370,9 +370,12 @@ class WireModule(EDMModule):
                     self.segments[i].y_start_mm = float(self._y_start_mm[i])
 
         # Prepare plasma heating (physical index)
+        # Apply plasma heating for both sparks (1) AND short circuits (-1)
+        # Both discharge types generate the same heat at the discharge location
         plasma_idx = -1
         plasma_heat = 0.0
-        if state.spark_status[0] == 1 and state.spark_status[1] is not None:
+        is_active_discharge = (state.spark_status[0] == 1 or state.spark_status[0] == -1)
+        if is_active_discharge and state.spark_status[1] is not None:
             y_spark = state.spark_status[1]
             # Clamp spark location strictly within the workpiece zone
             if self.params.segment_len > 0 and self.zone_end > self.zone_start:

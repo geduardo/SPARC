@@ -1,128 +1,92 @@
 # Ignition Module: Stochastic Plasma-Channel Ignition Model
 
-The `IgnitionModule` simulates the stochastic nature of discharge ignition in a Wire Electrical Discharge Machining (WEDM) process. It handles the spark generation process, including spark initiation, duration, and extinction, as well as the transitions between different spark states.
+The `IgnitionModule` simulates the stochastic nature of discharge ignition in a Wire Electrical Discharge Machining (WEDM) process. It handles the spark generation process, including spark initiation, duration, extinction, and transitions between different spark states, with a particular focus on realistic short circuit modeling.
 
 ## Spark States
 
-The ignition process is modeled as a state machine with three primary states:
+The process is modeled as a state machine with three primary states:
 
-1. **State 0 (Idle)**: Waiting to ignite. The gap is energized with an open circuit voltage, but no spark has occurred yet.
-2. **State 1 (ON period)**: Active spark or short circuit. Current is flowing through the gap.
-3. **State -2 (OFF period)**: Rest period after a spark. No voltage or current in the gap.
+1.  **State 0 (Idle)**: Waiting to ignite. The gap is energized (open circuit voltage), but no current flows.
+2.  **State 1 (ON period - Spark)**: Active discharge. High current, low voltage.
+3.  **State -1 (ON period - Short Circuit)**: Physical contact or debris bridge. High current, zero voltage.
+4.  **State -2 (OFF period)**: Rest period. No voltage or current.
 
-The state is stored in `state.spark_status` as a list of three values:
-- `spark_status[0]`: Spark state (0, 1, or -2)
-- `spark_status[1]`: Spark location along the workpiece height (or None when not sparking)
-- `spark_status[2]`: Duration counter (time steps since the spark began)
+## Ignition Probability Model (Normal Sparks)
 
-## State Transitions
+For normal sparks (not short circuits), the probability of ignition during the idle state is calculated using a gap-dependent hazard rate $\lambda(gap)$.
 
-The state transitions follow this sequence:
-
-1. **Idle → ON**: When a spark successfully ignites or a short circuit occurs
-2. **ON → OFF**: After the ON time duration is reached
-3. **OFF → Idle**: After the OFF time duration is reached
-
-Mathematically, these transitions can be represented as:
-
-For Idle to ON transition (stochastic ignition):
 $$
-P(\text{Idle} \rightarrow \text{ON}) = P_{ignite} = \lambda(gap)
+P(\text{ignite in } \text{dt}) = 1 - \exp(-\lambda(gap) \cdot dt)
 $$
 
-For ON to OFF transition (deterministic):
-$$
-\text{If } t_{spark} \geq t_{ON} \text{ then } \text{ON} \rightarrow \text{OFF}
-$$
-
-For OFF to Idle transition (deterministic):
-$$
-\text{If } t_{total} \geq (t_{ON} + t_{OFF}) \text{ then } \text{OFF} \rightarrow \text{Idle}
-$$
-
-Where:
-- $P_{ignite}$: Probability of ignition
-- $\lambda(gap)$: Gap-dependent ignition probability function
-- $t_{spark}$: Duration of the current spark
-- $t_{total}$: Total duration since spark initiation (ON + OFF time elapsed)
-- $t_{ON}$: ON time setting
-- $t_{OFF}$: OFF time setting
-
-## Ignition Probability Model
-
-The probability of a spark ignition during the idle state is calculated using a gap-dependent function $\lambda(gap)$. This function represents the ignition probability per time step and is derived from empirical data.
+The hazard rate $\lambda(gap)$ is derived from empirical data:
 
 $$
 \lambda(gap) = \frac{\ln(2)}{0.48 \cdot gap^2 - 3.69 \cdot gap + 14.05}
 $$
 
-Where:
-- $gap$: Distance between the wire and workpiece (mm)
-- $\ln(2)$: Natural logarithm of 2, used to normalize the probability
+-   Ignition is highly probable for small gaps and unlikely for gaps $> 25 \mu m$.
 
-For computational efficiency, the module caches the calculated $\lambda$ values for different gap sizes.
+## Short Circuit Models
 
-## Short Circuit Handling
+The module implements a sophisticated dual-mechanism model for short circuits, which are critical for simulating process instability.
 
-A short circuit occurs when the wire touches the workpiece ($gap \leq 0$). The module handles short circuits with special logic:
-
-1. If the system is in the idle state (0) and a short circuit occurs, it immediately transitions to the ON state (1) with full current and zero voltage.
-2. During short circuit conditions, the ignition probability calculation is skipped (returns 0) to prevent mathematical errors due to non-positive gap values.
-
-## Electrical Parameters
-
-During different states, the electrical parameters are set as follows:
-
-### Idle State (0):
-- Current: $I = 0$
-- Voltage: $V = V_{target}$ (if not shorted), $V = 0$ (if shorted)
-
-### ON State (1):
-- Current: $I = I_{peak}$
-- Voltage: $V = 0.3 \cdot V_{target}$ (if not shorted), $V = 0$ (if shorted)
-
-### OFF State (-2):
-- Current: $I = 0$
-- Voltage: $V = 0$
-
-Where:
-- $I_{peak}$: Peak current setting (default: 300A)
-- $V_{target}$: Target voltage setting (default: 80V)
-
-## Stochastic Ignition Process
-
-For each time step in the idle state, the module:
-
-1. Calculates the ignition probability $P_{ignite}$ based on the current gap
-2. Generates a random number $r \in [0,1]$
-3. If $r < P_{ignite}$, a spark is initiated:
-   - A random spark location along the workpiece height is chosen
-   - The system transitions to the ON state
-   - The electrical parameters are updated accordingly
-
-Mathematically:
+### 1. Hard Short (Physical Contact)
+If the gap is below a threshold (default 2.0 $\mu m$), a short circuit is guaranteed.
 $$
-\text{If } r < \lambda(gap) \text{ then initiate spark at random location}
+\text{If } gap < gap_{hard\_short} \implies \text{Short Circuit}
 $$
 
-## Implementation Details
+### 2. Critical Debris Short Circuit
+Debris accumulation in the gap can form bridges, causing short circuits even without wire contact. This is modeled using a sigmoid probability function centered around a "critical debris density".
 
-- The module caches $\lambda$ values for efficiency using a dictionary `lambda_cache`
-- The primary `update` method handles the state machine transitions and updates the electrical parameters
-- The `_cond_prob` method calculates the conditional probability of ignition based on the current gap
-- The `get_lambda` method computes the gap-dependent ignition probability function
+**Critical Density Calculation:**
+The density required to cause a short increases with gap size (easier to short a small gap).
+$$
+\rho_{crit}(gap) = \rho_{crit,base} + c_{gap} \cdot gap
+$$
 
-## Key Variables in Code
+**Probability Calculation:**
+The probability of a debris-induced short depends on how far the current debris density $\rho$ is above or below $\rho_{crit}$.
+$$
+P_{debris}(dt) = 1 - (1 - P_{step})^{dt}
+$$
+$$
+P_{step} = \frac{1}{1 + \exp(-k (\rho - \rho_{crit}))}
+$$
+-   $k$: Sigmoid steepness (defines the sharpness of the transition).
+-   If $\rho \gg \rho_{crit}$, probability approaches 1.
+-   If $\rho \ll \rho_{crit}$, probability approaches 0.
 
-- `state.spark_status`: List containing [spark_state, spark_location, duration]
-- `state.target_voltage`: Target voltage setting (default: 80V)
-- `state.peak_current`: Peak current setting (default: 300A)
-- `state.ON_time`: Duration of ON period in time steps (default: 3)
-- `state.OFF_time`: Duration of OFF period in time steps (default: 80)
-- `state.wire_position`: Position of the wire
-- `state.workpiece_position`: Position of the workpiece
-- `gap`: Distance between wire and workpiece (workpiece_position - wire_position)
-- `state.current`: Current flowing through the gap
-- `state.voltage`: Voltage across the gap
+### 3. Random Short Circuit
+To account for stochastic instabilities not captured by the average debris model, a random short circuit mechanism is included.
+-   **Probability**: Increases linearly as gap decreases from $50 \mu m$ down to $2 \mu m$.
+-   **Rate**: Defined by `random_short_max_probability`.
 
-The ignition module works in close cooperation with other modules like the wire module, which simulates the wire temperature, and the material removal module, which updates the workpiece position based on the machining process. 
+## Electrical Parameters & Current Modes
+
+The module loads electrical parameters based on standard machine codes (e.g., "I5", "I12").
+-   **Data Source**: Mappings are loaded from `currents.json`.
+-   **Current**:
+    -   **Idle**: 0 A.
+    -   **Spark (State 1)**: Peak current ($I_{peak}$) from look-up table.
+    -   **Short (State -1)**: Peak current ($I_{peak}$).
+-   **Voltage**:
+    -   **Idle**: Target voltage (e.g., 80V).
+    -   **Spark**: Working voltage (approx. $0.3 \times V_{target}$).
+    -   **Short**: 0 V.
+
+## Duration Control
+
+-   **Normal Spark**: Duration defined by `ON_time`.
+-   **Debris Short**: Fixed duration (e.g., 50 $\mu s$) representing the persistence of a debris bridge.
+-   **Random Short**: Fixed duration (e.g., 100 $\mu s$).
+
+## Key Parameters
+
+| Parameter | Symbol | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `base_critical_density` | $\rho_{crit,base}$ | Critical density at gap=0 | 0.3 |
+| `gap_coefficient` | $c_{gap}$ | Slope of critical density line | 0.02 |
+| `sigmoid_steepness` | $k$ | Sharpness of short probability | 500.0 |
+| `debris_short_duration` | - | Duration of debris shorts | 50 $\mu s$ |
