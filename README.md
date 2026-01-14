@@ -14,7 +14,7 @@ This environment is compatible with the [Gymnasium](https://gymnasium.farama.org
 - **Gymnasium-compatible environment** for Wire EDM simulation
 - **Modular architecture** with separate physics modules (ignition, wire heating, material removal, etc.)
 - **Configurable parameters** for different wire materials and cutting conditions
-- **Real-time visualization** (coming soon)
+- **Real-time visualization** support
 - **Comprehensive logging** capabilities for analysis
 
 ## Installation
@@ -139,13 +139,11 @@ logger.save()
 
 ## Documentation
 
-For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki) (coming soon).
+For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki).
 
 ## Examples
 
-Check out the `examples/` directory for more comprehensive examples:
-- `organized_parameter_example.py` - Demonstrates the parameter organization system
-- `temperature_logging_strategies.py` - Shows different logging strategies
+Check out the `examples/` directory for a quickstart example demonstrating basic environment usage.
 
 ## Contributing
 
