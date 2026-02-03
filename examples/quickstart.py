@@ -74,7 +74,7 @@ def main():
     def get_action():
         nonlocal integral_error
         gap = env.state.workpiece_position - env.state.wire_position
-        error = target_gap - gap
+        error = gap - target_gap  # Positive error = gap too large = advance
         integral_error = np.clip(integral_error + error * 0.001, -50.0, 50.0)
         velocity = np.clip(Kp * error + Ki * integral_error, -500.0, 500.0)
         return {
