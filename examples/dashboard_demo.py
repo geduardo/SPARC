@@ -118,10 +118,10 @@ def main():
             'initial_gap': config.initial_gap,
             'workpiece_height': config.workpiece_height,
             'target_cutting_distance': config.target_cutting_distance,
-            'buffer_len_bottom': getattr(env.wire.parameters, 'buffer_len_bottom', 30.0),
-            'buffer_len_top': getattr(env.wire.parameters, 'buffer_len_top', 30.0),
-            'contact_offset_bottom': getattr(env.wire.parameters, 'contact_offset_bottom', 10.0),
-            'contact_offset_top': getattr(env.wire.parameters, 'contact_offset_top', 10.0),
+            'buffer_len_bottom': getattr(env.wire.params, 'buffer_len_bottom', 30.0),
+            'buffer_len_top': getattr(env.wire.params, 'buffer_len_top', 30.0),
+            'contact_offset_bottom': getattr(env.wire.params, 'contact_offset_bottom', 10.0),
+            'contact_offset_top': getattr(env.wire.params, 'contact_offset_top', 10.0),
         }
 
         # Save back

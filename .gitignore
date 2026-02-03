@@ -54,6 +54,19 @@ build/
 *.db
 *.npz
 
+# LaTeX / paper artifacts (papers live elsewhere; keep this repo code-only)
+*.tex
+*.bib
+*.bbl
+*.blg
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+
 # Local development
 .env
 .env.local

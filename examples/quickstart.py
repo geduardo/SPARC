@@ -89,6 +89,8 @@ def main():
             "wire_position",
             "gap_width",
             "wire_temperature",  # Full temperature field
+            "wire_material_positions_mm",  # Wire segment positions
+            "wire_damage",  # Wire damage field
             "voltage",
             "current",
             "spark_status",

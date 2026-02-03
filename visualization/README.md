@@ -112,6 +112,7 @@ The dashboard expects JSON with this structure:
   "workpiece_position": [0, 0.5, ...],
   "spark_status": [[0, null, 0], ...], // Array of arrays
   "wire_temperature": [[293, ...], ...], // 2D array
+  "wire_material_positions_mm": [[0.0, 0.2, ...], ...], // 2D array
   ...
 }
 ```
