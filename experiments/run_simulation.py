@@ -26,7 +26,12 @@ from src.wedm.modules.wire import WireModuleParameters
 from src.wedm.core.env_config import EnvironmentConfig
 
 
-def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7, on_time: float = 2.0, off_time: float = 33.0):  # µm
+def create_gap_controller(
+    desired_gap: float = 5.0,
+    current_mode: int = 7,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
+):  # µm
     """Create adaptive gap controller that works with both control modes."""
 
     def controller(env: WireEDMEnv) -> Dict[str, Any]:
@@ -47,9 +52,7 @@ def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7, on_ti
                 "target_voltage": np.array([80.0], dtype=np.float32),
                 # Current mode selection (1-19 maps directly to I1-I19):
                 # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
-                "current_mode": np.array(
-                    [current_mode], dtype=np.int32
-                ),
+                "current_mode": np.array([current_mode], dtype=np.int32),
                 "ON_time": np.array([on_time], dtype=np.float32),
                 "OFF_time": np.array([off_time], dtype=np.float32),
             },
@@ -58,7 +61,12 @@ def create_gap_controller(desired_gap: float = 5.0, current_mode: int = 7, on_ti
     return controller
 
 
-def create_voltage_controller(target_voltage: float = 30.0, current_mode: int = 7, on_time: float = 2.0, off_time: float = 33.0):  # V
+def create_voltage_controller(
+    target_voltage: float = 30.0,
+    current_mode: int = 7,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
+):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
 
     # PI controller state
@@ -196,7 +204,11 @@ def setup_logger(
 
 
 def initialize_environment(
-    control_mode: str, seed: int = 0, log_strategy: str = "full_field", segment_len_um: float = 200.0, workpiece_height_mm: float = 20.0
+    control_mode: str,
+    seed: int = 0,
+    log_strategy: str = "full_field",
+    segment_len_um: float = 200.0,
+    workpiece_height_mm: float = 20.0,
 ) -> WireEDMEnv:
     """
     Initialize and setup the EDM environment with appropriate wire configuration.
@@ -224,14 +236,14 @@ def initialize_environment(
         wire_params.compute_zone_mean = False
         print(f"[INFO] Zone mean calculation: DISABLED (strategy: {log_strategy})")
 
-    print(f"[INFO] Wire segment length: {wire_params.segment_len:.4f} mm ({segment_len_um:.1f} µm)")
+    print(
+        f"[INFO] Wire segment length: {wire_params.segment_len:.4f} mm ({segment_len_um:.1f} µm)"
+    )
     print(f"[INFO] Workpiece height: {env_config.workpiece_height:.2f} mm")
 
     # Initialize environment with custom parameters
     env = WireEDMEnv(
-        mechanics_control_mode=control_mode,
-        wire_params=wire_params,
-        config=env_config
+        mechanics_control_mode=control_mode, wire_params=wire_params, config=env_config
     )
     env.reset(seed=seed)
 
@@ -282,7 +294,10 @@ def run_simulation(
         )
     else:  # voltage
         controller = create_voltage_controller(
-            target_voltage, current_mode=current_mode, on_time=on_time, off_time=off_time
+            target_voltage,
+            current_mode=current_mode,
+            on_time=on_time,
+            off_time=off_time,
         )
 
     # For voltage controller, maintain voltage history over last 1ms
@@ -797,7 +812,7 @@ def generate_output_filename(
     """Generate a descriptive filename based on simulation parameters."""
     # Base directory
     base_dir = "visualization/data"
-    
+
     # Build filename components
     parts = []
     parts.append(f"steps{steps}")
@@ -810,17 +825,17 @@ def generate_output_filename(
     if controller == "voltage" and target_voltage is not None:
         parts.append(f"V{target_voltage:.0f}")
     parts.append(mode)
-    
+
     # Add timestamp to avoid overwrites
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     parts.append(timestamp)
-    
+
     # Combine into filename
     filename = "_".join(parts) + ".npz"
-    
+
     # Ensure directory exists
     os.makedirs(base_dir, exist_ok=True)
-    
+
     return os.path.join(base_dir, filename)
 
 
@@ -880,13 +895,15 @@ def main():
     )
     # Generator arguments
     parser.add_argument(
-        "-I", "--current-mode",
+        "-I",
+        "--current-mode",
         type=float,
         nargs="+",
         help="Generator current mode (index 1-19). Can also take ON time as second value: -I 17 15 (default index: 7)",
     )
     parser.add_argument(
-        "-Ton", "--on-time",
+        "-Ton",
+        "--on-time",
         type=float,
         default=2.0,
         help="Pulse ON time in µs (default: 2.0)",
@@ -915,7 +932,9 @@ def main():
             current_mode = int(args.current_mode[0])
         if len(args.current_mode) >= 2:
             on_time = args.current_mode[1]
-            print(f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs")
+            print(
+                f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs"
+            )
 
     # Generate output filename if not explicitly provided
     output_filepath = args.output
@@ -927,7 +946,9 @@ def main():
             workpiece_height=args.workpiece_height,
             current_mode=current_mode,
             controller=args.controller,
-            target_voltage=args.target_voltage if args.controller == "voltage" else None,
+            target_voltage=(
+                args.target_voltage if args.controller == "voltage" else None
+            ),
             on_time=on_time,
             off_time=args.off_time,
             mode=args.mode,
@@ -940,14 +961,14 @@ def main():
         log_to_file=not args.no_log,
         log_strategy=args.log_strategy,
         enable_plotting=args.plot,
-        filepath=output_filepath
+        filepath=output_filepath,
     )
     env = initialize_environment(
-        args.mode, 
-        seed=0, 
+        args.mode,
+        seed=0,
         log_strategy=args.log_strategy,
         segment_len_um=args.segment_len,
-        workpiece_height_mm=args.workpiece_height
+        workpiece_height_mm=args.workpiece_height,
     )
 
     # Run simulation
