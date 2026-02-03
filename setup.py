@@ -15,7 +15,7 @@ setup(
     description="A Gymnasium environment for Wire Electrical Discharge Machining (Wire EDM) simulation",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/geduardo/WEDM-Learning-Environment",
+    url="https://github.com/geduardo/SPARC",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
