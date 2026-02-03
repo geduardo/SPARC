@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import time
 from typing import Dict, Any, Tuple, Optional
+from datetime import datetime
+import os
 
 import numpy as np
 import sys, pathlib
@@ -780,6 +782,47 @@ def plot_crater_histogram(env: WireEDMEnv) -> None:
     plt.show()
 
 
+def generate_output_filename(
+    steps: int,
+    segment_len: float,
+    workpiece_height: float,
+    current_mode: int,
+    controller: str,
+    target_voltage: float = None,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
+    mode: str = "position",
+) -> str:
+    """Generate a descriptive filename based on simulation parameters."""
+    # Base directory
+    base_dir = "visualization/data"
+    
+    # Build filename components
+    parts = []
+    parts.append(f"steps{steps}")
+    parts.append(f"seg{segment_len:.0f}um")
+    parts.append(f"h{workpiece_height:.0f}mm")
+    parts.append(f"I{current_mode}")
+    parts.append(f"Ton{on_time:.1f}us")
+    parts.append(f"Toff{off_time:.1f}us")
+    parts.append(controller)
+    if controller == "voltage" and target_voltage is not None:
+        parts.append(f"V{target_voltage:.0f}")
+    parts.append(mode)
+    
+    # Add timestamp to avoid overwrites
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    parts.append(timestamp)
+    
+    # Combine into filename
+    filename = "_".join(parts) + ".npz"
+    
+    # Ensure directory exists
+    os.makedirs(base_dir, exist_ok=True)
+    
+    return os.path.join(base_dir, filename)
+
+
 def main():
     """Main entry point with clean CLI handling."""
     parser = argparse.ArgumentParser(description="Wire-EDM smoke test")
@@ -873,13 +916,30 @@ def main():
             on_time = args.current_mode[1]
             print(f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs")
 
+    # Generate output filename if not explicitly provided
+    output_filepath = args.output
+    if output_filepath == "visualization/data/smoke_test_results.npz":
+        # Default filename was used, generate parameterized filename
+        output_filepath = generate_output_filename(
+            steps=args.steps,
+            segment_len=args.segment_len,
+            workpiece_height=args.workpiece_height,
+            current_mode=current_mode,
+            controller=args.controller,
+            target_voltage=args.target_voltage if args.controller == "voltage" else None,
+            on_time=on_time,
+            off_time=args.off_time,
+            mode=args.mode,
+        )
+        print(f"[INFO] Output file: {output_filepath}")
+
     # Setup
     logger_config = setup_logger(
         args.mode,
         log_to_file=not args.no_log,
         log_strategy=args.log_strategy,
         enable_plotting=args.plot,
-        filepath=args.output
+        filepath=output_filepath
     )
     env = initialize_environment(
         args.mode, 
