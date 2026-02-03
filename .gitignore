@@ -69,3 +69,6 @@ MIGRATION_MOVING_SEGMENTS.md
 *.gif
 *.png
 
+# Audit reports
+AUDIT_REPORT.md
+
