@@ -24,19 +24,45 @@ A lightweight, zero-dependency web-based visualization dashboard for Wire EDM si
 
 ### 1. Generate Simulation Data
 
-Run the demo script to generate JSON data:
+Run the quickstart example to generate simulation data:
 
 ```bash
-python examples/dashboard_demo.py
+python examples/quickstart.py
 ```
 
-This will:
-- Run a Wire EDM simulation
-- Log relevant signals
-- Export to `visualization/data/simulation_data.json`
-- Automatically open the dashboard in your browser
+This generates a `.npz` file with full simulation data including temperature fields.
 
-### 2. Open Dashboard
+### 2. Convert to JSON for Dashboard
+
+The dashboard requires JSON format. Convert your NPZ file:
+
+```python
+import numpy as np
+import json
+
+# Load NPZ data
+data = np.load('quickstart_YYYYMMDD_HHMMSS.npz', allow_pickle=True)
+
+# Convert to JSON-compatible format
+json_data = {}
+for key in data.files:
+    arr = data[key]
+    if arr.dtype == np.object_:
+        json_data[key] = [x.tolist() if hasattr(x, 'tolist') else x for x in arr]
+    else:
+        json_data[key] = arr.tolist()
+
+# Save as JSON
+with open('visualization/data/simulation_data.json', 'w') as f:
+    json.dump(json_data, f)
+```
+
+Or use the provided conversion script:
+```bash
+python scripts/npz_to_json.py quickstart_*.npz -o visualization/data/simulation_data.json
+```
+
+### 3. Open Dashboard
 
 Open `dashboard.html` in your web browser:
 - Double-click the file, or
@@ -48,11 +74,11 @@ Open `dashboard.html` in your web browser:
   # Then open http://localhost:8000/dashboard.html
   ```
 
-### 3. Load Data
+### 4. Load Data
 
-Click "📁 Load Data" and select your JSON file (e.g., `data/simulation_data.json`)
+Click "Load Data" and select your JSON file (e.g., `data/simulation_data.json`)
 
-### 4. Play Animation
+### 5. Play Animation
 
 Use the timeline controls:
 - **▶ Play**: Start animation

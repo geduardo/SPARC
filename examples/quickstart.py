@@ -3,62 +3,52 @@
 Quick start example for Wire EDM Learning Environment.
 
 This example demonstrates the basic usage of the environment
-with a PI voltage controller and data logging.
+with a PI gap controller and data logging for visualization.
 """
 
 import numpy as np
 from datetime import datetime
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger
 
 
-def create_voltage_controller(target_voltage: float = 30.0):
-    """Create PI voltage controller that targets average voltage over last 1ms."""
+def create_gap_controller(target_gap: float = 15.0):
+    """Create PI gap controller that maintains target gap distance."""
 
     # PI controller state
     integral_error = 0.0
 
-    # PI gains
-    Kp = 0.05  # Proportional gain
-    Ki = 0.1  # Integral gain
+    # PI gains (tuned for velocity control)
+    Kp = 50.0   # Proportional gain [µm/s per µm error]
+    Ki = 10.0   # Integral gain
 
-    def controller(env: WireEDMEnv, voltage_history: list = None):
+    def controller(env: WireEDMEnv):
         nonlocal integral_error
 
-        # Calculate average voltage over the provided history (last 1ms of data)
-        if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
-        else:
-            # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        # Calculate current gap
+        gap = env.state.workpiece_position - env.state.wire_position
 
         # PI control
-        error = target_voltage - avg_voltage
-        integral_error += error
+        error = target_gap - gap
+        integral_error += error * 0.001  # Scale by dt (1ms control interval)
 
         # Integral windup protection
-        integral_error = np.clip(integral_error, -100.0, 100.0)
+        integral_error = np.clip(integral_error, -50.0, 50.0)
 
-        # PI output - when voltage is too high (negative error),
-        # we want positive delta to move wire closer and reduce gap
-        pi_output = -(Kp * error + Ki * integral_error * 0.001)
-
-        if env.mechanics.control_mode == "position":
-            # Position control: return position increment [µm]
-            delta = pi_output
-            delta = np.clip(delta, -5.0, 5.0)  # Limit position command
-        else:  # velocity control
-            # Velocity control: return target velocity [µm/s]
-            delta = pi_output * 100.0  # Scale for velocity control
-            delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
+        # PI output: velocity command [µm/s]
+        # Positive error (gap too small) -> negative velocity (retract)
+        # Negative error (gap too large) -> positive velocity (advance)
+        velocity = Kp * error + Ki * integral_error
+        velocity = np.clip(velocity, -500.0, 500.0)
 
         return {
-            "servo": np.array([delta], dtype=np.float32),
+            "servo": np.array([velocity], dtype=np.float32),
             "generator_control": {
                 "target_voltage": np.array([80.0], dtype=np.float32),
-                "current_mode": np.array([7], dtype=np.int32),
+                "current_mode": np.array([9], dtype=np.int32),  # I9
                 "ON_time": np.array([2.0], dtype=np.float32),
-                "OFF_time": np.array([33.0], dtype=np.float32),
+                "OFF_time": np.array([20.0], dtype=np.float32),
             },
         }
 
@@ -67,72 +57,70 @@ def create_voltage_controller(target_voltage: float = 30.0):
 
 def main():
     print("=== Wire EDM Environment Quick Start ===")
-    print("Using PI Voltage Controller\n")
+    print("Using PI Gap Controller (velocity mode)\n")
 
-    # Create environment with custom workpiece height
+    # Environment configuration
     config = EnvironmentConfig(
-        workpiece_height=25.0,  # mm (changed from default 20.0 mm)
+        workpiece_height=5.0,       # mm
+        initial_gap=30.0,           # µm
+        target_cutting_distance=200.0,  # µm
     )
-    env = WireEDMEnv(config=config)
 
-    # Set up simulation data logger for dashboard
+    # Wire module configuration
+    wire_params = WireModuleParameters(
+        segment_len=0.4,  # mm (400 µm segments)
+    )
+
+    # Create environment
+    env = WireEDMEnv(
+        config=config,
+        wire_params=wire_params,
+        mechanics_control_mode="velocity",
+    )
+
+    # Set up simulation data logger
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    json_filepath = f"quickstart_data_{timestamp}.json"
+    filepath = f"quickstart_{timestamp}.npz"
 
-    sim_logger_config = {
+    logger_config = {
         "signals_to_log": [
             "time",
             "workpiece_position",
             "wire_position",
             "gap_width",
-            "wire_average_temperature",
+            "wire_temperature",  # Full temperature field
             "voltage",
             "current",
             "spark_status",
+            "debris_density",
         ],
         "log_frequency": {"type": "every_step"},
-        "backend": {"type": "json", "filepath": json_filepath, "indent": 2},
+        "backend": {"type": "numpy", "filepath": filepath},
     }
-    sim_logger = SimulationLogger(sim_logger_config, env)
+    logger = SimulationLogger(logger_config, env)
 
-    # Create voltage controller (target 30V average)
-    target_voltage = 47.0
-    controller = create_voltage_controller(target_voltage)
-
-    # Voltage history tracking (for last 1ms)
-    voltage_history = []
-    time_history = []
+    # Create gap controller
+    target_gap = 15.0  # µm
+    controller = create_gap_controller(target_gap)
 
     # Reset environment
     obs, info = env.reset()
-    print(f"Environment reset. Initial gap: {env.state.workpiece_position:.1f} µm")
-    print(f"Target cutting distance: {env.state.target_position:.1f} µm")
-    print(f"Target average voltage: {target_voltage:.1f} V\n")
-
-    # Initialize with default action
-    action = controller(env, None)
+    print(f"Workpiece height: {config.workpiece_height} mm")
+    print(f"Initial gap: {env.state.workpiece_position - env.state.wire_position:.1f} µm")
+    print(f"Target gap: {target_gap} µm")
+    print(f"Control mode: velocity\n")
 
     # Run simulation
     step_count = 0
     spark_count = 0
+    action = controller(env)
 
-    print("Running simulation...")
-    for i in range(3000000):
+    print("Running simulation (50,000 steps)...")
+    for i in range(50000):
         obs, reward, terminated, truncated, info = env.step(action)
 
         # Log simulation data
-        sim_logger.collect(env.state, info)
-
-        # Track voltage history every µs
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
-        voltage_history.append(current_voltage)
-        time_history.append(env.state.time)
-
-        # Keep only last 1ms of data (1000 µs)
-        cutoff_time = env.state.time - 1000.0
-        while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+        logger.collect(env.state, info)
 
         # Count sparks
         if info.get("spark_state", 0) == 1:
@@ -141,37 +129,34 @@ def main():
         # Update action on control steps
         if info.get("control_step", False):
             step_count += 1
-            action = controller(env, voltage_history.copy())
+            action = controller(env)
 
-            # Print progress every 10 control steps
-            if step_count % 10 == 0:
+            # Print progress every 50 control steps
+            if step_count % 50 == 0:
                 gap = env.state.workpiece_position - env.state.wire_position
-                progress = (
-                    env.state.workpiece_position / env.state.target_position
-                ) * 100
-                avg_voltage = np.mean(voltage_history) if voltage_history else 0.0
+                max_temp = np.max(env.state.wire_temperature)
                 print(
-                    f"Step {step_count}: Gap={gap:.1f}µm, AvgV={avg_voltage:.1f}V, Progress={progress:.1f}%, Sparks={spark_count}"
+                    f"Step {step_count}: Gap={gap:.1f}µm, MaxT={max_temp:.0f}K, Sparks={spark_count}"
                 )
 
         if terminated:
             print(f"\nSimulation terminated: {info}")
             break
 
-    # Finalize simulation logger
-    sim_logger.finalize()
+    # Finalize logger
+    logger.finalize()
 
     # Final statistics
     print(f"\n=== Simulation Complete ===")
-    print(f"Total control steps: {step_count}")
+    print(f"Total steps: {i+1}")
+    print(f"Control steps: {step_count}")
     print(f"Total sparks: {spark_count}")
-    print(f"Final position: {env.state.workpiece_position:.1f} µm")
+    print(f"Final gap: {env.state.workpiece_position - env.state.wire_position:.1f} µm")
+    print(f"Max wire temperature: {np.max(env.state.wire_temperature):.0f} K")
     print(f"Wire broken: {env.state.is_wire_broken}")
-    print(f"Target reached: {env.state.is_target_distance_reached}")
-    if voltage_history:
-        print(f"Final average voltage: {np.mean(voltage_history):.1f} V")
 
-    print(f"\n✅ Data saved to: {json_filepath}")
+    print(f"\nData saved to: {filepath}")
+    print("To visualize: move file to visualization/data/ and open dashboard.html")
 
 
 if __name__ == "__main__":
