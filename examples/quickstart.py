@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger
 
 
@@ -28,8 +29,13 @@ def main():
         target_cutting_distance=200.0,
     )
 
+    wire_params = WireModuleParameters(
+        segment_len=0.4,  # 400 um segments
+    )
+
     env = WireEDMEnv(
         config=config,
+        wire_params=wire_params,
         mechanics_control_mode="velocity",
     )
 
@@ -84,7 +90,7 @@ def main():
     # Run simulation
     env.reset()
     action = get_action()
-    n_steps = 50_000
+    n_steps = 100_000
     spark_count = 0
 
     print(f"Running {n_steps:,} steps...")
