@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
@@ -71,9 +72,12 @@ class IgnitionModule(EDMModule):
         self.params = parameters or IgnitionModuleParameters()
 
         # ── Internal State ──
-        self.lambda_cache: dict[float, float] = {}
+        self._ignition_prob_cache: dict[tuple[float, float], float] = {}  # (rounded_gap, dt) -> probability
         self.random_short_remaining = 0  # Remaining microseconds of random short
         self.debris_short_remaining = 0  # Remaining microseconds of debris short
+        
+        # Precompute constants
+        self._log2 = math.log(2)
 
         # ── Current Mapping Data ──
         self.currents_data = self._load_currents_data()
@@ -197,37 +201,49 @@ class IgnitionModule(EDMModule):
     def _update_short_circuit_detection(self, state: EDMState) -> None:
         """Update short circuit flag based on gap and debris density using sigmoid probability."""
         gap = max(0.0, state.workpiece_position - state.wire_position)
+        dt = self.env.dt
 
         # Get debris density from state (default to 0 if not available)
         debris_density = getattr(state, "debris_density", 0.0)
 
         # Check for active short circuits first (either type)
         if self.random_short_remaining > 0:
-            self.random_short_remaining -= 1
+            self.random_short_remaining = max(0, self.random_short_remaining - dt)
             state.is_short_circuit = True
             return
 
         if self.debris_short_remaining > 0:
-            self.debris_short_remaining -= 1
+            self.debris_short_remaining = max(0, self.debris_short_remaining - dt)
             state.is_short_circuit = True
             return
 
         # Calculate probabilities for new short circuits
-        # Use sigmoid model for debris-based short circuit probability
-        debris_short_prob = self._get_debris_short_probability(gap, debris_density)
+        
+        # 1. Debris-based short circuit probability
+        # The sigmoid returns the probability P_1 for a 1 µs step
+        # P(dt) = 1 - (1 - P_1)^dt
+        base_debris_prob = self._get_debris_short_probability(gap, debris_density)
+        
+        if base_debris_prob >= 1.0:
+            debris_short_prob = 1.0
+        else:
+            debris_short_prob = 1.0 - np.power(1.0 - base_debris_prob, dt)
 
-        # Check for random gap-dependent short circuit
-        # Linear probability: 0% at gap > max_gap, max_probability at gap < min_gap, linear in between
+        # 2. Random gap-dependent short circuit
+        # Calculate rate (probability per µs)
         if gap >= self.params.random_short_max_gap:
-            random_short_prob = 0.0
+            random_short_rate = 0.0
         elif gap <= self.params.random_short_min_gap:
-            random_short_prob = self.params.random_short_max_probability
+            random_short_rate = self.params.random_short_max_probability
         else:
             # Linear interpolation between max_probability and 0%
             gap_factor = 1.0 - (gap - self.params.random_short_min_gap) / (
                 self.params.random_short_max_gap - self.params.random_short_min_gap
             )
-            random_short_prob = gap_factor * self.params.random_short_max_probability
+            random_short_rate = gap_factor * self.params.random_short_max_probability
+            
+        # P(dt) = 1 - exp(-rate * dt)
+        random_short_prob = 1.0 - np.exp(-random_short_rate * dt)
 
         # Roll for debris short circuit
         if self.env.np_random.random() < debris_short_prob:
@@ -323,7 +339,9 @@ class IgnitionModule(EDMModule):
         if state.is_short_circuit:
             return False
 
-        ignition_probability = self.get_lambda(state)
+        # Get ignition probability (cached)
+        ignition_probability = self._get_ignition_probability(state)
+        
         return self.env.np_random.random() < ignition_probability
 
     def _get_target_voltage(self, state: EDMState) -> float:
@@ -345,23 +363,67 @@ class IgnitionModule(EDMModule):
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+    def _get_ignition_probability(self, state: EDMState) -> float:
+        """
+        Calculate ignition probability with efficient caching.
+        P(ignition in dt) = 1 - exp(-λ(gap) * dt)
+        """
+        dt = self.env.dt
+        gap = state.workpiece_position - state.wire_position
+        
+        # Force probability to 0 if gap > 25.0 micrometers
+        if gap > 25.0:
+            return 0.0
+        
+        # Round gap to 2 decimal places (10nm resolution) for effective caching
+        rounded_gap = round(gap, 2)
+        cache_key = (rounded_gap, dt)
+        
+        if cache_key in self._ignition_prob_cache:
+            return self._ignition_prob_cache[cache_key]
+            
+        # Calculate lambda (hazard rate)
+        # λ = ln(2) / (a*gap² + b*gap + c)
+        # We use the rounded gap for consistency with the cache key
+        denominator = (
+            self.params.ignition_a_coeff * rounded_gap**2
+            + self.params.ignition_b_coeff * rounded_gap
+            + self.params.ignition_c_coeff
+        )
+        
+        # Avoid division by zero or negative denominator if coefficients are weird
+        if denominator <= 1e-9:
+             # Very high hazard rate -> probability approaches 1
+            prob = 1.0
+        else:
+            hazard_rate = self._log2 / denominator
+            # P = 1 - exp(-λ * dt)
+            prob = 1.0 - math.exp(-hazard_rate * dt)
+            
+        self._ignition_prob_cache[cache_key] = prob
+        return prob
+
     def get_lambda(self, state: EDMState) -> float:
-        """Calculate ignition probability based on gap."""
+        """
+        Calculate ignition probability based on gap.
+        Kept for backward compatibility and analysis.
+        """
         if state.is_short_circuit:
             raise ValueError("get_lambda called during short circuit condition.")
 
         gap = state.workpiece_position - state.wire_position
-
-        if gap not in self.lambda_cache:
-            # λ = ln(2) / (a*gap² + b*gap + c)
-            denominator = (
-                self.params.ignition_a_coeff * gap**2
-                + self.params.ignition_b_coeff * gap
-                + self.params.ignition_c_coeff
-            )
-            self.lambda_cache[gap] = np.log(2) / denominator
-
-        return self.lambda_cache[gap]
+        
+        # λ = ln(2) / (a*gap² + b*gap + c)
+        denominator = (
+            self.params.ignition_a_coeff * gap**2
+            + self.params.ignition_b_coeff * gap
+            + self.params.ignition_c_coeff
+        )
+        
+        if denominator <= 1e-9:
+            return float('inf')
+            
+        return self._log2 / denominator
 
     def get_critical_density_for_gap(self, gap: float) -> float:
         """

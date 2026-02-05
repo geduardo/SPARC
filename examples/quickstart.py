@@ -1,72 +1,124 @@
 #!/usr/bin/env python3
 """
-Quick start example for Wire EDM Learning Environment.
+Quickstart: Run a simple Wire EDM simulation and save data for visualization.
 
-This example demonstrates the basic usage of the environment
-with a simple control strategy.
+This script runs a short simulation with sensible defaults and saves the
+output to outputs/quickstart.npz. Use this to quickly generate data for
+the visualization dashboard.
+
+Usage:
+    python examples/quickstart.py
 """
 
 import numpy as np
+from pathlib import Path
+
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
+from wedm.utils.logger import SimulationLogger
 
 
 def main():
-    print("=== Wire EDM Environment Quick Start ===\n")
+    print("Wire EDM Simulation - Quickstart")
+    print("=" * 40)
 
-    # Create environment with default settings
-    env = WireEDMEnv()
+    # Fixed configuration for quickstart
+    config = EnvironmentConfig(
+        workpiece_height=5.0,
+        initial_gap=30.0,
+        target_cutting_distance=200.0,
+    )
 
-    # Reset environment
-    obs, info = env.reset()
-    print(f"Environment reset. Initial gap: {env.state.workpiece_position:.1f} µm")
-    print(f"Target cutting distance: {env.state.target_position:.1f} µm\n")
+    wire_params = WireModuleParameters(
+        segment_len=0.4,  # 400 um segments
+    )
 
-    # Simple control action
-    action = {
-        "servo": np.array([0.1]),  # Small positive feed
-        "generator_control": {
-            "target_voltage": np.array([80.0]),
-            "current_mode": np.array([5]),  # I5 current mode
-            "ON_time": np.array([3.0]),  # 3 µs on time
-            "OFF_time": np.array([80.0]),  # 80 µs off time
+    env = WireEDMEnv(
+        config=config,
+        wire_params=wire_params,
+        mechanics_control_mode="velocity",
+    )
+
+    # Output path
+    output_dir = Path(__file__).parent.parent / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    output_path = output_dir / "quickstart.npz"
+
+    # Logger configuration
+    logger = SimulationLogger(
+        {
+            "signals_to_log": [
+                "time",
+                "workpiece_position",
+                "wire_position",
+                "gap_width",
+                "wire_temperature",
+                "wire_material_positions_mm",
+                "wire_damage",
+                "voltage",
+                "current",
+                "spark_status",
+                "debris_density",
+            ],
+            "log_frequency": {"type": "every_step"},
+            "backend": {"type": "numpy", "filepath": str(output_path)},
         },
-    }
+        env,
+    )
 
-    # Run for 100000 steps (100 control steps)
-    step_count = 0
+    # Simple PI gap controller
+    target_gap = 15.0
+    integral_error = 0.0
+    Kp, Ki = 50.0, 10.0
+
+    def get_action():
+        nonlocal integral_error
+        gap = env.state.workpiece_position - env.state.wire_position
+        error = gap - target_gap  # Positive error = gap too large = advance
+        integral_error = np.clip(integral_error + error * 0.001, -50.0, 50.0)
+        velocity = np.clip(Kp * error + Ki * integral_error, -500.0, 500.0)
+        return {
+            "servo": np.array([velocity], dtype=np.float32),
+            "generator_control": {
+                "target_voltage": np.array([80.0], dtype=np.float32),
+                "current_mode": np.array([9], dtype=np.int32),
+                "ON_time": np.array([2.0], dtype=np.float32),
+                "OFF_time": np.array([20.0], dtype=np.float32),
+            },
+        }
+
+    # Run simulation
+    env.reset()
+    action = get_action()
+    n_steps = 100_000
     spark_count = 0
 
-    print("Running simulation...")
-    for i in range(100000):
-        obs, reward, terminated, truncated, info = env.step(action)
+    print(f"Running {n_steps:,} steps...")
 
-        # Count sparks
+    for i in range(n_steps):
+        obs, reward, terminated, truncated, info = env.step(action)
+        logger.collect(env.state, info)
+
         if info.get("spark_state", 0) == 1:
             spark_count += 1
 
-        # Print progress every 10 control steps
         if info.get("control_step", False):
-            step_count += 1
-            if step_count % 10 == 0:
-                gap = env.state.workpiece_position - env.state.wire_position
-                progress = (
-                    env.state.workpiece_position / env.state.target_position
-                ) * 100
-                print(
-                    f"Step {step_count}: Gap={gap:.1f}µm, Progress={progress:.1f}%, Sparks={spark_count}"
-                )
+            action = get_action()
 
         if terminated:
-            print(f"\nSimulation terminated: {info}")
             break
 
-    # Final statistics
-    print(f"\n=== Simulation Complete ===")
-    print(f"Total control steps: {step_count}")
-    print(f"Total sparks: {spark_count}")
-    print(f"Final position: {env.state.workpiece_position:.1f} µm")
-    print(f"Wire broken: {env.state.is_wire_broken}")
-    print(f"Target reached: {env.state.is_target_distance_reached}")
+    logger.finalize()
+
+    # Summary
+    gap = env.state.workpiece_position - env.state.wire_position
+    print(f"\nSimulation complete:")
+    print(f"  Steps: {i + 1:,}")
+    print(f"  Sparks: {spark_count:,}")
+    print(f"  Final gap: {gap:.1f} um")
+    print(f"  Wire broken: {env.state.is_wire_broken}")
+    print(f"\nData saved to: {output_path}")
+    print("\nTo visualize, open visualization/dashboard.html")
 
 
 if __name__ == "__main__":

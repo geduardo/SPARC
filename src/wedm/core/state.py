@@ -56,7 +56,10 @@ class EDMState:
     wire_temperature: np.ndarray = field(
         default_factory=lambda: np.array([], dtype=np.float32)
     )
-    time_in_critical_temp: int = 0  # Time wire has been at critical temperature
+    wire_damage: np.ndarray = field(
+        default_factory=lambda: np.array([], dtype=np.float32)
+    )  # Accumulated damage per segment (0-1), wire breaks when any reaches 1.0
+    wire_max_damage: float = 0.0  # Maximum accumulated damage across all segments (0-1)
     wire_average_temperature: float | None = None  # Average temperature in cutting zone
 
     # ── Spark/Discharge State ──

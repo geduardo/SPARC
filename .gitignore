@@ -156,3 +156,9 @@ simulation_data/
 *.jpg
 *.jpeg
 *.pdf
+
+# Audit reports
+AUDIT_REPORT.md
+
+# Claude Code
+.claude/

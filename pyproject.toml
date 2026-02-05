@@ -53,10 +53,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/geduardo/WEDM-Learning-Environment"
-Documentation = "https://github.com/geduardo/WEDM-Learning-Environment/wiki"
-Repository = "https://github.com/geduardo/WEDM-Learning-Environment"
-Issues = "https://github.com/geduardo/WEDM-Learning-Environment/issues"
+Homepage = "https://github.com/geduardo/SPARC"
+Documentation = "https://github.com/geduardo/SPARC/wiki"
+Repository = "https://github.com/geduardo/SPARC"
+Issues = "https://github.com/geduardo/SPARC/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

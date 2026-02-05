@@ -1,0 +1,65 @@
+{
+    "I1": {
+        "average_area_um2": 1083,
+        "area_std_um2": 224,
+        "depth_um": 2.9967,
+        "volume_um3": 424.0,
+        "volume_std_um3": 87.7
+    },
+    "I3": {
+        "average_area_um2": 1171,
+        "area_std_um2": 258,
+        "depth_um": 3.0443,
+        "volume_um3": 465.7,
+        "volume_std_um3": 102.6
+    },
+    "I5": {
+        "average_area_um2": 2068,
+        "area_std_um2": 382,
+        "depth_um": 3.5302,
+        "volume_um3": 953.7,
+        "volume_std_um3": 176.2
+    },
+    "I7": {
+        "average_area_um2": 2285,
+        "area_std_um2": 480,
+        "depth_um": 3.6478,
+        "volume_um3": 1089.0,
+        "volume_std_um3": 228.8
+    },
+    "I9": {
+        "average_area_um2": 2484,
+        "area_std_um2": 513,
+        "depth_um": 3.7556,
+        "volume_um3": 1218.8,
+        "volume_std_um3": 251.7
+    },
+    "I11": {
+        "average_area_um2": 2428,
+        "area_std_um2": 405,
+        "depth_um": 3.7252,
+        "volume_um3": 1181.6,
+        "volume_std_um3": 197.1
+    },
+    "I13": {
+        "average_area_um2": 3219,
+        "area_std_um2": 1065,
+        "depth_um": 4.1537,
+        "volume_um3": 1746.7,
+        "volume_std_um3": 578.0
+    },
+    "I15": {
+        "average_area_um2": 6621,
+        "area_std_um2": 1619,
+        "depth_um": 5.9966,
+        "volume_um3": 5186.9,
+        "volume_std_um3": 1268.4
+    },
+    "I17": {
+        "average_area_um2": 10808,
+        "area_std_um2": 1633,
+        "depth_um": 6.2647,
+        "volume_um3": 11671.0,
+        "volume_std_um3": 1763.4
+    }
+}

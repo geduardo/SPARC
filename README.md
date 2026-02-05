@@ -1,4 +1,6 @@
-![Wire EDM Simulation](./img/sparc_logo.png)
+<p align="center">
+  <img src="./visualization/img/sparc_logo.png" alt="SPARC Logo" width="400">
+</p>
 
 # SPARC - Wire EDM Learning Environment
 
@@ -14,7 +16,7 @@ This environment is compatible with the [Gymnasium](https://gymnasium.farama.org
 - **Gymnasium-compatible environment** for Wire EDM simulation
 - **Modular architecture** with separate physics modules (ignition, wire heating, material removal, etc.)
 - **Configurable parameters** for different wire materials and cutting conditions
-- **Real-time visualization** (coming soon)
+- **Real-time visualization** support
 - **Comprehensive logging** capabilities for analysis
 
 ## Installation
@@ -72,7 +74,8 @@ print(f"Simulation completed. Wire broken: {info.get('wire_broken', False)}")
 ### Custom Control Strategy
 
 ```python
-from wedm import WireEDMEnv, EnvironmentConfig
+import numpy as np
+from wedm import WireEDMEnv
 
 # Create environment
 env = WireEDMEnv(mechanics_control_mode="position")
@@ -110,16 +113,16 @@ while not done:
 
 ```python
 from wedm import WireEDMEnv
-from wedm.utils.logger import SimulationLogger, LoggerConfig
+from wedm.utils.logger import SimulationLogger
 
 # Configure logger
-logger_config = LoggerConfig(
-    signals_to_log=["wire_position", "workpiece_position", "spark_status"],
-    log_frequency={"type": "interval", "interval": 100},  # Log every 100 µs
-    backend={"type": "numpy", "filepath": "simulation_data.npz"}
-)
+logger_config = {
+    "signals_to_log": ["wire_position", "workpiece_position", "voltage", "current"],
+    "log_frequency": {"type": "every_step"},
+    "backend": {"type": "json", "filepath": "simulation_data.json"}
+}
 
-# Create environment with logger
+# Create environment and logger
 env = WireEDMEnv()
 logger = SimulationLogger(logger_config, env)
 
@@ -128,24 +131,51 @@ obs, info = env.reset()
 for _ in range(10000):
     action = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(action)
-    logger.log()  # Log current state
-    
+    logger.collect(env.state, info)  # Collect data each step
+
     if terminated:
         break
 
-# Save logged data
-logger.save()
+# Finalize and save logged data
+logger.finalize()
 ```
+
+## Visualization Dashboard
+
+SPARC includes a web-based visualization dashboard for analyzing simulation results.
+
+### Generate Data and Launch Dashboard
+
+```bash
+# 1. Run simulation to generate NPZ data
+python examples/quickstart.py
+
+# 2. Convert to JSON for dashboard
+python scripts/npz_to_json.py quickstart_*.npz -o visualization/data/simulation_data.json
+
+# 3. Open the dashboard
+cd visualization
+python -m http.server 8000
+# Then open http://localhost:8000/dashboard.html
+```
+
+### Dashboard Features
+
+- **Side View**: Wire, workpiece, and spark visualization
+- **Virtual Oscilloscope**: Real-time voltage/current traces
+- **Top View**: Debris concentration heatmap
+- **Thermal Profile**: Wire temperature distribution
+- **Timeline Controls**: Play, pause, and scrub through simulation
+
+See [visualization/README.md](visualization/README.md) for detailed documentation.
 
 ## Documentation
 
-For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki) (coming soon).
+For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki).
 
 ## Examples
 
-Check out the `examples/` directory for more comprehensive examples:
-- `organized_parameter_example.py` - Demonstrates the parameter organization system
-- `temperature_logging_strategies.py` - Shows different logging strategies
+Check out the `examples/` directory for a quickstart example demonstrating basic environment usage.
 
 ## Contributing
 

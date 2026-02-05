@@ -19,7 +19,7 @@ class MaterialModuleParameters:
     """Material removal module specific parameters."""
 
     # ── Material Removal Model Parameters ──
-    base_overcut: float = 0.12  # [mm] Base overcut (0.06mm per side)
+    base_overcut: float = 0.026  # [mm] Base overcut (0.06mm per side)
 
 
 class MaterialRemovalModule(EDMModule):
@@ -51,10 +51,10 @@ class MaterialRemovalModule(EDMModule):
         self.crater_volumes_um3 = []  # Store all crater volumes in μm³
 
     def _load_crater_data(self) -> dict:
-        """Load crater volume distributions from area_corrected.json."""
+        """Load crater volume distributions from crater_data.json."""
         # Get the path relative to this module
         current_dir = Path(__file__).parent
-        json_path = current_dir / "area_corrected.json"
+        json_path = current_dir / "crater_data.json"
 
         try:
             with open(json_path, "r") as f:
@@ -78,9 +78,11 @@ class MaterialRemovalModule(EDMModule):
 
     def update(self, state: EDMState) -> None:
         """Update material removal based on spark events and crater volumes."""
-        # Only remove material during fresh REAL sparks (state 1), not short circuits (state -1)
-        # Skip material removal during short circuits (state -1)
-        if state.spark_status[0] == 1 and state.spark_status[2] == 0:
+        # Remove material during fresh sparks (state 1) AND short circuits (state -1)
+        # Both discharge types remove the same volume of material
+        # spark_status[2] == 0 means fresh discharge (just ignited this step)
+        is_fresh_discharge = (state.spark_status[0] == 1 or state.spark_status[0] == -1) and state.spark_status[2] == 0
+        if is_fresh_discharge:
             # Fresh real spark just ignited, calculate material removal
             crater_volume = self._sample_crater_volume(state)
 
@@ -117,10 +119,8 @@ class MaterialRemovalModule(EDMModule):
             self._cached_current_mode = current_mode
 
         # Use cached crater info
-        mean_volume = self._cached_crater_info[
-            "ellipsoid_volume_half"
-        ]  # Using half volume as it's more realistic
-        std_volume = self._cached_crater_info["ellipsoid_volume_std"]
+        mean_volume = self._cached_crater_info["volume_um3"]
+        std_volume = self._cached_crater_info["volume_std_um3"]
 
         # Sample from Gaussian distribution
         # Convert from micrometers³ to mm³ (divide by 1e9)
@@ -153,7 +153,7 @@ class MaterialRemovalModule(EDMModule):
         wire_diameter_mm = self.env.config.wire_diameter  # mm
 
         # Get crater depth from cached crater info (convert from μm to mm)
-        crater_depth_um = self._cached_crater_info["depth"]  # μm
+        crater_depth_um = self._cached_crater_info["depth_um"]  # μm
         crater_depth_mm = crater_depth_um / 1000.0  # Convert μm to mm
 
         kerf_width_mm = (
