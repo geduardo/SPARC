@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict, Union
+from dataclasses import fields
+from difflib import get_close_matches
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, TypedDict, Union
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
@@ -9,8 +11,9 @@ import copy  # For deep-copying mutable signals like lists
 import io
 import zipfile
 
+from ..core.state import EDMState
+
 if TYPE_CHECKING:
-    from ..core.state import EDMState
     from ..envs import WireEDMEnv  # Assuming WireEDMEnv is the main env type
 
 # --- Configuration Types ---
@@ -75,9 +78,13 @@ class SimulationLogger:
         self.log_data: Dict[str, List[Any]] = defaultdict(list)
         self.step_counter = 0  # For interval-based logging
 
-        # Placeholder for more complex signal definitions (e.g., derived values)
-        # For now, signals are assumed to be direct attributes of EDMState
-        self.signal_accessors: Dict[str, callable] = {}
+        # Known EDMState and derived signals for strict validation
+        self._state_signal_names = {f.name for f in fields(EDMState)}
+        self._derived_signal_accessors: Dict[str, Callable[[EDMState], Any]] = {
+            # Explicitly supported derived signal names.
+            "gap_um": lambda state: state.workpiece_position - state.wire_position,
+        }
+        self.signal_accessors: Dict[str, Callable[[EDMState], Any]] = {}
         self._prepare_signal_accessors()
 
     def _validate_config(self):
@@ -125,16 +132,43 @@ class SimulationLogger:
 
     def _prepare_signal_accessors(self):
         """
-        Prepares functions to access signal data.
-        For now, assumes direct attribute access on EDMState.
-        Can be extended for derived signals or specific array indexing.
+        Prepare accessors for known state/derived signals.
+        Unknown signal names fail fast to avoid silent None logging.
         """
+        invalid_signals = []
+
         for signal_name in self.config["signals_to_log"]:
-            # Example: if signal_name is "wire_temp_segment_0", we might parse it
-            # and create a lambda like: lambda state: state.wire_temperature[0]
-            # For now, direct access:
-            self.signal_accessors[signal_name] = (
-                lambda state, name=signal_name: getattr(state, name, None)
+            if signal_name in self._state_signal_names:
+                self.signal_accessors[signal_name] = (
+                    lambda state, name=signal_name: getattr(state, name)
+                )
+            elif signal_name in self._derived_signal_accessors:
+                self.signal_accessors[signal_name] = self._derived_signal_accessors[
+                    signal_name
+                ]
+            else:
+                invalid_signals.append(signal_name)
+
+        if invalid_signals:
+            supported_names = sorted(
+                self._state_signal_names | set(self._derived_signal_accessors.keys())
+            )
+            hint_parts = []
+            for signal_name in invalid_signals:
+                suggestions = get_close_matches(
+                    signal_name, supported_names, n=3, cutoff=0.6
+                )
+                if suggestions:
+                    hint_parts.append(
+                        f"'{signal_name}' -> did you mean {', '.join(suggestions)}?"
+                    )
+
+            hint_text = f" Hints: {'; '.join(hint_parts)}" if hint_parts else ""
+            derived = ", ".join(sorted(self._derived_signal_accessors.keys()))
+            raise ValueError(
+                "LoggerConfig: Unknown signals_to_log entries: "
+                f"{', '.join(invalid_signals)}. "
+                f"Known derived signals: {derived}.{hint_text}"
             )
 
     def collect(self, state: EDMState, info: Dict[str, Any] | None = None):
@@ -191,9 +225,9 @@ class SimulationLogger:
                         # Logic for other backends would go here
                         pass
                 else:
-                    # Optionally log a warning if an accessor isn't found
-                    print(
-                        f"Warning: No accessor found for signal '{signal_name}'. Skipping."
+                    raise RuntimeError(
+                        f"Missing signal accessor for '{signal_name}'. "
+                        "Logger configuration should have been validated at initialization."
                     )
 
     def finalize(self):
