@@ -1,259 +1,35 @@
 {
-	"nodes": [
-		{
-			"id": "group-docshy",
-			"type": "group",
-			"x": 1720,
-			"y": 440,
-			"width": 800,
-			"height": 1180,
-			"label": "Docs Hygiene"
-		},
-		{
-			"id": "group-coreru",
-			"type": "group",
-			"x": 200,
-			"y": -400,
-			"width": 1080,
-			"height": 790,
-			"label": "Core Runtime"
-		},
-		{
-			"id": "group-testin",
-			"type": "group",
-			"x": 360,
-			"y": 780,
-			"width": 760,
-			"height": 960,
-			"label": "Testing CI"
-		},
-		{
-			"id": "group-datalo",
-			"type": "group",
-			"x": -80,
-			"y": 560,
-			"width": 380,
-			"height": 700,
-			"label": "Data Logging"
-		},
-		{
-			"id": "canvas-errors",
-			"type": "text",
-			"text": "## Errors\n✓ None",
-			"x": -540,
-			"y": -750,
-			"width": 380,
-			"height": 200,
-			"color": "1"
-		},
-		{
-			"id": "legend",
-			"type": "text",
-			"text": "## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent",
-			"x": -540,
-			"y": -310,
-			"width": 380,
-			"height": 230,
-			"color": "0"
-		},
-		{
-			"id": "canvas-warnings",
-			"type": "text",
-			"text": "## Warnings\n✓ None",
-			"x": -540,
-			"y": -530,
-			"width": 380,
-			"height": 200,
-			"color": "3"
-		},
-		{
-			"id": "3d7e31d7",
-			"type": "text",
-			"text": "## DL-01 Add logger signal validation\nValidate signals_to_log against EDMState and supported derived signals, and fail fast on unknown signals such as gap_width.",
-			"x": -60,
-			"y": 600,
-			"width": 280,
-			"height": 200,
-			"color": "6"
-		},
-		{
-			"id": "ce58c7a4",
-			"type": "text",
-			"text": "## DL-02 Replace broad exception swallowing\nReplace blanket exception handlers in wire/logger sync paths with targeted handling and actionable warnings.",
-			"x": -60,
-			"y": 980,
-			"width": 280,
-			"height": 220,
-			"color": "6"
-		},
-		{
-			"id": "4dc71a4c",
-			"type": "text",
-			"text": "## DH-03 Clean stale repository artifacts\nRemove or relocate stale backup/helper files and outdated references that create maintenance noise and onboarding confusion.",
-			"x": 1760,
-			"y": 1280,
-			"width": 280,
-			"height": 240,
-			"color": "6"
-		},
-		{
-			"id": "55e9bfce",
-			"type": "text",
-			"text": "## TC-01 Add env contract and mode tests\nAdd tests that assert non-empty observations, consistent step return shapes, and robust current_mode behavior for all sampled actions.",
-			"x": 800,
-			"y": 800,
-			"width": 280,
-			"height": 290,
-			"color": "6"
-		},
-		{
-			"id": "828f57f8",
-			"type": "text",
-			"text": "## TC-02 Add logger validation and export tests\nAdd regression tests for logger schema validation, serialization, and error paths to prevent silent data corruption.",
-			"x": 480,
-			"y": 1090,
-			"width": 280,
-			"height": 240,
-			"color": "6"
-		},
-		{
-			"id": "d66aef11",
-			"type": "text",
-			"text": "## TC-03 Gate CI with coverage and lint\nExtend CI to run lint/format checks and enforce a minimum coverage threshold after core tests are in place.",
-			"x": 800,
-			"y": 1440,
-			"width": 280,
-			"height": 240,
-			"color": "6"
-		},
-		{
-			"id": "6717200d",
-			"type": "text",
-			"text": "## DH-01 Align examples with controller and logging schema\nUnify controller sign convention across examples and remove/replace invalid logged signals to match the validated schema.",
-			"x": 2000,
-			"y": 500,
-			"width": 280,
-			"height": 300,
-			"color": "6"
-		},
-		{
-			"id": "5ecc9ac5",
-			"type": "text",
-			"text": "## DH-02 Update docs for current dashboard and data flow\nRefresh README and visualization docs to reflect modular JS architecture and current supported input formats (.json/.npz/.zip).",
-			"x": 1760,
-			"y": 950,
-			"width": 280,
-			"height": 280,
-			"color": "6"
-		},
-		{
-			"id": "28c863c6",
-			"type": "text",
-			"text": "## CR-02 Enforce valid current-mode handling\nPrevent runtime ValueError by validating/mapping current_mode inputs to modes with crater data before material removal.",
-			"x": 280,
-			"y": 40,
-			"width": 280,
-			"height": 255,
-			"color": "6"
-		},
-		{
-			"id": "f8392039",
-			"type": "text",
-			"text": "## CR-01 Define Gym API contract (observations + reward)\nImplement stable observation_space, _get_obs payload, and non-placeholder reward semantics for training and diagnostics.",
-			"x": 680,
-			"y": -80,
-			"width": 520,
-			"height": 160,
-			"color": "6"
-		},
-		{
-			"id": "0486f4c3",
-			"type": "text",
-			"text": "## CR-03 Fix package version metadata lookup\nAlign __version__ resolution with the installed distribution name to avoid fallback 0.dev in production metadata.",
-			"x": 280,
-			"y": -310,
-			"width": 280,
-			"height": 250,
-			"color": "6"
-		}
+	"nodes":[
+		{"id":"group-docshy","type":"group","x":1720,"y":440,"width":800,"height":1180,"label":"Docs Hygiene"},
+		{"id":"group-coreru","type":"group","x":200,"y":-400,"width":1080,"height":790,"label":"Core Runtime"},
+		{"id":"group-testin","type":"group","x":360,"y":780,"width":760,"height":960,"label":"Testing CI"},
+		{"id":"group-datalo","type":"group","x":-80,"y":560,"width":380,"height":700,"label":"Data Logging"},
+		{"id":"canvas-errors","type":"text","text":"## Errors\n✓ None","x":-540,"y":-750,"width":380,"height":200,"color":"1"},
+		{"id":"legend","type":"text","text":"## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent","x":-540,"y":-310,"width":380,"height":230,"color":"0"},
+		{"id":"canvas-warnings","type":"text","text":"## Warnings\n✓ None","x":-540,"y":-530,"width":380,"height":200,"color":"3"},
+		{"id":"3d7e31d7","type":"text","text":"## DL-01 Add logger signal validation\nValidate signals_to_log against EDMState and supported derived signals, and fail fast on unknown signals such as gap_width.","x":-60,"y":600,"width":280,"height":240,"color":"6"},
+		{"id":"ce58c7a4","type":"text","text":"## DL-02 Replace broad exception swallowing\nReplace blanket exception handlers in wire/logger sync paths with targeted handling and actionable warnings.","x":-60,"y":980,"width":280,"height":220,"color":"6"},
+		{"id":"828f57f8","type":"text","text":"## TC-02 Add logger validation and export tests\nAdd regression tests for logger schema validation, serialization, and error paths to prevent silent data corruption.","x":480,"y":1090,"width":280,"height":240,"color":"6"},
+		{"id":"28c863c6","type":"text","text":"## CR-02 Enforce valid current-mode handling\nPrevent runtime ValueError by validating/mapping current_mode inputs to modes with crater data before material removal.","x":280,"y":40,"width":280,"height":255,"color":"6"},
+		{"id":"4dc71a4c","type":"text","text":"## DH-03 Clean stale repository artifacts\nRemove or relocate stale backup/helper files and outdated references that create maintenance noise and onboarding confusion.","x":1760,"y":1280,"width":280,"height":240,"color":"6"},
+		{"id":"55e9bfce","type":"text","text":"## TC-01 Add env contract and mode tests\nAdd tests that assert non-empty observations, consistent step return shapes, and robust current_mode behavior for all sampled actions.","x":800,"y":800,"width":280,"height":290,"color":"6"},
+		{"id":"d66aef11","type":"text","text":"## TC-03 Gate CI with coverage and lint\nExtend CI to run lint/format checks and enforce a minimum coverage threshold after core tests are in place.","x":800,"y":1440,"width":280,"height":240,"color":"6"},
+		{"id":"6717200d","type":"text","text":"## DH-01 Align examples with controller and logging schema\nUnify controller sign convention across examples and remove/replace invalid logged signals to match the validated schema.","x":2000,"y":500,"width":280,"height":300,"color":"6"},
+		{"id":"5ecc9ac5","type":"text","text":"## DH-02 Update docs for current dashboard and data flow\nRefresh README and visualization docs to reflect modular JS architecture and current supported input formats (.json/.npz/.zip).","x":1760,"y":950,"width":280,"height":280,"color":"6"},
+		{"id":"f8392039","type":"text","text":"## CR-01 Define Gym API contract (observations + reward)\nImplement stable observation_space, _get_obs payload, and non-placeholder reward semantics for training and diagnostics.","x":680,"y":-80,"width":520,"height":160,"color":"6"},
+		{"id":"0486f4c3","type":"text","text":"## CR-03 Fix package version metadata lookup\nUpdated __version__ resolution to check installed distributions in order: wedm-learning-environment, then wedm fallback. Removed forced 0.dev override path. Validation: pytest tests (24 passed) and import check returns wedm.__version__ = 0.2.0.","x":220,"y":-370,"width":400,"height":270,"color":"4"}
 	],
-	"edges": [
-		{
-			"id": "edge-001",
-			"fromNode": "3d7e31d7",
-			"fromSide": "bottom",
-			"toNode": "ce58c7a4",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-002",
-			"fromNode": "f8392039",
-			"fromSide": "bottom",
-			"toNode": "55e9bfce",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-003",
-			"fromNode": "28c863c6",
-			"fromSide": "right",
-			"toNode": "55e9bfce",
-			"toSide": "left"
-		},
-		{
-			"id": "edge-004",
-			"fromNode": "3d7e31d7",
-			"fromSide": "bottom",
-			"toNode": "828f57f8",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-005",
-			"fromNode": "ce58c7a4",
-			"fromSide": "right",
-			"toNode": "828f57f8",
-			"toSide": "left"
-		},
-		{
-			"id": "edge-006",
-			"fromNode": "55e9bfce",
-			"fromSide": "bottom",
-			"toNode": "d66aef11",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-007",
-			"fromNode": "828f57f8",
-			"fromSide": "bottom",
-			"toNode": "d66aef11",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-008",
-			"fromNode": "28c863c6",
-			"fromSide": "right",
-			"toNode": "6717200d",
-			"toSide": "left"
-		},
-		{
-			"id": "edge-009",
-			"fromNode": "3d7e31d7",
-			"fromSide": "right",
-			"toNode": "6717200d",
-			"toSide": "left"
-		},
-		{
-			"id": "edge-010",
-			"fromNode": "f8392039",
-			"fromSide": "bottom",
-			"toNode": "5ecc9ac5",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-011",
-			"fromNode": "6717200d",
-			"fromSide": "bottom",
-			"toNode": "5ecc9ac5",
-			"toSide": "top"
-		}
+	"edges":[
+		{"id":"edge-001","fromNode":"3d7e31d7","fromSide":"bottom","toNode":"ce58c7a4","toSide":"top"},
+		{"id":"edge-002","fromNode":"f8392039","fromSide":"bottom","toNode":"55e9bfce","toSide":"top"},
+		{"id":"edge-003","fromNode":"28c863c6","fromSide":"right","toNode":"55e9bfce","toSide":"left"},
+		{"id":"edge-004","fromNode":"3d7e31d7","fromSide":"bottom","toNode":"828f57f8","toSide":"top"},
+		{"id":"edge-005","fromNode":"ce58c7a4","fromSide":"right","toNode":"828f57f8","toSide":"left"},
+		{"id":"edge-006","fromNode":"55e9bfce","fromSide":"bottom","toNode":"d66aef11","toSide":"top"},
+		{"id":"edge-007","fromNode":"828f57f8","fromSide":"bottom","toNode":"d66aef11","toSide":"top"},
+		{"id":"edge-008","fromNode":"28c863c6","fromSide":"right","toNode":"6717200d","toSide":"left"},
+		{"id":"edge-009","fromNode":"3d7e31d7","fromSide":"right","toNode":"6717200d","toSide":"left"},
+		{"id":"edge-010","fromNode":"f8392039","fromSide":"bottom","toNode":"5ecc9ac5","toSide":"top"},
+		{"id":"edge-011","fromNode":"6717200d","fromSide":"bottom","toNode":"5ecc9ac5","toSide":"top"}
 	]
 }
