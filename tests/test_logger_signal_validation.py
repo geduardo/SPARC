@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from wedm.core.state import EDMState
@@ -40,3 +41,31 @@ def test_logger_error_includes_typo_hint():
         SimulationLogger(_memory_logger_config(["workpiece_postion"]))
 
     assert "did you mean workpiece_position" in str(exc_info.value)
+
+
+def test_logger_warns_on_malformed_spark_status(tmp_path, capsys):
+    output_path = tmp_path / "malformed_spark_status.npz"
+    logger = SimulationLogger(
+        {
+            "signals_to_log": ["time", "spark_status"],
+            "log_frequency": {"type": "every_step"},
+            "backend": {"type": "numpy", "filepath": str(output_path)},
+        }
+    )
+
+    logger.log_data["time"] = [0, 1, 2]
+    logger.log_data["spark_status"] = np.array(
+        [
+            [1, 0.5, 3],
+            "malformed-entry",
+            [1, "not-a-float", 4],
+        ],
+        dtype=object,
+    )
+
+    logger.finalize()
+    captured = capsys.readouterr().out
+
+    assert "Malformed spark_status entry" in captured
+    assert "Ignored 2 malformed spark_status entries" in captured
+    assert output_path.exists()

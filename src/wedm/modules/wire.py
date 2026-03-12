@@ -548,18 +548,46 @@ class WireModule(EDMModule):
         # ── Damage Accumulation and Wire Breaking ──
         self._accumulate_damage(state, T_vec)
 
-        # Expose movement diagnostics and positions
-        try:
-            state.wire_head_idx = 0
+        # Expose movement diagnostics and positions with guarded sync.
+        state.wire_head_idx = 0
+        if self._y_start_mm.size > 0:
             state.wire_offset_mm = float(self._y_start_mm[0])
             # Use internal array directly (no list comprehension needed)
             state.wire_material_positions_mm = self._y_start_mm.copy()
-            # Sync temperature back to state array
-            state.wire_temperature[:] = T_vec
-            # Sync damage array to state for logging/visualization
-            state.wire_damage = self._damage.copy()
-        except Exception:
-            pass
+        else:
+            state.wire_offset_mm = 0.0
+            state.wire_material_positions_mm = np.array([], dtype=np.float64)
+            print(
+                "[WARN] Wire position buffer is empty during state sync. "
+                "Exporting empty wire_material_positions_mm."
+            )
+
+        # Sync temperature back to state array, resetting on shape/type mismatch.
+        if not isinstance(state.wire_temperature, np.ndarray):
+            print(
+                "[WARN] state.wire_temperature is not a NumPy array during sync. "
+                "Resetting to current wire temperature field."
+            )
+            state.wire_temperature = T_vec.copy()
+        elif state.wire_temperature.shape != T_vec.shape:
+            print(
+                "[WARN] state.wire_temperature shape mismatch during sync "
+                f"({state.wire_temperature.shape} vs {T_vec.shape}). "
+                "Resetting array to match simulation field."
+            )
+            state.wire_temperature = T_vec.copy()
+        else:
+            try:
+                state.wire_temperature[:] = T_vec
+            except (TypeError, ValueError) as e:
+                print(
+                    f"[WARN] Could not sync wire temperature in-place: {e}. "
+                    "Resetting array copy instead."
+                )
+                state.wire_temperature = T_vec.copy()
+
+        # Sync damage array to state for logging/visualization
+        state.wire_damage = self._damage.copy()
 
         # Compute zone mean only when needed
         if self.params.compute_zone_mean:

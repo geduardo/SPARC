@@ -252,9 +252,10 @@ class SimulationLogger:
             for signal_name, data_list in self.log_data.items():
                 try:
                     numpy_data[signal_name] = np.array(data_list)
-                except Exception as e:
+                except (TypeError, ValueError) as e:
                     print(
-                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. Skipping this signal in .npz."
+                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. "
+                        "Skipping this signal in .npz."
                     )
 
             if not numpy_data:
@@ -303,9 +304,10 @@ class SimulationLogger:
                         serializable_list.append(value)
 
                 json_data[signal_name] = serializable_list
-            except Exception as e:
+            except (TypeError, ValueError, OverflowError) as e:
                 print(
-                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. Skipping this signal."
+                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. "
+                    "Skipping this signal."
                 )
 
         if not json_data:
@@ -329,7 +331,7 @@ class SimulationLogger:
                 if hasattr(self.env, 'material') and hasattr(self.env.material, 'params'):
                     json_data['metadata']['base_overcut'] = float(self.env.material.params.base_overcut)
                 print("Added environment config as metadata to JSON")
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not add environment config to JSON metadata: {e}")
 
         output_path = pathlib.Path(filepath_str)
@@ -342,7 +344,7 @@ class SimulationLogger:
                 else:
                     json.dump(json_data, f, indent=indent)
             print(f"Logged data saved to {output_path}")
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             print(f"Error saving data to {output_path}: {e}")
 
     def _finalize_numpy_pack(self, output_path: pathlib.Path, numpy_data: Dict[str, np.ndarray]) -> None:
@@ -365,7 +367,7 @@ class SimulationLogger:
                     "workpiece_height": float(self.env.config.workpiece_height),
                     "wire_diameter": float(self.env.config.wire_diameter),
                 }
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not extract env config for metadata: {e}")
 
         # Add wire module parameters if available
@@ -376,7 +378,7 @@ class SimulationLogger:
                 metadata["buffer_len_top"] = float(getattr(wire_params, "buffer_len_top", 20.0))
                 metadata["contact_offset_bottom"] = float(getattr(wire_params, "contact_offset_bottom", 10.0))
                 metadata["contact_offset_top"] = float(getattr(wire_params, "contact_offset_top", 10.0))
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not extract wire params for metadata: {e}")
 
         # Set defaults if not already set
@@ -410,7 +412,7 @@ class SimulationLogger:
                 if isinstance(arr, np.ndarray) and arr.dtype != object:
                     try:
                         add_numpy_to_zip(zf, key, arr)
-                    except Exception as e:
+                    except (TypeError, ValueError, OSError) as e:
                         print(f"[WARN] Skipping array '{key}': {e}")
 
             # Special handling for spark_status (object array of 3-tuple-like entries)
@@ -422,24 +424,41 @@ class SimulationLogger:
                         state = np.zeros(T, dtype=np.int8)
                         loc_mm = np.full(T, np.nan, dtype=np.float64)
                         extra = np.full(T, np.nan, dtype=np.float64)
+                        malformed_entries = 0
                         for i in range(T):
                             item = s[i]
                             if item is None:
                                 continue
+                            if not isinstance(item, (list, tuple, np.ndarray)):
+                                malformed_entries += 1
+                                print(
+                                    f"[WARN] Malformed spark_status entry at index {i}: "
+                                    f"expected sequence, got {type(item).__name__}. Skipping."
+                                )
+                                continue
                             try:
-                                if isinstance(item, (list, tuple, np.ndarray)):
-                                    if len(item) > 0 and item[0] is not None:
-                                        state[i] = int(item[0])
-                                    if len(item) > 1 and item[1] is not None:
-                                        loc_mm[i] = float(item[1])
-                                    if len(item) > 2 and item[2] is not None:
-                                        extra[i] = float(item[2])
-                            except Exception:
-                                pass
+                                if len(item) > 0 and item[0] is not None:
+                                    state[i] = int(item[0])
+                                if len(item) > 1 and item[1] is not None:
+                                    loc_mm[i] = float(item[1])
+                                if len(item) > 2 and item[2] is not None:
+                                    extra[i] = float(item[2])
+                            except (TypeError, ValueError, IndexError) as e:
+                                malformed_entries += 1
+                                print(
+                                    f"[WARN] Malformed spark_status entry at index {i}: {e}. "
+                                    "Skipping."
+                                )
+
+                        if malformed_entries:
+                            print(
+                                f"[WARN] Ignored {malformed_entries} malformed spark_status "
+                                "entries while exporting."
+                            )
                         add_numpy_to_zip(zf, "spark_status_state", state)
                         add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
                         add_numpy_to_zip(zf, "spark_status_extra", extra)
-                    except Exception as e:
+                    except (TypeError, ValueError, IndexError, OSError) as e:
                         print(f"[WARN] Failed to decompose 'spark_status': {e}")
 
             # Write header.json last
