@@ -167,3 +167,4 @@ AUDIT_REPORT.md
 # Local agent workflow files
 /AGENTS.md
 /canvas-tool.py
+/canvas-watcher-plugin/
