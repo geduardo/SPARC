@@ -48,7 +48,7 @@
         "volume_um3": 1746.7,
         "volume_std_um3": 578.0
     },
-    "I15": {
+    "I15": 
         "average_area_um2": 6621,
         "area_std_um2": 1619,
         "depth_um": 5.9966,
