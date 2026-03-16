@@ -77,6 +77,9 @@ class WireEDMEnv(gym.Env):
             "mechanics": self.mechanics,
         }
 
+        # Valid current modes — only modes with empirical crater data
+        self.valid_current_modes = set(self.material.crater_data.keys())
+
         # ── Action Space ─────────────────────────────────────────────────
         # Note: target_delta interpretation depends on control mode:
         # - position: relative position increment [µm]
@@ -163,9 +166,15 @@ class WireEDMEnv(gym.Env):
         self.state.target_delta = float(action["servo"][0])
         gc = action["generator_control"]
         self.state.target_voltage = float(gc["target_voltage"][0])
-        # Convert integer mode (1-19) to I-mode string ("I1"-"I19")
+        # Convert integer mode (1-19) to I-mode string and validate
         mode_int = int(gc["current_mode"][0])
-        self.state.current_mode = f"I{mode_int}"
+        mode_str = f"I{mode_int}"
+        if mode_str not in self.valid_current_modes:
+            raise ValueError(
+                f"current_mode {mode_int} ('{mode_str}') has no crater data. "
+                f"Valid modes: {sorted(self.valid_current_modes, key=lambda m: int(m[1:]))}"
+            )
+        self.state.current_mode = mode_str
         self.state.ON_time = float(gc["ON_time"][0])
         self.state.OFF_time = float(gc["OFF_time"][0])
 
