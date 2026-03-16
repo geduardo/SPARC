@@ -32,6 +32,66 @@ class TestWireEDMEnv:
         assert env.state.time == 0
         assert env.state.workpiece_position == env.config.initial_gap
 
+    def test_env_reset_clears_module_internal_state(self):
+        """Reset should clear module-owned episode state, not just EDMState."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.ignition.random_short_remaining = 17
+        env.ignition.debris_short_remaining = 23
+        env.ignition._cached_current_mode = "I7"
+
+        env.material._cached_current_mode = "I9"
+        env.material._cached_crater_info = env.material.crater_data["I9"]
+        env.material.crater_volumes_um3 = [1.0, 2.0]
+
+        env.dielectric.debris_volume = 3.5
+        env.dielectric.debris_density = 0.7
+        env.dielectric.cavity_volume = 5.0
+        env.dielectric.flow_condition = 0.2
+        env.dielectric.ion_channel = (1.0, 4)
+
+        env.mechanics.prev_accel = 42.0
+
+        env.wire._temperature.fill(500.0)
+        env.wire._damage.fill(0.5)
+        env.wire._y_start_mm += 1.0
+        env.wire._last_flow_condition = 0.5
+        env.wire.zone_mean_counter = 9
+
+        env.reset()
+
+        assert env.ignition.random_short_remaining == 0
+        assert env.ignition.debris_short_remaining == 0
+        assert env.ignition._cached_current_mode is None
+
+        assert env.material._cached_current_mode is None
+        assert env.material.crater_volumes_um3 == []
+
+        assert env.dielectric.debris_volume == 0.0
+        assert env.dielectric.debris_density == 0.0
+        assert env.dielectric.cavity_volume == 0.0
+        assert env.dielectric.flow_condition == 0.0
+        assert env.dielectric.ion_channel is None
+
+        assert env.mechanics.prev_accel == 0.0
+
+        expected_positions = (
+            np.arange(env.wire.n_segments, dtype=np.float32)
+            * np.float32(env.wire.segment_len_mm)
+        )
+        np.testing.assert_allclose(env.wire._y_start_mm, expected_positions)
+        np.testing.assert_allclose(
+            env.wire._temperature,
+            np.full(env.wire.n_segments, env.wire.params.spool_T, dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            env.wire._damage, np.zeros(env.wire.n_segments, dtype=np.float32)
+        )
+        np.testing.assert_allclose(env.state.wire_temperature, env.wire._temperature)
+        np.testing.assert_allclose(env.state.wire_damage, env.wire._damage)
+        assert env.state.wire_max_damage == 0.0
+
     def test_env_step(self):
         """Test environment step with valid action."""
         env = WireEDMEnv()

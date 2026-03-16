@@ -206,9 +206,7 @@ class WireModule(EDMModule):
 
         # ── Internal NumPy arrays for fast access (optimization) ──
         # Store segment data in arrays to avoid list comprehensions
-        self._y_start_mm = np.array(
-            [i * self.segment_len_mm for i in range(self.n_segments)], dtype=np.float32
-        )
+        self._y_start_mm = self._build_initial_positions()
         self._temperature = np.full(
             self.n_segments, self.params.spool_T, dtype=np.float32
         )
@@ -305,6 +303,36 @@ class WireModule(EDMModule):
         )
         print(
             f"   Workpiece zone (physical): segments {self.zone_start} to {self.zone_end}"
+        )
+
+    def _build_initial_positions(self) -> np.ndarray:
+        """Return the default segment start positions for a fresh episode."""
+        return np.arange(self.n_segments, dtype=np.float32) * np.float32(
+            self.segment_len_mm
+        )
+
+    def reset(self, state: EDMState) -> None:
+        """Restore wire thermal, damage, and transport state for a new episode."""
+        self._y_start_mm = self._build_initial_positions()
+        self._temperature.fill(np.float32(self.params.spool_T))
+        self._damage.fill(0.0)
+        self.dT_dt.fill(0.0)
+        self.h_eff_zone.fill(0.0)
+        self._last_zone_mean = self.params.spool_T
+        self._last_flow_condition = None
+        self.zone_mean_counter = 0
+        self._arrays_initialized = True
+
+        for i in range(self.n_segments):
+            self.segments[i].y_start_mm = float(self._y_start_mm[i])
+            self.segments[i].temperature = float(self.params.spool_T)
+            self.segments[i].damage = 0.0
+
+        state.wire_temperature = self._temperature.copy()
+        state.wire_damage = self._damage.copy()
+        state.wire_max_damage = 0.0
+        state.wire_average_temperature = (
+            self._last_zone_mean if self.params.compute_zone_mean else None
         )
 
     def update(self, state: EDMState) -> None:

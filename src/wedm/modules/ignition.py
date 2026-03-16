@@ -86,6 +86,16 @@ class IgnitionModule(EDMModule):
         self._cached_current_mode: str | None = None
         self._cached_current_value: float = 60.0  # Default to I5 current
 
+    def reset(self, state: EDMState) -> None:
+        """Clear episode-local discharge timers and caches."""
+        self._ignition_prob_cache.clear()
+        self.random_short_remaining = 0
+        self.debris_short_remaining = 0
+        self._cached_current_mode = None
+        self._cached_current_value = self.currents_data[
+            self.params.default_current_mode
+        ]["Current"]
+
     def _load_currents_data(self) -> dict:
         """Load current mode mappings from currents.json."""
         # Get the path relative to this module

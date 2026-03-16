@@ -66,6 +66,10 @@ class MechanicsModule(EDMModule):
         else:  # velocity
             self._compute_nominal_accel = self._compute_velocity_accel
 
+    def reset(self, state: EDMState) -> None:
+        """Clear episode-local controller history."""
+        self.prev_accel = 0.0
+
     def _compute_position_accel(self, state: EDMState, x: float, v: float) -> float:
         """Optimized position control using pre-computed coefficients."""
         x_error = x - (x + state.target_delta)  # x - x_target

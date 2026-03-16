@@ -113,6 +113,8 @@ class WireEDMEnv(gym.Env):
         self.state = EDMState()
         self.state.workpiece_position = self.config.initial_gap
         self.state.target_position = self.config.target_cutting_distance
+        for module in self.modules.values():
+            module.reset(self.state)
 
         return self._get_obs(), {}
 

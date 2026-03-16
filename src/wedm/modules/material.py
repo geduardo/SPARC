@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
@@ -49,6 +48,13 @@ class MaterialRemovalModule(EDMModule):
         # ── Analysis Tracking ──
         # Track crater volumes for analysis
         self.crater_volumes_um3 = []  # Store all crater volumes in μm³
+
+    def reset(self, state: EDMState) -> None:
+        """Clear episode-local crater sampling state."""
+        self._cached_current_mode = None
+        self._cached_crater_info = self.crater_data["I1"]
+        self.crater_volumes_um3 = []
+        state.last_crater_volume = 0.0
 
     def _load_crater_data(self) -> dict:
         """Load crater volume distributions from crater_data.json."""

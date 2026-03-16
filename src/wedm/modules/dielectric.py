@@ -79,6 +79,10 @@ class DielectricModule(EDMModule):
         self._last_debris_density = -1.0
         self._last_flow_condition = 0.0
 
+    def reset(self, state: EDMState) -> None:
+        """Clear episode-local debris state and caches."""
+        self.reset_debris()
+
     def update(self, state: EDMState) -> None:
         """Optimized update with caching and reduced calculations."""
         # Update basic properties
@@ -170,8 +174,10 @@ class DielectricModule(EDMModule):
         self.debris_density = 0.0
         self.cavity_volume = 0.0
         self.flow_condition = 0.0
+        self.ion_channel = None
         self._last_gap_um = -1.0
         self._last_debris_density = -1.0
+        self._last_flow_condition = 0.0
 
     def get_debris_statistics(self) -> dict:
         """Get current debris tracking statistics."""
