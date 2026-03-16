@@ -186,16 +186,6 @@
 			"color": "6"
 		},
 		{
-			"id": "2efbc501",
-			"type": "text",
-			"text": "## VB-02 Tag current release on main\nFix changelog placeholder dates, tag current main as v0.2.0, ensure pyproject.toml version matches.",
-			"x": 2416,
-			"y": 800,
-			"width": 508,
-			"height": 140,
-			"color": "5"
-		},
-		{
 			"id": "511fd3f2",
 			"type": "text",
 			"text": "## VB-01 Clean up stale branches\nDelete or archive stale branches (codex/*, dashboard, eliminating-advection) that are already merged or abandoned.",
@@ -206,24 +196,34 @@
 			"color": "4"
 		},
 		{
+			"id": "2efbc501",
+			"type": "text",
+			"text": "## VB-02 Tag current release on main\nFix changelog placeholder dates, tag current main as v0.2.0, ensure pyproject.toml version matches.",
+			"x": 2416,
+			"y": 840,
+			"width": 508,
+			"height": 140,
+			"color": "4"
+		},
+		{
 			"id": "c1e61da7",
 			"type": "text",
 			"text": "## VB-03 Create dev branch and branching policy\nCreate dev branch from main. Document branching strategy: main (stable releases, tagged), dev (integration), feature branches merge into dev via PR, dev merges into main for releases.",
 			"x": 2416,
-			"y": 999,
+			"y": 1024,
 			"width": 508,
 			"height": 190,
-			"color": "0"
+			"color": "4"
 		},
 		{
 			"id": "b24513d1",
 			"type": "text",
 			"text": "## VB-04 Define release checklist\nDocument the release workflow: bump version in pyproject.toml, update CHANGELOG.md, merge dev into main, tag, verify CI passes.",
 			"x": 2416,
-			"y": 1243,
+			"y": 1276,
 			"width": 508,
 			"height": 183,
-			"color": "0"
+			"color": "1"
 		}
 	],
 	"edges": [
