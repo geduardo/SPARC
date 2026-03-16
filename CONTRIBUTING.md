@@ -56,6 +56,24 @@ flake8 src/ tests/
 - Ensure all tests pass before submitting PR
 - Aim for good test coverage
 
+## Release Checklist
+
+When `dev` is stable and ready for a new release:
+
+1. **Bump version** in `pyproject.toml` (follow [semver](https://semver.org/)).
+2. **Update `CHANGELOG.md`** — move items from "Unreleased" into a new version heading with today's date.
+3. **Open a PR** from `dev` into `main`.
+4. **Verify CI passes** on the PR.
+5. **Merge** into `main`.
+6. **Tag the merge commit**:
+   ```bash
+   git checkout main
+   git pull
+   git tag -a v0.X.0 -m "v0.X.0"
+   git push origin v0.X.0
+   ```
+7. **Verify** the tag appears on GitHub and CI passes on `main`.
+
 ## Pull Request Process
 
 1. Update the README.md with details of changes if needed
