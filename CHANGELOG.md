@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Various bug fixes and performance improvements
 
-## [0.2.0] - 2024-01-XX
+## [0.2.0] - 2025-06-10
 
 ### Added
 - Gymnasium-compatible environment for Wire EDM simulation
@@ -36,13 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved numerical stability of simulations
 - Enhanced parameter organization system
 
-## [0.1.0] - 2023-XX-XX
+## [0.1.0] - 2025-06-03
 
 ### Added
 - Initial implementation of Wire EDM simulation
 - Basic physics models for spark ignition and material removal
 - Simple control interface
-
-[Unreleased]: https://github.com/geduardo/WEDM-Learning-Environment/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/geduardo/WEDM-Learning-Environment/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/geduardo/WEDM-Learning-Environment/releases/tag/v0.1.0 

@@ -1,21 +1,33 @@
-# Contributing to Wire EDM Learning Environment
+# Contributing to SPARC
 
-Thank you for your interest in contributing to the Wire EDM Learning Environment! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing to SPARC! This document provides guidelines for contributing to the project.
 
-## Getting Started
+## Branching Strategy
 
-1. Fork the repository on GitHub
-2. Clone your fork locally
-3. Create a new branch for your feature/bugfix
-4. Make your changes
-5. Run tests to ensure everything works
-6. Submit a pull request
+This project follows a two-branch workflow:
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Stable releases only. Every merge is tagged (e.g. `v0.2.0`). |
+| `dev`  | Integration branch. All feature work lands here first. |
+
+### Workflow
+
+1. Create a feature branch from `dev`:
+   ```bash
+   git checkout dev
+   git checkout -b my-feature
+   ```
+2. Do your work, commit, and push the feature branch.
+3. Open a pull request targeting `dev`.
+4. After review and CI passes, merge into `dev`.
+5. When `dev` is ready for release, it gets merged into `main` and tagged.
 
 ## Development Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/geduardo/WEDM-Learning-Environment.git
+git clone https://github.com/geduardo/SPARC.git
 cd SPARC
 
 # Install in development mode with dev dependencies
@@ -43,6 +55,24 @@ flake8 src/ tests/
 - Write tests for new features
 - Ensure all tests pass before submitting PR
 - Aim for good test coverage
+
+## Release Checklist
+
+When `dev` is stable and ready for a new release:
+
+1. **Bump version** in `pyproject.toml` (follow [semver](https://semver.org/)).
+2. **Update `CHANGELOG.md`** — move items from "Unreleased" into a new version heading with today's date.
+3. **Open a PR** from `dev` into `main`.
+4. **Verify CI passes** on the PR.
+5. **Merge** into `main`.
+6. **Tag the merge commit**:
+   ```bash
+   git checkout main
+   git pull
+   git tag -a v0.X.0 -m "v0.X.0"
+   git push origin v0.X.0
+   ```
+7. **Verify** the tag appears on GitHub and CI passes on `main`.
 
 ## Pull Request Process
 

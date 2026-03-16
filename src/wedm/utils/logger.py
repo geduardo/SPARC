@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict, Union
+from dataclasses import fields
+from difflib import get_close_matches
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, TypedDict, Union
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
@@ -9,8 +11,9 @@ import copy  # For deep-copying mutable signals like lists
 import io
 import zipfile
 
+from ..core.state import EDMState
+
 if TYPE_CHECKING:
-    from ..core.state import EDMState
     from ..envs import WireEDMEnv  # Assuming WireEDMEnv is the main env type
 
 # --- Configuration Types ---
@@ -75,9 +78,13 @@ class SimulationLogger:
         self.log_data: Dict[str, List[Any]] = defaultdict(list)
         self.step_counter = 0  # For interval-based logging
 
-        # Placeholder for more complex signal definitions (e.g., derived values)
-        # For now, signals are assumed to be direct attributes of EDMState
-        self.signal_accessors: Dict[str, callable] = {}
+        # Known EDMState and derived signals for strict validation
+        self._state_signal_names = {f.name for f in fields(EDMState)}
+        self._derived_signal_accessors: Dict[str, Callable[[EDMState], Any]] = {
+            # Explicitly supported derived signal names.
+            "gap_um": lambda state: state.workpiece_position - state.wire_position,
+        }
+        self.signal_accessors: Dict[str, Callable[[EDMState], Any]] = {}
         self._prepare_signal_accessors()
 
     def _validate_config(self):
@@ -125,16 +132,43 @@ class SimulationLogger:
 
     def _prepare_signal_accessors(self):
         """
-        Prepares functions to access signal data.
-        For now, assumes direct attribute access on EDMState.
-        Can be extended for derived signals or specific array indexing.
+        Prepare accessors for known state/derived signals.
+        Unknown signal names fail fast to avoid silent None logging.
         """
+        invalid_signals = []
+
         for signal_name in self.config["signals_to_log"]:
-            # Example: if signal_name is "wire_temp_segment_0", we might parse it
-            # and create a lambda like: lambda state: state.wire_temperature[0]
-            # For now, direct access:
-            self.signal_accessors[signal_name] = (
-                lambda state, name=signal_name: getattr(state, name, None)
+            if signal_name in self._state_signal_names:
+                self.signal_accessors[signal_name] = (
+                    lambda state, name=signal_name: getattr(state, name)
+                )
+            elif signal_name in self._derived_signal_accessors:
+                self.signal_accessors[signal_name] = self._derived_signal_accessors[
+                    signal_name
+                ]
+            else:
+                invalid_signals.append(signal_name)
+
+        if invalid_signals:
+            supported_names = sorted(
+                self._state_signal_names | set(self._derived_signal_accessors.keys())
+            )
+            hint_parts = []
+            for signal_name in invalid_signals:
+                suggestions = get_close_matches(
+                    signal_name, supported_names, n=3, cutoff=0.6
+                )
+                if suggestions:
+                    hint_parts.append(
+                        f"'{signal_name}' -> did you mean {', '.join(suggestions)}?"
+                    )
+
+            hint_text = f" Hints: {'; '.join(hint_parts)}" if hint_parts else ""
+            derived = ", ".join(sorted(self._derived_signal_accessors.keys()))
+            raise ValueError(
+                "LoggerConfig: Unknown signals_to_log entries: "
+                f"{', '.join(invalid_signals)}. "
+                f"Known derived signals: {derived}.{hint_text}"
             )
 
     def collect(self, state: EDMState, info: Dict[str, Any] | None = None):
@@ -191,9 +225,9 @@ class SimulationLogger:
                         # Logic for other backends would go here
                         pass
                 else:
-                    # Optionally log a warning if an accessor isn't found
-                    print(
-                        f"Warning: No accessor found for signal '{signal_name}'. Skipping."
+                    raise RuntimeError(
+                        f"Missing signal accessor for '{signal_name}'. "
+                        "Logger configuration should have been validated at initialization."
                     )
 
     def finalize(self):
@@ -218,9 +252,10 @@ class SimulationLogger:
             for signal_name, data_list in self.log_data.items():
                 try:
                     numpy_data[signal_name] = np.array(data_list)
-                except Exception as e:
+                except (TypeError, ValueError) as e:
                     print(
-                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. Skipping this signal in .npz."
+                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. "
+                        "Skipping this signal in .npz."
                     )
 
             if not numpy_data:
@@ -269,9 +304,10 @@ class SimulationLogger:
                         serializable_list.append(value)
 
                 json_data[signal_name] = serializable_list
-            except Exception as e:
+            except (TypeError, ValueError, OverflowError) as e:
                 print(
-                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. Skipping this signal."
+                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. "
+                    "Skipping this signal."
                 )
 
         if not json_data:
@@ -295,7 +331,7 @@ class SimulationLogger:
                 if hasattr(self.env, 'material') and hasattr(self.env.material, 'params'):
                     json_data['metadata']['base_overcut'] = float(self.env.material.params.base_overcut)
                 print("Added environment config as metadata to JSON")
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not add environment config to JSON metadata: {e}")
 
         output_path = pathlib.Path(filepath_str)
@@ -308,7 +344,7 @@ class SimulationLogger:
                 else:
                     json.dump(json_data, f, indent=indent)
             print(f"Logged data saved to {output_path}")
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             print(f"Error saving data to {output_path}: {e}")
 
     def _finalize_numpy_pack(self, output_path: pathlib.Path, numpy_data: Dict[str, np.ndarray]) -> None:
@@ -331,7 +367,7 @@ class SimulationLogger:
                     "workpiece_height": float(self.env.config.workpiece_height),
                     "wire_diameter": float(self.env.config.wire_diameter),
                 }
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not extract env config for metadata: {e}")
 
         # Add wire module parameters if available
@@ -342,7 +378,7 @@ class SimulationLogger:
                 metadata["buffer_len_top"] = float(getattr(wire_params, "buffer_len_top", 20.0))
                 metadata["contact_offset_bottom"] = float(getattr(wire_params, "contact_offset_bottom", 10.0))
                 metadata["contact_offset_top"] = float(getattr(wire_params, "contact_offset_top", 10.0))
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"Warning: Could not extract wire params for metadata: {e}")
 
         # Set defaults if not already set
@@ -376,7 +412,7 @@ class SimulationLogger:
                 if isinstance(arr, np.ndarray) and arr.dtype != object:
                     try:
                         add_numpy_to_zip(zf, key, arr)
-                    except Exception as e:
+                    except (TypeError, ValueError, OSError) as e:
                         print(f"[WARN] Skipping array '{key}': {e}")
 
             # Special handling for spark_status (object array of 3-tuple-like entries)
@@ -388,24 +424,41 @@ class SimulationLogger:
                         state = np.zeros(T, dtype=np.int8)
                         loc_mm = np.full(T, np.nan, dtype=np.float64)
                         extra = np.full(T, np.nan, dtype=np.float64)
+                        malformed_entries = 0
                         for i in range(T):
                             item = s[i]
                             if item is None:
                                 continue
+                            if not isinstance(item, (list, tuple, np.ndarray)):
+                                malformed_entries += 1
+                                print(
+                                    f"[WARN] Malformed spark_status entry at index {i}: "
+                                    f"expected sequence, got {type(item).__name__}. Skipping."
+                                )
+                                continue
                             try:
-                                if isinstance(item, (list, tuple, np.ndarray)):
-                                    if len(item) > 0 and item[0] is not None:
-                                        state[i] = int(item[0])
-                                    if len(item) > 1 and item[1] is not None:
-                                        loc_mm[i] = float(item[1])
-                                    if len(item) > 2 and item[2] is not None:
-                                        extra[i] = float(item[2])
-                            except Exception:
-                                pass
+                                if len(item) > 0 and item[0] is not None:
+                                    state[i] = int(item[0])
+                                if len(item) > 1 and item[1] is not None:
+                                    loc_mm[i] = float(item[1])
+                                if len(item) > 2 and item[2] is not None:
+                                    extra[i] = float(item[2])
+                            except (TypeError, ValueError, IndexError) as e:
+                                malformed_entries += 1
+                                print(
+                                    f"[WARN] Malformed spark_status entry at index {i}: {e}. "
+                                    "Skipping."
+                                )
+
+                        if malformed_entries:
+                            print(
+                                f"[WARN] Ignored {malformed_entries} malformed spark_status "
+                                "entries while exporting."
+                            )
                         add_numpy_to_zip(zf, "spark_status_state", state)
                         add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
                         add_numpy_to_zip(zf, "spark_status_extra", extra)
-                    except Exception as e:
+                    except (TypeError, ValueError, IndexError, OSError) as e:
                         print(f"[WARN] Failed to decompose 'spark_status': {e}")
 
             # Write header.json last

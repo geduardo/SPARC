@@ -41,7 +41,9 @@ __all__ = [
     "MechanicsModuleParameters",
 ]
 
-try:
-    __version__ = version("wedm") if "__package__" in globals() else "0.dev"
-except PackageNotFoundError:
-    __version__ = "0.dev"
+for dist_name in ("wedm-learning-environment", "wedm"):
+    try:
+        __version__ = version(dist_name)
+        break
+    except PackageNotFoundError:
+        continue

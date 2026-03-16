@@ -131,6 +131,7 @@ dmypy.json
 # IDEs
 .vscode/
 .idea/
+/.obsidian/
 *.swp
 *.swo
 *~
@@ -162,3 +163,8 @@ AUDIT_REPORT.md
 
 # Claude Code
 .claude/
+
+# Local agent workflow files
+/AGENTS.md
+/canvas-tool.py
+/canvas-watcher-plugin/
