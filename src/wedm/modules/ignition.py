@@ -354,7 +354,9 @@ class IgnitionModule(EDMModule):
 
     def _get_target_voltage(self, state: EDMState) -> float:
         """Get target voltage with default."""
-        return state.target_voltage or self.params.default_target_voltage
+        if state.target_voltage is None:
+            return self.params.default_target_voltage
+        return state.target_voltage
 
     def _get_peak_current(self, state: EDMState) -> float:
         """Get peak current for current mode."""
@@ -362,11 +364,15 @@ class IgnitionModule(EDMModule):
 
     def _get_on_time(self, state: EDMState) -> float:
         """Get ON time with default."""
-        return state.ON_time or self.params.default_on_time
+        if state.ON_time is None:
+            return self.params.default_on_time
+        return state.ON_time
 
     def _get_off_time(self, state: EDMState) -> float:
         """Get OFF time with default."""
-        return state.OFF_time or self.params.default_off_time
+        if state.OFF_time is None:
+            return self.params.default_off_time
+        return state.OFF_time
 
     # ------------------------------------------------------------------ #
     # Internals

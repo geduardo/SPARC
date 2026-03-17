@@ -207,6 +207,34 @@ class TestWireEDMEnv:
                 ignition_params=IgnitionModuleParameters(default_current_mode="I2")
             )
 
+    def test_ignition_generator_fallbacks_distinguish_none_from_zero(self):
+        """None should fall back to defaults, while explicit zeroes stay zero."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.state.target_voltage = None
+        env.state.ON_time = None
+        env.state.OFF_time = None
+        assert (
+            env.ignition._get_target_voltage(env.state)
+            == env.ignition.params.default_target_voltage
+        )
+        assert (
+            env.ignition._get_on_time(env.state)
+            == env.ignition.params.default_on_time
+        )
+        assert (
+            env.ignition._get_off_time(env.state)
+            == env.ignition.params.default_off_time
+        )
+
+        env.state.target_voltage = 0.0
+        env.state.ON_time = 0.0
+        env.state.OFF_time = 0.0
+        assert env.ignition._get_target_voltage(env.state) == 0.0
+        assert env.ignition._get_on_time(env.state) == 0.0
+        assert env.ignition._get_off_time(env.state) == 0.0
+
     def test_missing_current_mode_uses_shared_default_discharge_mode(self):
         """Ignition and crater sampling should share the same fallback mode."""
         env = WireEDMEnv(
