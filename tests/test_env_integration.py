@@ -2,7 +2,7 @@
 
 import pytest
 import numpy as np
-from wedm import WireEDMEnv, EnvironmentConfig
+from wedm import WireEDMEnv, EnvironmentConfig, IgnitionModuleParameters
 
 
 def _valid_action(env):
@@ -31,6 +31,24 @@ class TestWireEDMEnv:
         assert isinstance(info, dict)
         assert env.state.time == 0
         assert env.state.workpiece_position == env.config.initial_gap
+
+    def test_env_reset_applies_explicit_episode_defaults(self):
+        """Reset should populate generator, electrical, and thermal defaults."""
+        env = WireEDMEnv()
+        env.reset()
+
+        assert env.state.workpiece_position == env.config.initial_gap
+        assert env.state.target_position == env.config.target_cutting_distance
+        assert env.state.spark_status == [0, None, 0]
+
+        assert env.state.target_voltage == env.ignition.params.default_target_voltage
+        assert env.state.current_mode == env.ignition.params.default_current_mode
+        assert env.state.ON_time == env.ignition.params.default_on_time
+        assert env.state.OFF_time == env.ignition.params.default_off_time
+
+        assert env.state.voltage == env.ignition.params.default_target_voltage
+        assert env.state.current == 0.0
+        assert env.state.dielectric_temperature == env.dielectric.params.dielectric_temperature
 
     def test_env_reset_clears_module_internal_state(self):
         """Reset should clear module-owned episode state, not just EDMState."""
@@ -66,6 +84,7 @@ class TestWireEDMEnv:
         assert env.ignition._cached_current_mode is None
 
         assert env.material._cached_current_mode is None
+        assert env.material._cached_crater_info == env.material.crater_data[env.default_current_mode]
         assert env.material.crater_volumes_um3 == []
 
         assert env.dielectric.debris_volume == 0.0
@@ -131,6 +150,43 @@ class TestWireEDMEnv:
         # Invalid mode
         with pytest.raises(ValueError):
             WireEDMEnv(mechanics_control_mode="invalid")
+
+    def test_invalid_default_current_mode_rejected(self):
+        """Default startup current mode must be backed by crater data."""
+        with pytest.raises(ValueError, match="default_current_mode"):
+            WireEDMEnv(
+                ignition_params=IgnitionModuleParameters(default_current_mode="I2")
+            )
+
+    def test_missing_current_mode_uses_shared_default_discharge_mode(self):
+        """Ignition and crater sampling should share the same fallback mode."""
+        env = WireEDMEnv(
+            ignition_params=IgnitionModuleParameters(default_current_mode="I17")
+        )
+        env.reset()
+        env.state.current_mode = None
+
+        assert env.ignition._get_peak_current(env.state) == env.ignition.currents_data["I17"]["Current"]
+
+        env.material._sample_crater_volume(env.state)
+
+        assert env.material._cached_current_mode == "I17"
+        assert env.material._cached_crater_info == env.material.crater_data["I17"]
+
+    def test_unsupported_current_mode_falls_back_to_shared_default(self):
+        """Module internals should stay aligned if state.current_mode is unsupported."""
+        env = WireEDMEnv(
+            ignition_params=IgnitionModuleParameters(default_current_mode="I17")
+        )
+        env.reset()
+        env.state.current_mode = "I2"
+
+        assert env.ignition._get_peak_current(env.state) == env.ignition.currents_data["I17"]["Current"]
+
+        env.material._sample_crater_volume(env.state)
+
+        assert env.material._cached_current_mode == "I17"
+        assert env.material._cached_crater_info == env.material.crater_data["I17"]
 
 
 class TestCurrentModeValidation:

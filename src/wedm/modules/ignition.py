@@ -93,7 +93,7 @@ class IgnitionModule(EDMModule):
         self.debris_short_remaining = 0
         self._cached_current_mode = None
         self._cached_current_value = self.currents_data[
-            self.params.default_current_mode
+            self.env.default_current_mode
         ]["Current"]
 
     def _load_currents_data(self) -> dict:
@@ -111,18 +111,13 @@ class IgnitionModule(EDMModule):
 
     def _get_current_from_mode(self, current_mode: str | None) -> float:
         """Get actual current value from current mode with caching."""
-        # Only recalculate if current_mode has changed
-        if current_mode != self._cached_current_mode:
-            if current_mode is None:
-                current_mode = self.params.default_current_mode
+        resolved_current_mode = self.env.resolve_current_mode(current_mode)
 
-            # Get actual current from current mode (0-18 maps to I1-I19)
-            if current_mode not in self.currents_data:
-                # Fallback to default if invalid mode
-                current_mode = self.params.default_current_mode
-
-            self._cached_current_value = self.currents_data[current_mode]["Current"]
-            self._cached_current_mode = current_mode
+        if resolved_current_mode != self._cached_current_mode:
+            self._cached_current_value = self.currents_data[resolved_current_mode][
+                "Current"
+            ]
+            self._cached_current_mode = resolved_current_mode
 
         return self._cached_current_value
 

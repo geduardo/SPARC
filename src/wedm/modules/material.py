@@ -43,7 +43,9 @@ class MaterialRemovalModule(EDMModule):
         # ── Caching for Performance ──
         # Cache for efficiency - avoid repeated current mode lookups
         self._cached_current_mode: str | None = None
-        self._cached_crater_info: dict = self.crater_data["I1"]  # Default crater data
+        self._cached_crater_info: dict = self.crater_data[
+            self._get_default_crater_mode()
+        ]
 
         # ── Analysis Tracking ──
         # Track crater volumes for analysis
@@ -52,9 +54,16 @@ class MaterialRemovalModule(EDMModule):
     def reset(self, state: EDMState) -> None:
         """Clear episode-local crater sampling state."""
         self._cached_current_mode = None
-        self._cached_crater_info = self.crater_data["I1"]
+        self._cached_crater_info = self.crater_data[self._get_default_crater_mode()]
         self.crater_volumes_um3 = []
         state.last_crater_volume = 0.0
+
+    def _get_default_crater_mode(self) -> str:
+        """Return the crater-backed fallback mode shared with ignition."""
+        default_current_mode = self.env.default_current_mode
+        if default_current_mode in self.crater_data:
+            return default_current_mode
+        return min(self.crater_data, key=lambda mode: int(mode[1:]))
 
     def _load_crater_data(self) -> dict:
         """Load crater volume distributions from crater_data.json."""
@@ -105,21 +114,10 @@ class MaterialRemovalModule(EDMModule):
 
     def _sample_crater_volume(self, state: EDMState) -> float:
         """Sample crater volume from empirical distribution based on current mode."""
-        current_mode = state.current_mode
+        current_mode = self.env.resolve_current_mode(state.current_mode)
 
         # Only recalculate if current_mode has changed
         if current_mode != self._cached_current_mode:
-            if current_mode is None:
-                current_mode = "I1"  # Default to I1 if not specified
-
-            # Check if current mode has crater data available
-            if current_mode not in self.crater_data:
-                available_modes = list(self.crater_data.keys())
-                raise ValueError(
-                    f"Current mode {current_mode} is not available in crater data. "
-                    f"Available modes: {available_modes}"
-                )
-
             # Get distribution parameters directly from current mode
             self._cached_crater_info = self.crater_data[current_mode]
             self._cached_current_mode = current_mode
@@ -183,7 +181,7 @@ class MaterialRemovalModule(EDMModule):
         """Get crater data for a specific current mode (for debugging/analysis)."""
         current_mode_key = current_mode
         if current_mode_key not in self.currents_data:
-            current_mode_key = "I1"
+            current_mode_key = self._get_default_crater_mode()
 
         machine_current = self.currents_data[current_mode_key]["Current"]
 

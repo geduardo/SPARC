@@ -79,6 +79,12 @@ class WireEDMEnv(gym.Env):
 
         # Valid current modes — only modes with empirical crater data
         self.valid_current_modes = set(self.material.crater_data.keys())
+        if self.ignition.params.default_current_mode not in self.valid_current_modes:
+            raise ValueError(
+                "ignition default_current_mode must have crater data. "
+                f"Got {self.ignition.params.default_current_mode}, "
+                f"valid modes: {sorted(self.valid_current_modes, key=lambda m: int(m[1:]))}"
+            )
 
         # ── Action Space ─────────────────────────────────────────────────
         # Note: target_delta interpretation depends on control mode:
@@ -111,10 +117,9 @@ class WireEDMEnv(gym.Env):
 
         # Reset state with proper initial conditions from config
         self.state = EDMState()
-        self.state.workpiece_position = self.config.initial_gap
-        self.state.target_position = self.config.target_cutting_distance
         for module in self.modules.values():
             module.reset(self.state)
+        self._apply_episode_start_defaults()
 
         return self._get_obs(), {}
 
@@ -164,6 +169,43 @@ class WireEDMEnv(gym.Env):
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+    @property
+    def default_current_mode(self) -> str:
+        """Crater-backed default discharge mode shared across modules."""
+        return self.ignition.params.default_current_mode
+
+    def get_default_discharge_settings(self) -> dict[str, float | str]:
+        """Return the shared startup and fallback generator defaults."""
+        return {
+            "target_voltage": self.ignition.params.default_target_voltage,
+            "current_mode": self.default_current_mode,
+            "ON_time": self.ignition.params.default_on_time,
+            "OFF_time": self.ignition.params.default_off_time,
+        }
+
+    def resolve_current_mode(self, current_mode: str | None) -> str:
+        """Normalize to a crater-backed current mode for physics fallbacks."""
+        if current_mode in self.valid_current_modes:
+            return current_mode
+        return self.default_current_mode
+
+    def _apply_episode_start_defaults(self) -> None:
+        """Populate state with explicit startup defaults for a new episode."""
+        defaults = self.get_default_discharge_settings()
+
+        self.state.workpiece_position = self.config.initial_gap
+        self.state.target_position = self.config.target_cutting_distance
+        self.state.spark_status = [0, None, 0]
+
+        self.state.target_voltage = float(defaults["target_voltage"])
+        self.state.current_mode = str(defaults["current_mode"])
+        self.state.ON_time = float(defaults["ON_time"])
+        self.state.OFF_time = float(defaults["OFF_time"])
+
+        self.state.voltage = self.state.target_voltage
+        self.state.current = 0.0
+        self.state.dielectric_temperature = self.dielectric.params.dielectric_temperature
+
     def _apply_action(self, action):
         self.state.target_delta = float(action["servo"][0])
         gc = action["generator_control"]
