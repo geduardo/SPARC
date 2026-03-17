@@ -111,6 +111,55 @@ class TestWireEDMEnv:
         np.testing.assert_allclose(env.state.wire_damage, env.wire._damage)
         assert env.state.wire_max_damage == 0.0
 
+    def test_module_reset_hooks_sync_dirty_existing_state(self):
+        """Module reset hooks should clean mirrored state, not just private caches."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.state.current = 99.0
+        env.state.is_short_circuit = True
+        env.state.spark_status = [-1, 12.0, 4]
+
+        env.state.last_crater_volume = 0.5
+
+        env.state.dielectric_temperature = 999.0
+        env.state.debris_volume = 3.5
+        env.state.debris_density = 0.7
+        env.state.cavity_volume = 5.0
+        env.state.flow_rate = 0.2
+        env.state.debris_concentration = 0.7
+        env.state.dielectric_flow_rate = 1.3
+        env.state.ionized_channel = (1.0, 4)
+
+        env.state.target_delta = 17.0
+        env.state.wire_velocity = 42.0
+
+        env.state.is_wire_broken = True
+
+        env.ignition.reset(env.state)
+        env.material.reset(env.state)
+        env.dielectric.reset(env.state)
+        env.mechanics.reset(env.state)
+        env.wire.reset(env.state)
+
+        assert env.state.current == 0.0
+        assert env.state.is_short_circuit is False
+        assert env.state.spark_status == [0, None, 0]
+        assert env.state.last_crater_volume == 0.0
+
+        assert env.state.dielectric_temperature == env.dielectric.params.dielectric_temperature
+        assert env.state.debris_volume == 0.0
+        assert env.state.debris_density == 0.0
+        assert env.state.cavity_volume == 0.0
+        assert env.state.flow_rate == 0.0
+        assert env.state.debris_concentration == 0.0
+        assert env.state.dielectric_flow_rate == 0.0
+        assert env.state.ionized_channel is None
+
+        assert env.state.target_delta == 0.0
+        assert env.state.wire_velocity == 0.0
+        assert env.state.is_wire_broken is False
+
     def test_env_step(self):
         """Test environment step with valid action."""
         env = WireEDMEnv()

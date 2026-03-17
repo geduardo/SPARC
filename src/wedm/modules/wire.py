@@ -331,6 +331,7 @@ class WireModule(EDMModule):
         state.wire_temperature = self._temperature.copy()
         state.wire_damage = self._damage.copy()
         state.wire_max_damage = 0.0
+        state.is_wire_broken = False
         state.wire_average_temperature = (
             self._last_zone_mean if self.params.compute_zone_mean else None
         )

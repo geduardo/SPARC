@@ -26,7 +26,7 @@ class EDMModule(ABC):
         self.env = env
 
     def reset(self, state: EDMState) -> None:
-        """Reset module-owned episodic state for a new environment episode."""
+        """Reset module-owned episodic state and sync any mirrored state fields."""
         return None
 
     @abstractmethod

@@ -95,6 +95,9 @@ class IgnitionModule(EDMModule):
         self._cached_current_value = self.currents_data[
             self.env.default_current_mode
         ]["Current"]
+        state.current = 0.0
+        state.is_short_circuit = False
+        state.spark_status = [0, None, 0]
 
     def _load_currents_data(self) -> dict:
         """Load current mode mappings from currents.json."""

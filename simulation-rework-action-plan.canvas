@@ -1,55 +1,442 @@
 {
-	"nodes":[
-		{"id":"group-episod","type":"group","x":550,"y":140,"width":770,"height":1220,"label":"Episode State"},
-		{"id":"group-perfor","type":"group","x":3160,"y":1099,"width":600,"height":1527,"label":"Performance CI"},
-		{"id":"group-simula","type":"group","x":1730,"y":-620,"width":710,"height":1101,"label":"Simulation API"},
-		{"id":"group-loggin","type":"group","x":1634,"y":973,"width":451,"height":1244,"label":"Logging Viz"},
-		{"id":"group-physic","type":"group","x":0,"y":160,"width":360,"height":1428,"label":"Physics Model"},
-		{"id":"group-script","type":"group","x":2440,"y":708,"width":400,"height":1198,"label":"Scripts UX"},
-		{"id":"legend","type":"text","text":"## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent","x":-540,"y":-310,"width":380,"height":230,"color":"0"},
-		{"id":"canvas-warnings","type":"text","text":"## Warnings\n✓ None","x":-540,"y":-530,"width":380,"height":200,"color":"3"},
-		{"id":"canvas-errors","type":"text","text":"## Errors\n✓ None","x":-540,"y":-750,"width":380,"height":200,"color":"1"},
-		{"id":"287c55df","type":"text","text":"## SA-01 Define observation contract\nDesign a real observation schema, populate observation_space, and document the intended public control-step interface versus internal microphysics stepping.","x":1762,"y":-587,"width":280,"height":257,"color":"6"},
-		{"id":"8ac634f4","type":"text","text":"## SA-02 Refactor public step contract\nMake every public step consume an action and return a valid observation and reward, even if the environment internally substeps physics for servo or discharge timing.","x":1762,"y":-280,"width":280,"height":260,"color":"6"},
-		{"id":"98a5aab4","type":"text","text":"## SA-03 Redesign current-mode action encoding\nReplace the current_mode Box(1..19) with an encoding that only represents supported crater-data modes so sampled actions are valid by construction.","x":2120,"y":-277,"width":280,"height":257,"color":"6"},
-		{"id":"0d1a98c9","type":"text","text":"## SA-04 Finalize RL semantics and compliance tests\nImplement non-placeholder reward and truncation semantics, then add Gym-style contract tests for reset/step formats, valid sampled actions, and wrapper compatibility.","x":1940,"y":150,"width":280,"height":280,"color":"6"},
-		{"id":"aeddc858","type":"text","text":"## ES-01 Add module reset hooks\nIntroduce a formal reset API on ignition, wire, material, dielectric, and mechanics modules and call it from WireEDMEnv.reset so internal caches and episodic state cannot leak between runs.","x":610,"y":160,"width":280,"height":260,"color":"4"},
-		{"id":"280b5854","type":"text","text":"## LV-04 Make analysis tracking opt-in and reset-safe\nGate crater-history and other analysis-only accumulators behind explicit configuration and make sure they reset cleanly between episodes.","x":1704,"y":1000,"width":303,"height":260,"color":"6"},
-		{"id":"5f202c6f","type":"text","text":"## LV-01 Promote wire diagnostics into the state contract\nMove wire_head_idx, wire_offset_mm, wire_material_positions_mm, and similar diagnostics into EDMState or a formal derived-signal registry instead of dynamic attribute writes.","x":1704,"y":1297,"width":303,"height":291,"color":"6"},
-		{"id":"4b9517d0","type":"text","text":"## LV-02 Repair logger and export contracts\nUpdate SimulationLogger validation, exporters, and dashboard pack metadata so visualization-required signals are supported without bypassing the type contract.","x":1704,"y":1636,"width":303,"height":259,"color":"6"},
-		{"id":"d84a8af7","type":"text","text":"## LV-03 Add end-to-end logging smoke tests\nAdd NPZ/pack generation tests that assert dashboard-required fields exist and can be exported from a real environment run.","x":1704,"y":1954,"width":303,"height":218,"color":"6"},
-		{"id":"eda4ab9f","type":"text","text":"## ES-03 Define episode-start defaults\nApply a single source of truth for initial generator, thermal, and electrical state so the first environment step does not depend on stale internals or mismatched per-module fallbacks.","x":610,"y":568,"width":280,"height":306,"color":"4"},
-		{"id":"d8acd2df","type":"text","text":"## ES-02 Reset internal thermal and analysis state\nReinitialize wire temperature and damage arrays, debris and ion-channel state, ignition short timers and caches, mechanics acceleration state, and crater-history tracking during reset.","x":960,"y":568,"width":280,"height":306,"color":"1"},
-		{"id":"217e4253","type":"text","text":"## PC-03 Split fast and slow test lanes\nSeparate long stochastic physics tests from the default fast suite, add example and logging smoke tests, and keep CI runtime practical.","x":3224,"y":1922,"width":303,"height":250,"color":"6"},
-		{"id":"370962f7","type":"text","text":"## PC-01 Remove duplicate wire state sync\nStop synchronizing both dataclass Segment objects and NumPy arrays every microstep unless a consumer actually needs both views.","x":3375,"y":1159,"width":303,"height":252,"color":"6"},
-		{"id":"b253d8f3","type":"text","text":"## PC-02 Accelerate thermal and damage hot paths\nVectorize or compile the per-segment damage loop and decide whether to delete or finally use the dead thermal-update kernel so the code path matches the intended optimization story.","x":3375,"y":1512,"width":303,"height":280,"color":"6"},
-		{"id":"3a258c06","type":"text","text":"## SU-01 Repair example runner configs\nUpdate examples/quickstart.py and examples/run_simulation.py to use the current logger signal names and a working end-to-end export path.","x":2490,"y":794,"width":303,"height":223,"color":"6"},
-		{"id":"27ab8b1b","type":"text","text":"## SU-03 Fix voltage sweep experiment semantics\nRemove no-op parameter writes, make thermal override knobs actually affect the model, and verify the measurement protocol matches the script's claims.","x":2490,"y":1075,"width":303,"height":245,"color":"6"},
-		{"id":"5f730cee","type":"text","text":"## SU-04 Normalize CLI output portability\nReplace fragile console glyphs and encoding-sensitive help text with UTF-8-safe or ASCII-safe output so scripts behave on Windows terminals.","x":2490,"y":1370,"width":303,"height":215,"color":"6"},
-		{"id":"2288b93e","type":"text","text":"## SU-02 Repair experiment logging workflows\nFix experiments/run_simulation.py and related animation entry points so their default logging modes run successfully without requiring --no-log.","x":2490,"y":1622,"width":303,"height":251,"color":"6"},
-		{"id":"aa2748ce","type":"text","text":"## PC-04 Make pytest work from a clean checkout\nConfigure the test runner so pytest can import wedm without manual PYTHONPATH setup, matching contributor and CI expectations.","x":3224,"y":2240,"width":303,"height":232,"color":"6"},
-		{"id":"5733330b","type":"text","text":"## ES-04 Add reset isolation tests\nAdd regressions for repeated resets, seeded reproducibility, and cross-episode independence so leakage is caught automatically.","x":780,"y":1020,"width":280,"height":240,"color":"0"},
-		{"id":"bc77ad27","type":"text","text":"## PM-01 Respect zero-valued generator commands\nReplace truthy fallback checks with explicit None handling so 0V and 0us commands remain valid and reproducible.","x":40,"y":186,"width":280,"height":234,"color":"1"},
-		{"id":"fb7f612e","type":"text","text":"## PM-02 Align module default discharge settings\n\nAligned ignition and material fallback handling around a shared crater-backed default current mode in the env. Reset and missing/unsupported state current modes now resolve to the same physical discharge mode, and regression tests cover both None and unsupported-mode fallbacks.","x":40,"y":474,"width":280,"height":400,"color":"5"},
-		{"id":"dfc7eb85","type":"text","text":"## PM-03 Make dt handling coherent\nAudit timestep scaling across ignition, wire, dielectric, and mechanics; either fully support variable dt or validate dt==1 and remove the misleading configurability.","x":40,"y":920,"width":280,"height":259,"color":"6"},
-		{"id":"ba618130","type":"text","text":"## PM-04 Clarify mechanics and constraint semantics\nDocument and verify position-control semantics, then either enforce or remove unused physical constraint fields such as max_wire_temperature and other advertised runtime limits.","x":40,"y":1240,"width":280,"height":303,"color":"6"}
+	"nodes": [
+		{
+			"id": "group-episod",
+			"type": "group",
+			"x": 550,
+			"y": 140,
+			"width": 770,
+			"height": 1403,
+			"label": "Episode State"
+		},
+		{
+			"id": "group-perfor",
+			"type": "group",
+			"x": 3160,
+			"y": 1099,
+			"width": 600,
+			"height": 1527,
+			"label": "Performance CI"
+		},
+		{
+			"id": "group-simula",
+			"type": "group",
+			"x": 1730,
+			"y": -620,
+			"width": 710,
+			"height": 1101,
+			"label": "Simulation API"
+		},
+		{
+			"id": "group-loggin",
+			"type": "group",
+			"x": 1634,
+			"y": 973,
+			"width": 451,
+			"height": 1244,
+			"label": "Logging Viz"
+		},
+		{
+			"id": "group-physic",
+			"type": "group",
+			"x": 0,
+			"y": 160,
+			"width": 360,
+			"height": 1428,
+			"label": "Physics Model"
+		},
+		{
+			"id": "group-script",
+			"type": "group",
+			"x": 2440,
+			"y": 708,
+			"width": 400,
+			"height": 1198,
+			"label": "Scripts UX"
+		},
+		{
+			"id": "legend",
+			"type": "text",
+			"text": "## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent",
+			"x": -540,
+			"y": -310,
+			"width": 380,
+			"height": 230,
+			"color": "0"
+		},
+		{
+			"id": "canvas-warnings",
+			"type": "text",
+			"text": "## Warnings\n✓ None",
+			"x": -540,
+			"y": -530,
+			"width": 380,
+			"height": 200,
+			"color": "3"
+		},
+		{
+			"id": "canvas-errors",
+			"type": "text",
+			"text": "## Errors\n✓ None",
+			"x": -540,
+			"y": -750,
+			"width": 380,
+			"height": 200,
+			"color": "1"
+		},
+		{
+			"id": "287c55df",
+			"type": "text",
+			"text": "## SA-01 Define observation contract\nDesign a real observation schema, populate observation_space, and document the intended public control-step interface versus internal microphysics stepping.",
+			"x": 1762,
+			"y": -587,
+			"width": 280,
+			"height": 257,
+			"color": "6"
+		},
+		{
+			"id": "8ac634f4",
+			"type": "text",
+			"text": "## SA-02 Refactor public step contract\nMake every public step consume an action and return a valid observation and reward, even if the environment internally substeps physics for servo or discharge timing.",
+			"x": 1762,
+			"y": -280,
+			"width": 280,
+			"height": 260,
+			"color": "6"
+		},
+		{
+			"id": "98a5aab4",
+			"type": "text",
+			"text": "## SA-03 Redesign current-mode action encoding\nReplace the current_mode Box(1..19) with an encoding that only represents supported crater-data modes so sampled actions are valid by construction.",
+			"x": 2120,
+			"y": -277,
+			"width": 280,
+			"height": 257,
+			"color": "6"
+		},
+		{
+			"id": "0d1a98c9",
+			"type": "text",
+			"text": "## SA-04 Finalize RL semantics and compliance tests\nImplement non-placeholder reward and truncation semantics, then add Gym-style contract tests for reset/step formats, valid sampled actions, and wrapper compatibility.",
+			"x": 1940,
+			"y": 150,
+			"width": 280,
+			"height": 280,
+			"color": "6"
+		},
+		{
+			"id": "aeddc858",
+			"type": "text",
+			"text": "## ES-01 Add module reset hooks\nIntroduce a formal reset API on ignition, wire, material, dielectric, and mechanics modules and call it from WireEDMEnv.reset so internal caches and episodic state cannot leak between runs.",
+			"x": 610,
+			"y": 160,
+			"width": 280,
+			"height": 260,
+			"color": "4"
+		},
+		{
+			"id": "280b5854",
+			"type": "text",
+			"text": "## LV-04 Make analysis tracking opt-in and reset-safe\nGate crater-history and other analysis-only accumulators behind explicit configuration and make sure they reset cleanly between episodes.",
+			"x": 1704,
+			"y": 1000,
+			"width": 303,
+			"height": 260,
+			"color": "6"
+		},
+		{
+			"id": "5f202c6f",
+			"type": "text",
+			"text": "## LV-01 Promote wire diagnostics into the state contract\nMove wire_head_idx, wire_offset_mm, wire_material_positions_mm, and similar diagnostics into EDMState or a formal derived-signal registry instead of dynamic attribute writes.",
+			"x": 1704,
+			"y": 1297,
+			"width": 303,
+			"height": 291,
+			"color": "6"
+		},
+		{
+			"id": "4b9517d0",
+			"type": "text",
+			"text": "## LV-02 Repair logger and export contracts\nUpdate SimulationLogger validation, exporters, and dashboard pack metadata so visualization-required signals are supported without bypassing the type contract.",
+			"x": 1704,
+			"y": 1636,
+			"width": 303,
+			"height": 259,
+			"color": "6"
+		},
+		{
+			"id": "d84a8af7",
+			"type": "text",
+			"text": "## LV-03 Add end-to-end logging smoke tests\nAdd NPZ/pack generation tests that assert dashboard-required fields exist and can be exported from a real environment run.",
+			"x": 1704,
+			"y": 1954,
+			"width": 303,
+			"height": 218,
+			"color": "6"
+		},
+		{
+			"id": "eda4ab9f",
+			"type": "text",
+			"text": "## ES-03 Define episode-start defaults\nApply a single source of truth for initial generator, thermal, and electrical state so the first environment step does not depend on stale internals or mismatched per-module fallbacks.",
+			"x": 610,
+			"y": 568,
+			"width": 280,
+			"height": 306,
+			"color": "4"
+		},
+		{
+			"id": "d8acd2df",
+			"type": "text",
+			"text": "## ES-02 Reset internal thermal and analysis state\nExpanded the module reset hooks so they now synchronize their mirrored EDMState fields as well as private caches. Ignition clears spark/current short state, dielectric clears debris and ion-channel state, mechanics clears servo carry-over, and wire clears the broken flag; regression coverage now verifies reset hooks work even on a dirty existing state object.",
+			"x": 960,
+			"y": 568,
+			"width": 280,
+			"height": 432,
+			"color": "4"
+		},
+		{
+			"id": "217e4253",
+			"type": "text",
+			"text": "## PC-03 Split fast and slow test lanes\nSeparate long stochastic physics tests from the default fast suite, add example and logging smoke tests, and keep CI runtime practical.",
+			"x": 3224,
+			"y": 1922,
+			"width": 303,
+			"height": 250,
+			"color": "6"
+		},
+		{
+			"id": "370962f7",
+			"type": "text",
+			"text": "## PC-01 Remove duplicate wire state sync\nStop synchronizing both dataclass Segment objects and NumPy arrays every microstep unless a consumer actually needs both views.",
+			"x": 3375,
+			"y": 1159,
+			"width": 303,
+			"height": 252,
+			"color": "6"
+		},
+		{
+			"id": "b253d8f3",
+			"type": "text",
+			"text": "## PC-02 Accelerate thermal and damage hot paths\nVectorize or compile the per-segment damage loop and decide whether to delete or finally use the dead thermal-update kernel so the code path matches the intended optimization story.",
+			"x": 3375,
+			"y": 1512,
+			"width": 303,
+			"height": 280,
+			"color": "6"
+		},
+		{
+			"id": "3a258c06",
+			"type": "text",
+			"text": "## SU-01 Repair example runner configs\nUpdate examples/quickstart.py and examples/run_simulation.py to use the current logger signal names and a working end-to-end export path.",
+			"x": 2490,
+			"y": 794,
+			"width": 303,
+			"height": 223,
+			"color": "6"
+		},
+		{
+			"id": "27ab8b1b",
+			"type": "text",
+			"text": "## SU-03 Fix voltage sweep experiment semantics\nRemove no-op parameter writes, make thermal override knobs actually affect the model, and verify the measurement protocol matches the script's claims.",
+			"x": 2490,
+			"y": 1075,
+			"width": 303,
+			"height": 245,
+			"color": "6"
+		},
+		{
+			"id": "5f730cee",
+			"type": "text",
+			"text": "## SU-04 Normalize CLI output portability\nReplace fragile console glyphs and encoding-sensitive help text with UTF-8-safe or ASCII-safe output so scripts behave on Windows terminals.",
+			"x": 2490,
+			"y": 1370,
+			"width": 303,
+			"height": 215,
+			"color": "6"
+		},
+		{
+			"id": "2288b93e",
+			"type": "text",
+			"text": "## SU-02 Repair experiment logging workflows\nFix experiments/run_simulation.py and related animation entry points so their default logging modes run successfully without requiring --no-log.",
+			"x": 2490,
+			"y": 1622,
+			"width": 303,
+			"height": 251,
+			"color": "6"
+		},
+		{
+			"id": "aa2748ce",
+			"type": "text",
+			"text": "## PC-04 Make pytest work from a clean checkout\nConfigure the test runner so pytest can import wedm without manual PYTHONPATH setup, matching contributor and CI expectations.",
+			"x": 3224,
+			"y": 2240,
+			"width": 303,
+			"height": 232,
+			"color": "6"
+		},
+		{
+			"id": "bc77ad27",
+			"type": "text",
+			"text": "## PM-01 Respect zero-valued generator commands\nReplace truthy fallback checks with explicit None handling so 0V and 0us commands remain valid and reproducible.",
+			"x": 40,
+			"y": 186,
+			"width": 280,
+			"height": 234,
+			"color": "1"
+		},
+		{
+			"id": "fb7f612e",
+			"type": "text",
+			"text": "## PM-02 Align module default discharge settings\n\nAligned ignition and material fallback handling around a shared crater-backed default current mode in the env. Reset and missing/unsupported state current modes now resolve to the same physical discharge mode, and regression tests cover both None and unsupported-mode fallbacks.",
+			"x": 40,
+			"y": 474,
+			"width": 280,
+			"height": 400,
+			"color": "4"
+		},
+		{
+			"id": "dfc7eb85",
+			"type": "text",
+			"text": "## PM-03 Make dt handling coherent\nAudit timestep scaling across ignition, wire, dielectric, and mechanics; either fully support variable dt or validate dt==1 and remove the misleading configurability.",
+			"x": 40,
+			"y": 920,
+			"width": 280,
+			"height": 259,
+			"color": "6"
+		},
+		{
+			"id": "ba618130",
+			"type": "text",
+			"text": "## PM-04 Clarify mechanics and constraint semantics\nDocument and verify position-control semantics, then either enforce or remove unused physical constraint fields such as max_wire_temperature and other advertised runtime limits.",
+			"x": 40,
+			"y": 1240,
+			"width": 280,
+			"height": 303,
+			"color": "6"
+		},
+		{
+			"id": "5733330b",
+			"type": "text",
+			"text": "## ES-04 Add reset isolation tests\nAdd regressions for repeated resets, seeded reproducibility, and cross-episode independence so leakage is caught automatically.",
+			"x": 800,
+			"y": 1240,
+			"width": 280,
+			"height": 240,
+			"color": "1"
+		}
 	],
-	"edges":[
-		{"id":"edge-015","fromNode":"aeddc858","fromSide":"bottom","toNode":"d8acd2df","toSide":"top"},
-		{"id":"edge-016","fromNode":"aeddc858","fromSide":"bottom","toNode":"eda4ab9f","toSide":"top"},
-		{"id":"edge-017","fromNode":"d8acd2df","fromSide":"bottom","toNode":"5733330b","toSide":"top"},
-		{"id":"edge-018","fromNode":"eda4ab9f","fromSide":"bottom","toNode":"5733330b","toSide":"top"},
-		{"id":"edge-019","fromNode":"287c55df","fromSide":"bottom","toNode":"8ac634f4","toSide":"top"},
-		{"id":"edge-020","fromNode":"8ac634f4","fromSide":"bottom","toNode":"0d1a98c9","toSide":"top"},
-		{"id":"edge-021","fromNode":"98a5aab4","fromSide":"bottom","toNode":"0d1a98c9","toSide":"top"},
-		{"id":"edge-023","fromNode":"5f202c6f","fromSide":"bottom","toNode":"4b9517d0","toSide":"top"},
-		{"id":"edge-024","fromNode":"4b9517d0","fromSide":"bottom","toNode":"d84a8af7","toSide":"top"},
-		{"id":"edge-025","fromNode":"d8acd2df","fromSide":"bottom","toNode":"280b5854","toSide":"top"},
-		{"id":"edge-026","fromNode":"4b9517d0","fromSide":"right","toNode":"3a258c06","toSide":"left"},
-		{"id":"edge-027","fromNode":"4b9517d0","fromSide":"right","toNode":"2288b93e","toSide":"left"},
-		{"id":"edge-028","fromNode":"370962f7","fromSide":"bottom","toNode":"b253d8f3","toSide":"top"},
-		{"id":"edge-029","fromNode":"d84a8af7","fromSide":"right","toNode":"217e4253","toSide":"left"},
-		{"id":"9e66e0536d5a47f2","fromNode":"eda4ab9f","fromSide":"left","toNode":"fb7f612e","toSide":"right"},
-		{"id":"fc6a613d2fa6eee2","fromNode":"3a258c06","fromSide":"right","toNode":"217e4253","toSide":"top"}
+	"edges": [
+		{
+			"id": "edge-015",
+			"fromNode": "aeddc858",
+			"fromSide": "bottom",
+			"toNode": "d8acd2df",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-016",
+			"fromNode": "aeddc858",
+			"fromSide": "bottom",
+			"toNode": "eda4ab9f",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-017",
+			"fromNode": "d8acd2df",
+			"fromSide": "bottom",
+			"toNode": "5733330b",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-018",
+			"fromNode": "eda4ab9f",
+			"fromSide": "bottom",
+			"toNode": "5733330b",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-019",
+			"fromNode": "287c55df",
+			"fromSide": "bottom",
+			"toNode": "8ac634f4",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-020",
+			"fromNode": "8ac634f4",
+			"fromSide": "bottom",
+			"toNode": "0d1a98c9",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-021",
+			"fromNode": "98a5aab4",
+			"fromSide": "bottom",
+			"toNode": "0d1a98c9",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-023",
+			"fromNode": "5f202c6f",
+			"fromSide": "bottom",
+			"toNode": "4b9517d0",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-024",
+			"fromNode": "4b9517d0",
+			"fromSide": "bottom",
+			"toNode": "d84a8af7",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-025",
+			"fromNode": "d8acd2df",
+			"fromSide": "bottom",
+			"toNode": "280b5854",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-026",
+			"fromNode": "4b9517d0",
+			"fromSide": "right",
+			"toNode": "3a258c06",
+			"toSide": "left"
+		},
+		{
+			"id": "edge-027",
+			"fromNode": "4b9517d0",
+			"fromSide": "right",
+			"toNode": "2288b93e",
+			"toSide": "left"
+		},
+		{
+			"id": "edge-028",
+			"fromNode": "370962f7",
+			"fromSide": "bottom",
+			"toNode": "b253d8f3",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-029",
+			"fromNode": "d84a8af7",
+			"fromSide": "right",
+			"toNode": "217e4253",
+			"toSide": "left"
+		},
+		{
+			"id": "9e66e0536d5a47f2",
+			"fromNode": "eda4ab9f",
+			"fromSide": "left",
+			"toNode": "fb7f612e",
+			"toSide": "right"
+		},
+		{
+			"id": "fc6a613d2fa6eee2",
+			"fromNode": "3a258c06",
+			"fromSide": "right",
+			"toNode": "217e4253",
+			"toSide": "top"
+		}
 	]
 }

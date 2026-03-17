@@ -82,6 +82,14 @@ class DielectricModule(EDMModule):
     def reset(self, state: EDMState) -> None:
         """Clear episode-local debris state and caches."""
         self.reset_debris()
+        state.dielectric_temperature = self.params.dielectric_temperature
+        state.debris_volume = 0.0
+        state.debris_density = 0.0
+        state.cavity_volume = 0.0
+        state.flow_rate = 0.0
+        state.debris_concentration = 0.0
+        state.dielectric_flow_rate = 0.0
+        state.ionized_channel = None
 
     def update(self, state: EDMState) -> None:
         """Optimized update with caching and reduced calculations."""
