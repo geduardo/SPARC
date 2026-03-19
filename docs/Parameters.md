@@ -130,9 +130,6 @@ Fixed parameters that define the physical setup and constraints of the EDM proce
 | 3.5 | `servo_interval` | int | μs | 1000 | Servo control update interval |
 | 3.6 | `initial_gap` | float | μm | 50.0 | Initial gap between wire and workpiece |
 | 3.7 | `target_cutting_distance` | float | μm | 1000.0 | Target distance to cut |
-| 3.8 | `max_wire_temperature` | float | K | 1500.0 | Maximum allowable wire temperature |
-| 3.9 | `min_gap_for_operation` | float | μm | 5.0 | Minimum gap for stable operation |
-| 3.10 | `max_cutting_force` | float | N | 10.0 | Maximum cutting force (reserved) |
 
 ---
 

@@ -39,7 +39,6 @@ Fixed parameters that define the physical setup and constraints. These cannot ch
 - **Wire Properties**: `wire_diameter`, `wire_material`
 - **Simulation Parameters**: `dt`, `servo_interval`
 - **Cutting Parameters**: `initial_gap`, `target_cutting_distance`
-- **Physical Constraints**: `max_wire_temperature`, `min_gap_for_operation`
 
 ### Features:
 - JSON import/export: `from_json()`, `to_json()`
