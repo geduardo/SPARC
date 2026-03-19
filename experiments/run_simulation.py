@@ -278,7 +278,7 @@ def run_simulation(
     )
 
     if controller_type == "gap":
-        print(f"[CTRL] Using GAP controller (target: 5.0 µm)")
+        print(f"[CTRL] Using GAP controller (target: 5.0 um)")
     else:
         print(
             f"[CTRL] Using VOLTAGE controller (target: {target_voltage:.1f} V average over 1ms)"
@@ -311,7 +311,7 @@ def run_simulation(
     )
 
     # Print simulation start message
-    print(f"[START] Starting simulation for {max_steps:,} µs...")
+    print(f"[START] Starting simulation for {max_steps:,} us...")
     start_time = time.time()
 
     for step in range(max_steps):
@@ -355,7 +355,7 @@ def run_simulation(
         # Check termination
         if terminated or truncated:
             reason = get_termination_reason(info, terminated, truncated)
-            print(f"\n[TERM] Terminated at t={env.state.time} µs ({reason}).")
+            print(f"\n[TERM] Terminated at t={env.state.time} us ({reason}).")
             break
 
     wall_time = time.time() - start_time

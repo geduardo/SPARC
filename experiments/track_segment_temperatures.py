@@ -228,7 +228,7 @@ def main():
     print(f"Wire segments: {env.wire.n_segments}")
     print(f"Total wire length: {env.wire.total_L:.2f} mm")
     print(f"Segment length: {env.wire.segment_len_mm:.2f} mm")
-    print(f"Wire velocity: {env.state.wire_unwinding_velocity:.4f} µm/µs\n")
+    print(f"Wire velocity: {env.state.wire_unwinding_velocity:.4f} um/us\n")
 
     # Calculate expected transit time
     # Wire velocity: 0.2 µm/µs, Wire length: 85 mm = 85,000 µm
@@ -427,9 +427,9 @@ def main():
     final_sim_time_us = env.state.time
 
     print(f"\n{'='*70}")
-    print(f"✓ Simulation Complete!")
+    print(f"[ok] Simulation Complete!")
     print(f"{'='*70}")
-    print(f"Total simulation steps: {step_count:,} ({final_sim_time_us:,} µs)")
+    print(f"Total simulation steps: {step_count:,} ({final_sim_time_us:,} us)")
     print(f"Total control steps: {control_step_count:,}")
     print(
         f"Total real time elapsed: {total_real_time:.1f} seconds ({total_real_time/60:.2f} minutes)"
@@ -537,9 +537,9 @@ def main():
                         ]
                     )
 
-            print(f"  ✓ Saved: {csv_filename}")
+            print(f"  [ok] Saved: {csv_filename}")
 
-        print(f"\n✓ All {len(completed_segments)} heating curves saved to CSV!")
+        print(f"\n[ok] All {len(completed_segments)} heating curves saved to CSV!")
 
     # Plot each segment's temperature history
     if len(completed_segments) > 0:
@@ -598,7 +598,7 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"segment_temperature_tracking_{timestamp}.png"
         plt.savefig(filename, dpi=150, bbox_inches="tight")
-        print(f"\n✓ Figure saved: {filename}")
+        print(f"\n[ok] Figure saved: {filename}")
 
         plt.show()
     else:

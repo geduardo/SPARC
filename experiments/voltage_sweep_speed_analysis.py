@@ -166,7 +166,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         
         if terminated or truncated:
             if verbose:
-                print(f"  WARNING: Simulation terminated during stabilization at t={env.state.time} µs")
+                print(f"  WARNING: Simulation terminated during stabilization at t={env.state.time} us")
             return None
     
     # Record starting position and time for measurement phase
@@ -175,7 +175,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     
     if verbose:
         print(f"  Phase 2: Measuring for {stabilization_time/1000:.1f} ms...")
-        print(f"    Start position: {start_position:.2f} µm")
+        print(f"    Start position: {start_position:.2f} um")
     
     # Phase 2: Measurement (0.5 seconds = 500,000 µs)
     measurement_time = 500_000  # µs
@@ -202,7 +202,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         
         if terminated or truncated:
             if verbose:
-                print(f"  WARNING: Simulation terminated during measurement at t={env.state.time} µs")
+                print(f"  WARNING: Simulation terminated during measurement at t={env.state.time} us")
             # Use partial measurement if we got some data
             if i > 100_000:  # At least 0.1 seconds
                 break
@@ -221,10 +221,10 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     avg_voltage = np.mean(voltage_samples) if voltage_samples else 0.0
     
     if verbose:
-        print(f"    End position: {end_position:.2f} µm")
-        print(f"    Distance traveled: {distance_traveled:.2f} µm")
+        print(f"    End position: {end_position:.2f} um")
+        print(f"    Distance traveled: {distance_traveled:.2f} um")
         print(f"    Time elapsed: {time_elapsed/1000:.2f} ms")
-        print(f"    Average speed: {avg_speed_mm_min:.3f} mm/min ({avg_speed_um_s:.1f} µm/s)")
+        print(f"    Average speed: {avg_speed_mm_min:.3f} mm/min ({avg_speed_um_s:.1f} um/s)")
         print(f"    Average voltage: {avg_voltage:.2f} V")
     
     return {
@@ -247,8 +247,8 @@ def main():
     print("Configuration:")
     print("  Wire diameter: 0.25 mm")
     print("  Workpiece height: 38 mm")
-    print("  Segment length: 10 mm (10_000 µm)")
-    print("  Wire base_convection_coefficient: 1e8 W/(m²·K) (thermal transients quenched)")
+    print("  Segment length: 10 mm (10_000 um)")
+    print("  Wire base_convection_coefficient: 1e8 W/(m^2*K) (thermal transients quenched)")
     print("  Control mode: Velocity")
     print("  Voltage range: 5V to 80V in steps of 5V")
     print("  Measurement protocol: 0.5s stabilization + 0.5s measurement")
@@ -270,9 +270,9 @@ def main():
         
         if result is not None:
             results.append(result)
-            print(f"✓ Success: {result['avg_speed_mm_min']:.3f} mm/min")
+            print(f"[ok] Success: {result['avg_speed_mm_min']:.3f} mm/min")
         else:
-            print(f"✗ Failed: Simulation terminated prematurely")
+            print(f"[FAIL] Simulation terminated prematurely")
         
         print()
     
@@ -298,7 +298,7 @@ def main():
     print("Results Summary")
     print("=" * 70)
     print()
-    print(f"{'Voltage (V)':<15} {'Avg Speed (mm/min)':<20} {'Avg Speed (µm/s)':<20}")
+    print(f"{'Voltage (V)':<15} {'Avg Speed (mm/min)':<20} {'Avg Speed (um/s)':<20}")
     print("-" * 70)
     for r in results:
         print(f"{r['target_voltage']:<15.1f} {r['avg_speed_mm_min']:<20.3f} {r['avg_speed_um_s']:<20.1f}")
