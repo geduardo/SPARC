@@ -7,10 +7,11 @@ and measures the average advancing speed for each voltage. The goal is to
 characterize the relationship between voltage setpoint and cutting speed.
 
 Setup:
-- 0.25 mm wire diameter
+- 0.25 mm wire diameter (via EnvironmentConfig.wire_diameter)
 - 38 mm workpiece height
-- 10000 µm segments (minimal thermal resolution)
-- Very high convection coefficient (100000000) to disable thermal effects
+- 10 mm wire segments (~minimal thermal resolution vs default 0.2 mm)
+- Very high WireModuleParameters.base_convection_coefficient to clamp wire
+  temperature to the dielectric (effectively disables thermal transients)
 - Velocity control mode
 
 Speed measurement protocol:
@@ -71,7 +72,8 @@ def create_voltage_controller(target_voltage: float = 30.0):
         return {
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
+                # Must match swept setpoint: env applies this to state.target_voltage
+                "target_voltage": np.array([target_voltage], dtype=np.float32),
                 "current_mode": np.array([7], dtype=np.int32),
                 "ON_time": np.array([2.0], dtype=np.float32),
                 "OFF_time": np.array([15.0], dtype=np.float32),
@@ -96,29 +98,27 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         verbose: Print progress information
         
     Returns:
-        dict with 'avg_speed_um_s', 'avg_speed_mm_min', 'avg_voltage', 'ssoll'
+        dict with avg_speed_um_s, avg_speed_mm_min, avg_voltage, target_voltage,
+        distance_traveled, time_elapsed
     """
     
-    # Configure wire parameters with very large segments and high convection
+    # Configure wire parameters: coarse segments + extreme convection (see wire module)
     wire_params = WireModuleParameters()
-    wire_params.segment_len = 10.0  # 10000 µm = 10 mm segments
-    wire_params.wire_diameter = 0.25  # mm
-    
-    # Configure environment
+    wire_params.segment_len = 10.0  # [mm] = 10_000 µm segments
+    wire_params.base_convection_coefficient = 1.0e8  # [W/m²·K] pulls T → dielectric T
+
+    # Configure environment (wire diameter lives on config, not WireModuleParameters)
     env_config = EnvironmentConfig()
     env_config.workpiece_height = 38.0  # mm
-    
+    env_config.wire_diameter = 0.25  # mm
+
     # Initialize environment in velocity control mode
     env = WireEDMEnv(
         mechanics_control_mode="velocity",
         wire_params=wire_params,
-        config=env_config
+        config=env_config,
     )
     env.reset(seed=0)
-    
-    # Override convection coefficient to disable thermal effects
-    # Access the wire module and set extreme convection
-    env.wire.h_conv = 100000000.0  # W/(m²·K) - extremely high
     
     # Set initial conditions
     env.state.workpiece_position = 30.0  # µm - start at 30 µm
@@ -227,19 +227,13 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         print(f"    Average speed: {avg_speed_mm_min:.3f} mm/min ({avg_speed_um_s:.1f} µm/s)")
         print(f"    Average voltage: {avg_voltage:.2f} V")
     
-    # Calculate SSoil parameter (this might be related to the voltage or some other metric)
-    # For now, we'll store the target voltage as a placeholder
-    # You may need to adjust this based on what SSoil actually represents
-    ssoll = target_voltage  # Placeholder - adjust as needed
-    
     return {
-        'avg_speed_um_s': avg_speed_um_s,
-        'avg_speed_mm_min': avg_speed_mm_min,
-        'avg_voltage': avg_voltage,
-        'target_voltage': target_voltage,
-        'ssoll': ssoll,
-        'distance_traveled': distance_traveled,
-        'time_elapsed': time_elapsed,
+        "avg_speed_um_s": avg_speed_um_s,
+        "avg_speed_mm_min": avg_speed_mm_min,
+        "avg_voltage": avg_voltage,
+        "target_voltage": target_voltage,
+        "distance_traveled": distance_traveled,
+        "time_elapsed": time_elapsed,
     }
 
 
@@ -253,8 +247,8 @@ def main():
     print("Configuration:")
     print("  Wire diameter: 0.25 mm")
     print("  Workpiece height: 38 mm")
-    print("  Segment length: 10000 µm (10 mm)")
-    print("  Convection coefficient: 100000000 W/(m²·K) (thermal effects disabled)")
+    print("  Segment length: 10 mm (10_000 µm)")
+    print("  Wire base_convection_coefficient: 1e8 W/(m²·K) (thermal transients quenched)")
     print("  Control mode: Velocity")
     print("  Voltage range: 5V to 80V in steps of 5V")
     print("  Measurement protocol: 0.5s stabilization + 0.5s measurement")
@@ -291,15 +285,12 @@ def main():
     avg_voltages = np.array([r['avg_voltage'] for r in results])
     avg_speeds_um_s = np.array([r['avg_speed_um_s'] for r in results])
     avg_speeds_mm_min = np.array([r['avg_speed_mm_min'] for r in results])
-    ssoll_values = np.array([r['ssoll'] for r in results])
-    
     np.savez(
         npz_filename,
         target_voltages=target_voltages,
         avg_voltages=avg_voltages,
         avg_speeds_um_s=avg_speeds_um_s,
         avg_speeds_mm_min=avg_speeds_mm_min,
-        ssoll_values=ssoll_values,
         results=results,
     )
     
@@ -321,13 +312,20 @@ def main():
     fig, ax = plt.subplots(figsize=(12, 8))
     
     # Plot with markers and labels
-    ax.plot(ssoll_values, avg_speeds_mm_min, 'o-', 
-            markersize=10, linewidth=2, color='steelblue',
-            markeredgecolor='darkblue', markeredgewidth=2,
-            label='Average Advancing Speed')
-    
+    ax.plot(
+        target_voltages,
+        avg_speeds_mm_min,
+        "o-",
+        markersize=10,
+        linewidth=2,
+        color="steelblue",
+        markeredgecolor="darkblue",
+        markeredgewidth=2,
+        label="Average advancing speed",
+    )
+
     # Add value labels on each point
-    for i, (x, y) in enumerate(zip(ssoll_values, avg_speeds_mm_min)):
+    for i, (x, y) in enumerate(zip(target_voltages, avg_speeds_mm_min)):
         ax.annotate(f'{y:.3f}', 
                    xy=(x, y), 
                    xytext=(0, 10),
@@ -339,10 +337,14 @@ def main():
                            edgecolor='black',
                            alpha=0.7))
     
-    ax.set_xlabel('SSoil Parameter', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Average Advancing Speed (mm/min)', fontsize=14, fontweight='bold')
-    ax.set_title('Average Advancing Speed vs SSoil Parameter\nCUT P350 Analysis', 
-                fontsize=16, fontweight='bold')
+    ax.set_xlabel("Target generator voltage (V)", fontsize=14, fontweight="bold")
+    ax.set_ylabel("Average advancing speed (mm/min)", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "Average advancing speed vs target voltage\n"
+        "(0.5 s stabilization + 0.5 s measurement per setpoint)",
+        fontsize=16,
+        fontweight="bold",
+    )
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     
