@@ -69,6 +69,28 @@ for _ in range(1000):
 print(f"Simulation completed. Wire broken: {info.get('wire_broken', False)}")
 ```
 
+## Performance Profiling
+
+Use the profiling harness to benchmark the local `src` tree against a stable
+active-cutting workload before and after optimization changes.
+
+```bash
+python scripts/profile_simulation.py --segment-len 0.2 --segment-len 0.05 --steps 100000 --initial-gap 12 --warmup 2000 --repeats 3 --hotspots both
+```
+
+The script reports:
+
+- median and per-repeat throughput in steps per second
+- module-level wall-time shares for quick hotspot scans
+- `cProfile` hotspots for deeper function-level analysis
+- crater counts per run so you can confirm the benchmark is actually sparking
+
+You can also write a machine-readable snapshot for later comparison:
+
+```bash
+python scripts/profile_simulation.py --json-out outputs/profiling/baseline.json
+```
+
 ## Advanced Usage
 
 ### Custom Control Strategy

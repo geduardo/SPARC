@@ -48,7 +48,10 @@ class TestWireEDMEnv:
 
         assert env.state.voltage == env.ignition.params.default_target_voltage
         assert env.state.current == 0.0
-        assert env.state.dielectric_temperature == env.dielectric.params.dielectric_temperature
+        assert (
+            env.state.dielectric_temperature
+            == env.dielectric.params.dielectric_temperature
+        )
 
     def test_env_reset_clears_module_internal_state(self):
         """Reset should clear module-owned episode state, not just EDMState."""
@@ -84,7 +87,10 @@ class TestWireEDMEnv:
         assert env.ignition._cached_current_mode is None
 
         assert env.material._cached_current_mode is None
-        assert env.material._cached_crater_info == env.material.crater_data[env.default_current_mode]
+        assert (
+            env.material._cached_crater_info
+            == env.material.crater_data[env.default_current_mode]
+        )
         assert env.material.crater_volumes_um3 == []
 
         assert env.dielectric.debris_volume == 0.0
@@ -95,10 +101,9 @@ class TestWireEDMEnv:
 
         assert env.mechanics.prev_accel == 0.0
 
-        expected_positions = (
-            np.arange(env.wire.n_segments, dtype=np.float32)
-            * np.float32(env.wire.segment_len_mm)
-        )
+        expected_positions = np.arange(
+            env.wire.n_segments, dtype=np.float32
+        ) * np.float32(env.wire.segment_len_mm)
         np.testing.assert_allclose(env.wire._y_start_mm, expected_positions)
         np.testing.assert_allclose(
             env.wire._temperature,
@@ -110,6 +115,35 @@ class TestWireEDMEnv:
         np.testing.assert_allclose(env.state.wire_temperature, env.wire._temperature)
         np.testing.assert_allclose(env.state.wire_damage, env.wire._damage)
         assert env.state.wire_max_damage == 0.0
+
+    def test_wire_segments_snapshot_reflects_internal_arrays(self):
+        """Compatibility segment views should be materialized from the live arrays."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.wire._y_start_mm[0] = np.float32(1.25)
+        env.wire._temperature[0] = np.float32(410.0)
+        env.wire._damage[0] = np.float32(0.35)
+
+        first_segment = env.wire.segments[0]
+
+        assert first_segment.y_start_mm == pytest.approx(1.25)
+        assert first_segment.temperature == pytest.approx(410.0)
+        assert first_segment.damage == pytest.approx(0.35)
+
+    def test_wire_segments_snapshot_is_not_a_live_mutation_surface(self):
+        """Editing a compatibility snapshot should not mutate the live simulation arrays."""
+        env = WireEDMEnv()
+        env.reset()
+
+        first_segment = env.wire.segments[0]
+        first_segment.y_start_mm = -99.0
+        first_segment.temperature = -1.0
+        first_segment.damage = 1.0
+
+        assert env.wire._y_start_mm[0] == pytest.approx(0.0)
+        assert env.wire._temperature[0] == pytest.approx(env.wire.params.spool_T)
+        assert env.wire._damage[0] == pytest.approx(0.0)
 
     def test_module_reset_hooks_sync_dirty_existing_state(self):
         """Module reset hooks should clean mirrored state, not just private caches."""
@@ -147,7 +181,10 @@ class TestWireEDMEnv:
         assert env.state.spark_status == [0, None, 0]
         assert env.state.last_crater_volume == 0.0
 
-        assert env.state.dielectric_temperature == env.dielectric.params.dielectric_temperature
+        assert (
+            env.state.dielectric_temperature
+            == env.dielectric.params.dielectric_temperature
+        )
         assert env.state.debris_volume == 0.0
         assert env.state.debris_density == 0.0
         assert env.state.cavity_volume == 0.0
@@ -220,8 +257,7 @@ class TestWireEDMEnv:
             == env.ignition.params.default_target_voltage
         )
         assert (
-            env.ignition._get_on_time(env.state)
-            == env.ignition.params.default_on_time
+            env.ignition._get_on_time(env.state) == env.ignition.params.default_on_time
         )
         assert (
             env.ignition._get_off_time(env.state)
@@ -243,7 +279,10 @@ class TestWireEDMEnv:
         env.reset()
         env.state.current_mode = None
 
-        assert env.ignition._get_peak_current(env.state) == env.ignition.currents_data["I17"]["Current"]
+        assert (
+            env.ignition._get_peak_current(env.state)
+            == env.ignition.currents_data["I17"]["Current"]
+        )
 
         env.material._sample_crater_volume(env.state)
 
@@ -258,7 +297,10 @@ class TestWireEDMEnv:
         env.reset()
         env.state.current_mode = "I2"
 
-        assert env.ignition._get_peak_current(env.state) == env.ignition.currents_data["I17"]["Current"]
+        assert (
+            env.ignition._get_peak_current(env.state)
+            == env.ignition.currents_data["I17"]["Current"]
+        )
 
         env.material._sample_crater_volume(env.state)
 
@@ -294,7 +336,9 @@ class TestCurrentModeValidation:
         """Even modes without crater data raise ValueError at action intake."""
         env = WireEDMEnv()
         env.reset()
-        invalid_modes = [m for m in range(1, 20) if f"I{m}" not in env.valid_current_modes]
+        invalid_modes = [
+            m for m in range(1, 20) if f"I{m}" not in env.valid_current_modes
+        ]
         assert len(invalid_modes) > 0, "Test expects at least one invalid mode"
         for mode_int in invalid_modes:
             # Force a control step so _apply_action fires

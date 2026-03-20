@@ -198,11 +198,8 @@ class WireModule(EDMModule):
         self._Segment = Segment
         self.segment_len_mm = float(self.params.segment_len)
 
-        # Initialize segments list (for API compatibility)
-        self.segments = [
-            Segment(i * self.segment_len_mm, float(self.params.spool_T), 0.0)
-            for i in range(self.n_segments)
-        ]
+        # Keep the dataclass type for compatibility snapshots, but do not mirror it
+        # on every microstep. The NumPy arrays below are the live state.
 
         # ── Internal NumPy arrays for fast access (optimization) ──
         # Store segment data in arrays to avoid list comprehensions
@@ -311,6 +308,18 @@ class WireModule(EDMModule):
             self.segment_len_mm
         )
 
+    @property
+    def segments(self) -> list:
+        """Return a point-in-time snapshot of segment data for compatibility."""
+        return [
+            self._Segment(
+                float(self._y_start_mm[i]),
+                float(self._temperature[i]),
+                float(self._damage[i]),
+            )
+            for i in range(self.n_segments)
+        ]
+
     def reset(self, state: EDMState) -> None:
         """Restore wire thermal, damage, and transport state for a new episode."""
         self._y_start_mm = self._build_initial_positions()
@@ -321,12 +330,6 @@ class WireModule(EDMModule):
         self._last_zone_mean = self.params.spool_T
         self._last_flow_condition = None
         self.zone_mean_counter = 0
-        self._arrays_initialized = True
-
-        for i in range(self.n_segments):
-            self.segments[i].y_start_mm = float(self._y_start_mm[i])
-            self.segments[i].temperature = float(self.params.spool_T)
-            self.segments[i].damage = 0.0
 
         state.wire_temperature = self._temperature.copy()
         state.wire_damage = self._damage.copy()
@@ -386,24 +389,12 @@ class WireModule(EDMModule):
                 self._temperature[0] = float(self.params.spool_T)
                 self._damage[0] = 0.0
 
-                # Sync arrays back to Segment objects (only when rollover occurs)
-                for i in range(self.n_segments):
-                    self.segments[i].y_start_mm = float(self._y_start_mm[i])
-                    self.segments[i].temperature = float(self._temperature[i])
-                    self.segments[i].damage = float(self._damage[i])
-            else:
-                # Only update positions in Segment objects (faster when no rollover)
-                # We can skip this if we're not accessing segments elsewhere
-                # For now, sync only y_start_mm to maintain compatibility
-                for i in range(self.n_segments):
-                    self.segments[i].y_start_mm = float(self._y_start_mm[i])
-
         # Prepare plasma heating (physical index)
         # Apply plasma heating for both sparks (1) AND short circuits (-1)
         # Both discharge types generate the same heat at the discharge location
         plasma_idx = -1
         plasma_heat = 0.0
-        is_active_discharge = (state.spark_status[0] == 1 or state.spark_status[0] == -1)
+        is_active_discharge = state.spark_status[0] == 1 or state.spark_status[0] == -1
         if is_active_discharge and state.spark_status[1] is not None:
             y_spark = state.spark_status[1]
             # Clamp spark location strictly within the workpiece zone
@@ -426,16 +417,6 @@ class WireModule(EDMModule):
         adv_coeff = 0.0
 
         # ── Thermal update (vectorized NumPy operations) ──
-        # Sync internal array from state array at start (if state array exists and matches size)
-        # On first call, initialize arrays from segments
-        if not hasattr(self, "_arrays_initialized"):
-            # Initial sync from segments to arrays (one-time)
-            for i in range(self.n_segments):
-                self._temperature[i] = float(self.segments[i].temperature)
-                self._damage[i] = float(self.segments[i].damage)
-            self._arrays_initialized = True
-
-        # Use internal array as primary working array for vectorized operations
         T_vec = self._temperature  # Work with internal array
         dT_dt = self.dT_dt
         dT_dt[:] = 0.0
@@ -565,15 +546,6 @@ class WireModule(EDMModule):
         T_vec += dT_dt * self.temp_update_factor
         T_vec[0] = self.params.spool_T
 
-        # Sync temperatures back to Segment objects
-        # Optimized: use vectorized assignment where possible
-        # Note: Python dataclasses don't support bulk assignment, so we use a loop
-        # but we can optimize by only updating changed values or using list comprehension
-        if self.n_segments > 0:
-            # Update all segments (necessary for compatibility)
-            for i in range(self.n_segments):
-                self.segments[i].temperature = float(T_vec[i])
-
         # ── Damage Accumulation and Wire Breaking ──
         self._accumulate_damage(state, T_vec)
 
@@ -686,7 +658,6 @@ class WireModule(EDMModule):
                 d_damage = stress_term * arrhenius * dt
                 # Accumulate damage
                 self._damage[i] += d_damage
-                self.segments[i].damage = float(self._damage[i])
 
         # Check for wire breakage - any segment reaching D >= 1 triggers breakage
         max_damage = np.max(self._damage)
