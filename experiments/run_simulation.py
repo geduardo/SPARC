@@ -24,6 +24,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.modules.material import MaterialModuleParameters
 from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger, LoggerConfig
 
@@ -237,6 +238,7 @@ def initialize_environment(
     log_strategy: str = "full_field",
     segment_len_um: float = 500.0,
     workpiece_height_mm: float = 10.0,
+    enable_analysis_tracking: bool = False,
 ) -> WireEDMEnv:
     """
     Initialize and setup the EDM environment with appropriate wire configuration.
@@ -247,9 +249,13 @@ def initialize_environment(
         log_strategy: "full_field", "zone_mean", or "both"
         segment_len_um: Length of each wire segment in micrometers
         workpiece_height_mm: Height of workpiece in mm
+        enable_analysis_tracking: Whether to keep analysis-only crater history
     """
     # Configure wire parameters
     wire_params = WireModuleParameters()
+    material_params = MaterialModuleParameters(
+        enable_analysis_tracking=enable_analysis_tracking
+    )
     wire_params.segment_len = segment_len_um / 1000.0  # Convert µm to mm
 
     # Configure environment
@@ -271,7 +277,10 @@ def initialize_environment(
 
     # Initialize environment with custom parameters
     env = WireEDMEnv(
-        mechanics_control_mode=control_mode, wire_params=wire_params, config=env_config
+        mechanics_control_mode=control_mode,
+        wire_params=wire_params,
+        material_params=material_params,
+        config=env_config,
     )
     env.reset(seed=seed)
 
@@ -793,6 +802,13 @@ def plot_crater_histogram(env: WireEDMEnv) -> None:
     """Create histogram of crater volumes generated during simulation."""
     import matplotlib.pyplot as plt
 
+    if not env.material.params.enable_analysis_tracking:
+        print(
+            "Crater history tracking is disabled. Rerun with "
+            "`--enable-analysis-tracking` to generate the histogram."
+        )
+        return
+
     # Get crater statistics from the material removal module
     crater_stats = env.material.get_crater_statistics()
 
@@ -925,6 +941,11 @@ def main():
         "--steps", type=int, default=200_000, help="µs to simulate (default: 200,000)"
     )
     parser.add_argument("--plot", action="store_true", help="Show plots at the end")
+    parser.add_argument(
+        "--enable-analysis-tracking",
+        action="store_true",
+        help="Enable crater-history and similar analysis-only accumulators",
+    )
     parser.add_argument(
         "--verbose", action="store_true", help="Print verbose output during simulation"
     )
@@ -1087,6 +1108,7 @@ def main():
         log_strategy=args.log_strategy,
         segment_len_um=args.segment_len,
         workpiece_height_mm=args.workpiece_height,
+        enable_analysis_tracking=args.enable_analysis_tracking,
     )
 
     # Run simulation

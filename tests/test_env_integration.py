@@ -2,7 +2,12 @@
 
 import pytest
 import numpy as np
-from wedm import WireEDMEnv, EnvironmentConfig, IgnitionModuleParameters
+from wedm import (
+    WireEDMEnv,
+    EnvironmentConfig,
+    IgnitionModuleParameters,
+    MaterialModuleParameters,
+)
 
 
 def _valid_action(env):
@@ -115,6 +120,36 @@ class TestWireEDMEnv:
         np.testing.assert_allclose(env.state.wire_temperature, env.wire._temperature)
         np.testing.assert_allclose(env.state.wire_damage, env.wire._damage)
         assert env.state.wire_max_damage == 0.0
+
+    def test_material_analysis_tracking_is_opt_in_and_reset_safe(self):
+        """Crater-history tracking should be explicit and reset cleanly."""
+        env_default = WireEDMEnv()
+        env_default.reset()
+
+        env_default.material._sample_crater_volume(env_default.state)
+
+        assert env_default.material.crater_volumes_um3 == []
+        assert env_default.material.get_crater_statistics()["tracking_enabled"] is False
+
+        env_tracked = WireEDMEnv(
+            material_params=MaterialModuleParameters(enable_analysis_tracking=True)
+        )
+        env_tracked.reset()
+
+        env_tracked.material._sample_crater_volume(env_tracked.state)
+        env_tracked.material._sample_crater_volume(env_tracked.state)
+
+        stats_before_reset = env_tracked.material.get_crater_statistics()
+        assert stats_before_reset["tracking_enabled"] is True
+        assert stats_before_reset["total_craters"] == 2
+        assert len(env_tracked.material.crater_volumes_um3) == 2
+
+        env_tracked.reset()
+
+        stats_after_reset = env_tracked.material.get_crater_statistics()
+        assert env_tracked.material.crater_volumes_um3 == []
+        assert stats_after_reset["tracking_enabled"] is True
+        assert stats_after_reset["total_craters"] == 0
 
     def test_wire_segments_snapshot_reflects_internal_arrays(self):
         """Compatibility segment views should be materialized from the live arrays."""

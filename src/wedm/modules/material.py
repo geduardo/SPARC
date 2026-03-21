@@ -18,6 +18,7 @@ class MaterialModuleParameters:
     """Material removal module specific parameters."""
 
     # ── Material Removal Model Parameters ──
+    enable_analysis_tracking: bool = False  # Track crater history for analysis/debugging
     base_overcut: float = 0.026  # [mm] Base overcut (0.06mm per side)
 
 
@@ -48,7 +49,7 @@ class MaterialRemovalModule(EDMModule):
         ]
 
         # ── Analysis Tracking ──
-        # Track crater volumes for analysis
+        # Track crater volumes for analysis when explicitly enabled
         self.crater_volumes_um3 = []  # Store all crater volumes in μm³
 
     def reset(self, state: EDMState) -> None:
@@ -133,8 +134,9 @@ class MaterialRemovalModule(EDMModule):
         # Ensure non-negative volume
         sampled_volume_um3 = max(0, sampled_volume_um3)
 
-        # Store the crater volume for analysis
-        self.crater_volumes_um3.append(sampled_volume_um3)
+        # Store crater history only when explicitly requested.
+        if self.params.enable_analysis_tracking:
+            self.crater_volumes_um3.append(sampled_volume_um3)
 
         # Convert to mm³
         sampled_volume_mm3 = sampled_volume_um3 / 1e9
@@ -210,8 +212,20 @@ class MaterialRemovalModule(EDMModule):
 
     def get_crater_statistics(self) -> dict:
         """Get statistics about generated craters."""
+        if not self.params.enable_analysis_tracking:
+            return {
+                "tracking_enabled": False,
+                "total_craters": 0,
+                "mean_volume_um3": 0,
+                "std_volume_um3": 0,
+                "min_volume_um3": 0,
+                "max_volume_um3": 0,
+                "volumes_um3": [],
+            }
+
         if not self.crater_volumes_um3:
             return {
+                "tracking_enabled": True,
                 "total_craters": 0,
                 "mean_volume_um3": 0,
                 "std_volume_um3": 0,
@@ -222,6 +236,7 @@ class MaterialRemovalModule(EDMModule):
 
         volumes = np.array(self.crater_volumes_um3)
         return {
+            "tracking_enabled": True,
             "total_craters": len(volumes),
             "mean_volume_um3": np.mean(volumes),
             "std_volume_um3": np.std(volumes),
