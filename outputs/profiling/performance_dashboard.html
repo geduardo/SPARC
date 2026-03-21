@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SPARC Performance Dashboard</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --panel: rgba(14, 23, 33, 0.84);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text: #e7edf4;
+            --muted: #94a7b8;
+            --steel: #6ea8d9;
+            --teal: #28c2b7;
+            --amber: #ff7b54;
+            --gold: #f2c14e;
+            --shadow: 0 20px 50px rgba(0, 0, 0, 0.32);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Bahnschrift", "Trebuchet MS", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(40, 194, 183, 0.16), transparent 34%),
+                radial-gradient(circle at top right, rgba(255, 123, 84, 0.14), transparent 28%),
+                linear-gradient(160deg, #091018 0%, #111a25 52%, #0b1016 100%);
+        }
+        .shell { max-width: 1380px; margin: 0 auto; padding: 32px 24px 64px; }
+        .hero {
+            padding: 30px 32px;
+            border: 1px solid var(--panel-border);
+            border-radius: 28px;
+            background:
+                linear-gradient(140deg, rgba(110, 168, 217, 0.12), rgba(40, 194, 183, 0.08) 40%, rgba(255, 123, 84, 0.10) 100%),
+                rgba(10, 16, 24, 0.84);
+            box-shadow: var(--shadow);
+        }
+        .eyebrow {
+            display: inline-flex; gap: 10px; align-items: center; padding: 6px 12px; border-radius: 999px;
+            background: rgba(255, 255, 255, 0.05); color: var(--gold); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+        }
+        h1 { margin: 16px 0 12px; font-size: clamp(34px, 5vw, 62px); line-height: 0.98; letter-spacing: 0.02em; }
+        .hero p { max-width: 980px; color: var(--muted); font-size: 17px; line-height: 1.55; }
+        .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 24px; }
+        .metric-card {
+            padding: 18px 18px 20px; border-radius: 22px; border: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.04); min-height: 160px;
+        }
+        .metric-card.teal { background: linear-gradient(155deg, rgba(40, 194, 183, 0.18), rgba(255, 255, 255, 0.04)); }
+        .metric-card.amber { background: linear-gradient(155deg, rgba(255, 123, 84, 0.18), rgba(255, 255, 255, 0.04)); }
+        .metric-card.steel { background: linear-gradient(155deg, rgba(110, 168, 217, 0.18), rgba(255, 255, 255, 0.04)); }
+        .metric-label { color: var(--muted); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+        .metric-value { margin-top: 16px; font-size: 29px; line-height: 1.14; font-weight: 700; }
+        .metric-subtitle { margin-top: 14px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+        .panel { margin-top: 24px; padding: 26px 28px 28px; border: 1px solid var(--panel-border); border-radius: 26px; background: var(--panel); box-shadow: var(--shadow); }
+        .section-kicker { color: var(--gold); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
+        h2 { margin: 10px 0 10px; font-size: 28px; }
+        h3 { margin: 0 0 16px; font-size: 20px; }
+        .section-note { margin: 0 0 18px; color: var(--muted); line-height: 1.55; }
+        .table-wrap { overflow-x: auto; border-radius: 18px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.025); }
+        table { width: 100%; border-collapse: collapse; min-width: 860px; }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.05); vertical-align: top; }
+        th { color: var(--gold); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; background: rgba(255, 255, 255, 0.03); }
+        td { color: var(--text); font-size: 15px; }
+        tr:last-child td { border-bottom: none; }
+        .subpanel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; }
+        .subpanel { padding: 20px; border-radius: 22px; background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.06); }
+        .hotspot-list { display: grid; gap: 12px; }
+        .hotspot-row { display: grid; grid-template-columns: 110px 1fr 66px; gap: 10px; align-items: center; }
+        .hotspot-name { font-size: 14px; color: var(--muted); }
+        .hotspot-track { position: relative; height: 11px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.08); }
+        .hotspot-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: linear-gradient(90deg, var(--amber), var(--gold)); }
+        .hotspot-value { font-family: "Consolas", monospace; font-size: 13px; }
+        .compact table { min-width: 0; }
+        .trend-card { display: grid; gap: 10px; }
+        .trend-svg { width: 100%; height: auto; border-radius: 20px; background: rgba(255, 255, 255, 0.02); }
+        .plot-bg { fill: rgba(255, 255, 255, 0.02); }
+        .grid-line { stroke: rgba(255, 255, 255, 0.10); stroke-dasharray: 4 6; }
+        .grid-vertical { stroke: rgba(255, 255, 255, 0.05); stroke-dasharray: 3 8; }
+        .axis-label { fill: var(--muted); font-size: 12px; font-family: "Consolas", monospace; }
+        .axis-title { fill: var(--gold); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+        .x-label { font-size: 11px; }
+        .trend-legend { display: flex; flex-wrap: wrap; gap: 12px 18px; color: var(--muted); font-size: 14px; }
+        .legend-item { display: inline-flex; align-items: center; gap: 8px; }
+        .legend-swatch { width: 12px; height: 12px; border-radius: 999px; }
+        .empty-state { color: var(--muted); font-style: italic; }
+        .footer-note { margin-top: 26px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+        strong { color: var(--text); }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <section class="hero">
+            <div class="eyebrow">Conservative Performance Program</div>
+            <h1>SPARC Realtime Optimization Dashboard</h1>
+            <p>
+                This dashboard folds together repeatable profiling snapshots for the local simulation code.
+                The current program is conservative by design: improve throughput on this PC without dropping
+                physics outputs, exported data, or simulation quality. Generated 2026-03-21 22:27:58
+                from 7 compatible profile reports.
+            </p>
+            <div class="metric-grid">
+                <div class="metric-card amber"><div class="metric-label">Target</div><div class="metric-value">1,000,000 steps/s</div><div class="metric-subtitle">1 s wall / 1 s simulated at dt = 1 us</div></div><div class="metric-card teal"><div class="metric-label">Reports Tracked</div><div class="metric-value">7</div><div class="metric-subtitle">JSON snapshots folded into this dashboard</div></div><div class="metric-card steel"><div class="metric-label">Best Throughput</div><div class="metric-value">37,714.66 steps/s</div><div class="metric-subtitle">0.20 mm / 400 seg</div></div><div class="metric-card teal"><div class="metric-label">Best Realtime Gap</div><div class="metric-value">26.51x slower</div><div class="metric-subtitle">Lower is better</div></div><div class="metric-card amber"><div class="metric-label">Latest Hotspot</div><div class="metric-value">wire dominates latest profile</div><div class="metric-subtitle">realtime_baseline_20260321</div></div>
+            </div>
+        </section>
+
+        
+    <div class="trend-card">
+        <div class="section-kicker">Progress Toward Realtime</div>
+        <h2>Wall Seconds Needed for 1 Simulated Second</h2>
+        <p class="section-note">Lower is better. The conservative target is <strong>1.0x</strong>.</p>
+        <svg viewBox="0 0 1040 360" class="trend-svg" role="img" aria-label="Performance trend chart">
+            <rect x="86" y="30" width="918" height="258" class="plot-bg" />
+            <line x1="86" y1="288.00" x2="1004" y2="288.00" class="grid-line" /><text x="74" y="293.00" class="axis-label" text-anchor="end">0.0x</text><line x1="86" y1="223.50" x2="1004" y2="223.50" class="grid-line" /><text x="74" y="228.50" class="axis-label" text-anchor="end">211.8x</text><line x1="86" y1="159.00" x2="1004" y2="159.00" class="grid-line" /><text x="74" y="164.00" class="axis-label" text-anchor="end">423.5x</text><line x1="86" y1="94.50" x2="1004" y2="94.50" class="grid-line" /><text x="74" y="99.50" class="axis-label" text-anchor="end">635.2x</text><line x1="86" y1="30.00" x2="1004" y2="30.00" class="grid-line" /><text x="74" y="35.00" class="axis-label" text-anchor="end">847.0x</text>
+            <line x1="86.00" y1="30" x2="86.00" y2="288" class="grid-vertical" /><text x="86.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 86.00 312)">pc01_after</text><line x1="239.00" y1="30" x2="239.00" y2="288" class="grid-vertical" /><text x="239.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 239.00 312)">pc01_before</text><line x1="392.00" y1="30" x2="392.00" y2="288" class="grid-vertical" /><text x="392.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 392.00 312)">pc02_after</text><line x1="545.00" y1="30" x2="545.00" y2="288" class="grid-vertical" /><text x="545.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 545.00 312)">pc02_after_hotspots</text><line x1="698.00" y1="30" x2="698.00" y2="288" class="grid-vertical" /><text x="698.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 698.00 312)">pc02_before</text><line x1="851.00" y1="30" x2="851.00" y2="288" class="grid-vertical" /><text x="851.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 851.00 312)">post_pc01_hotspots</text><line x1="1004.00" y1="30" x2="1004.00" y2="288" class="grid-vertical" /><text x="1004.00" y="312" class="axis-label x-label" text-anchor="end" transform="rotate(-28 1004.00 312)">realtime_baseline_20260321</text>
+            <polyline points="86.00,163.33 239.00,63.83 392.00,277.94 545.00,263.97 698.00,139.05 851.00,168.97 1004.00,275.50" fill="none" stroke="#ff7b54" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" /><circle cx="86.00" cy="163.33" r="4.8" fill="#ff7b54" /><circle cx="239.00" cy="63.83" r="4.8" fill="#ff7b54" /><circle cx="392.00" cy="277.94" r="4.8" fill="#ff7b54" /><circle cx="545.00" cy="263.97" r="4.8" fill="#ff7b54" /><circle cx="698.00" cy="139.05" r="4.8" fill="#ff7b54" /><circle cx="851.00" cy="168.97" r="4.8" fill="#ff7b54" /><circle cx="1004.00" cy="275.50" r="4.8" fill="#ff7b54" /> <polyline points="86.00,246.72 239.00,225.61 392.00,278.71 545.00,269.97 698.00,234.66 851.00,246.23 1004.00,279.92" fill="none" stroke="#28c2b7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" /><circle cx="86.00" cy="246.72" r="4.8" fill="#28c2b7" /><circle cx="239.00" cy="225.61" r="4.8" fill="#28c2b7" /><circle cx="392.00" cy="278.71" r="4.8" fill="#28c2b7" /><circle cx="545.00" cy="269.97" r="4.8" fill="#28c2b7" /><circle cx="698.00" cy="234.66" r="4.8" fill="#28c2b7" /><circle cx="851.00" cy="246.23" r="4.8" fill="#28c2b7" /><circle cx="1004.00" cy="279.92" r="4.8" fill="#28c2b7" />
+            <text x="86" y="22" class="axis-title">x slower than realtime</text>
+        </svg>
+        <div class="trend-legend"><div class="legend-item"><span class="legend-swatch" style="background:#ff7b54"></span>0.05 mm / 1600 seg</div><div class="legend-item"><span class="legend-swatch" style="background:#28c2b7"></span>0.20 mm / 400 seg</div></div>
+    </div>
+    
+        
+    <section class="panel">
+        <div class="section-kicker">Latest Snapshot</div>
+        <h2>realtime_baseline_20260321</h2>
+        <p class="section-note">
+            Collected 2026-03-21 22:17:30. Steps=200,000,
+            warmup=5,000, repeats=2,
+            gap=12.0 um.
+        </p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Median steps/s</th>
+                        <th>Wall s / sim s</th>
+                        <th>% of target</th>
+                        <th>Termination</th>
+                        <th>Crater count</th>
+                        <th>Mean wire temp</th>
+                        <th>Max damage</th>
+                        <th>Top module</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>0.05 mm / 1600 seg</td><td>24,372.43</td><td>41.03x</td><td>2.44%</td><td>wire_broken</td><td>0</td><td>365.07 K</td><td>1.017419</td><td>wire (55.5%)</td></tr><tr><td>0.20 mm / 400 seg</td><td>37,714.66</td><td>26.51x</td><td>3.77%</td><td>wire_broken</td><td>0</td><td>373.32 K</td><td>1.000190</td><td>wire (50.8%)</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+    
+        
+    <section class="panel">
+        <div class="section-kicker">Primary Bottlenecks</div>
+        <h2>Latest Module Wall Shares</h2>
+        <div class="subpanel-grid">
+            
+            <div class="subpanel">
+                <h3>0.05 mm / 1600 seg</h3>
+                <div class="hotspot-list">
+                    
+                <div class="hotspot-row">
+                    <div class="hotspot-name">wire</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 55.51%"></div>
+                    </div>
+                    <div class="hotspot-value">55.5%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">ignition</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 22.87%"></div>
+                    </div>
+                    <div class="hotspot-value">22.9%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._apply_action</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 3.48%"></div>
+                    </div>
+                    <div class="hotspot-value">3.5%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">dielectric</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 3.04%"></div>
+                    </div>
+                    <div class="hotspot-value">3.0%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">mechanics</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 2.01%"></div>
+                    </div>
+                    <div class="hotspot-value">2.0%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">material</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 0.98%"></div>
+                    </div>
+                    <div class="hotspot-value">1.0%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._check_termination</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 0.92%"></div>
+                    </div>
+                    <div class="hotspot-value">0.9%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._calc_reward</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 0.84%"></div>
+                    </div>
+                    <div class="hotspot-value">0.8%</div>
+                </div>
+                
+                </div>
+            </div>
+            
+            <div class="subpanel">
+                <h3>0.20 mm / 400 seg</h3>
+                <div class="hotspot-list">
+                    
+                <div class="hotspot-row">
+                    <div class="hotspot-name">wire</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 50.77%"></div>
+                    </div>
+                    <div class="hotspot-value">50.8%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">ignition</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 22.66%"></div>
+                    </div>
+                    <div class="hotspot-value">22.7%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">dielectric</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 4.05%"></div>
+                    </div>
+                    <div class="hotspot-value">4.1%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._apply_action</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 3.60%"></div>
+                    </div>
+                    <div class="hotspot-value">3.6%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">mechanics</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 2.48%"></div>
+                    </div>
+                    <div class="hotspot-value">2.5%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">material</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 1.20%"></div>
+                    </div>
+                    <div class="hotspot-value">1.2%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._check_termination</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 0.99%"></div>
+                    </div>
+                    <div class="hotspot-value">1.0%</div>
+                </div>
+                
+                <div class="hotspot-row">
+                    <div class="hotspot-name">env._calc_reward</div>
+                    <div class="hotspot-track">
+                        <div class="hotspot-fill" style="width: 0.56%"></div>
+                    </div>
+                    <div class="hotspot-value">0.6%</div>
+                </div>
+                
+                </div>
+            </div>
+            
+        </div>
+    </section>
+    
+        
+    <section class="panel">
+        <div class="section-kicker">Function Hotspots</div>
+        <h2>Latest cProfile Top Lines</h2>
+        <div class="subpanel-grid">
+            
+            <div class="subpanel">
+                <h3>0.05 mm / 1600 seg</h3>
+                <div class="table-wrap compact">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Function</th>
+                                <th>Location</th>
+                                <th>Cumulative s</th>
+                                <th>Total s</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>step</td><td>src\wedm\envs\wire_edm.py:126</td><td>7.828</td><td>0.682</td></tr><tr><td>update</td><td>src\wedm\modules\wire.py:294</td><td>4.094</td><td>3.012</td></tr><tr><td>update</td><td>src\wedm\modules\ignition.py:187</td><td>1.980</td><td>0.125</td></tr><tr><td>_update_short_circuit_detection</td><td>src\wedm\modules\ignition.py:209</td><td>1.401</td><td>0.912</td></tr><tr><td>_accumulate_damage</td><td>src\wedm\modules\wire.py:591</td><td>0.686</td><td>0.319</td></tr><tr><td>update</td><td>src\wedm\modules\dielectric.py:94</td><td>0.420</td><td>0.343</td></tr><tr><td>_get_debris_short_probability</td><td>src\wedm\modules\ignition.py:127</td><td>0.381</td><td>0.360</td></tr><tr><td>accumulate_damage</td><td>src\wedm\modules\wire.py:66</td><td>0.367</td><td>0.367</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="subpanel">
+                <h3>0.20 mm / 400 seg</h3>
+                <div class="table-wrap compact">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Function</th>
+                                <th>Location</th>
+                                <th>Cumulative s</th>
+                                <th>Total s</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>step</td><td>src\wedm\envs\wire_edm.py:126</td><td>9.345</td><td>0.906</td></tr><tr><td>update</td><td>src\wedm\modules\wire.py:294</td><td>4.470</td><td>3.323</td></tr><tr><td>update</td><td>src\wedm\modules\ignition.py:187</td><td>2.573</td><td>0.161</td></tr><tr><td>_update_short_circuit_detection</td><td>src\wedm\modules\ignition.py:209</td><td>1.828</td><td>1.236</td></tr><tr><td>_accumulate_damage</td><td>src\wedm\modules\wire.py:591</td><td>0.686</td><td>0.418</td></tr><tr><td>update</td><td>src\wedm\modules\dielectric.py:94</td><td>0.561</td><td>0.454</td></tr><tr><td>_get_debris_short_probability</td><td>src\wedm\modules\ignition.py:127</td><td>0.476</td><td>0.448</td></tr><tr><td>_handle_idle_state</td><td>src\wedm\modules\ignition.py:271</td><td>0.425</td><td>0.100</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+        </div>
+    </section>
+    
+        
+    <section class="panel">
+        <div class="section-kicker">History</div>
+        <h2>Tracked Profiling Snapshots</h2>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Report</th>
+                        <th>Collected</th>
+                        <th>Scenario</th>
+                        <th>Median steps/s</th>
+                        <th>Wall s / sim s</th>
+                        <th>% of target</th>
+                        <th>Termination</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>realtime_baseline_20260321</td><td>2026-03-21 22:17:30</td><td>0.05 mm / 1600 seg</td><td>24,372.43</td><td>41.03x</td><td>2.44%</td><td>wire_broken</td></tr><tr><td>realtime_baseline_20260321</td><td>2026-03-21 22:17:30</td><td>0.20 mm / 400 seg</td><td>37,714.66</td><td>26.51x</td><td>3.77%</td><td>wire_broken</td></tr><tr><td>post_pc01_hotspots</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>2,559.15</td><td>390.75x</td><td>0.26%</td><td>completed</td></tr><tr><td>post_pc01_hotspots</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>7,293.25</td><td>137.11x</td><td>0.73%</td><td>completed</td></tr><tr><td>pc02_after_hotspots</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>12,676.37</td><td>78.89x</td><td>1.27%</td><td>completed</td></tr><tr><td>pc02_after_hotspots</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>16,894.23</td><td>59.19x</td><td>1.69%</td><td>completed</td></tr><tr><td>pc02_before</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>2,044.98</td><td>489.00x</td><td>0.20%</td><td>completed</td></tr><tr><td>pc02_before</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>5,710.22</td><td>175.12x</td><td>0.57%</td><td>completed</td></tr><tr><td>pc02_after</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>30,284.02</td><td>33.02x</td><td>3.03%</td><td>completed</td></tr><tr><td>pc02_after</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>32,790.51</td><td>30.50x</td><td>3.28%</td><td>completed</td></tr><tr><td>pc01_before</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>1,358.80</td><td>735.94x</td><td>0.14%</td><td>completed</td></tr><tr><td>pc01_before</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>4,882.39</td><td>204.82x</td><td>0.49%</td><td>completed</td></tr><tr><td>pc01_after</td><td>2026-03-21 11:35:34</td><td>0.05 mm / 1600 seg</td><td>2,443.22</td><td>409.30x</td><td>0.24%</td><td>completed</td></tr><tr><td>pc01_after</td><td>2026-03-21 11:35:34</td><td>0.20 mm / 400 seg</td><td>7,379.64</td><td>135.51x</td><td>0.74%</td><td>completed</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+    
+
+        <p class="footer-note">
+            Latest report path: <strong>outputs/profiling/realtime_baseline_20260321.json</strong>.
+            Report files are discovered from the profiling JSON schema only, so unrelated JSON artifacts are ignored.
+        </p>
+    </div>
+</body>
+</html>

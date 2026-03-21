@@ -1,0 +1,284 @@
+{
+	"nodes": [
+		{
+			"id": "group-perfba",
+			"type": "group",
+			"x": 20,
+			"y": 40,
+			"width": 540,
+			"height": 3380,
+			"label": "Perf Baseline"
+		},
+		{
+			"id": "group-perfho",
+			"type": "group",
+			"x": 1880,
+			"y": 1600,
+			"width": 1030,
+			"height": 1040,
+			"label": "Perf Hotspots"
+		},
+		{
+			"id": "group-perfgu",
+			"type": "group",
+			"x": 640,
+			"y": 820,
+			"width": 540,
+			"height": 1040,
+			"label": "Perf Guardrails"
+		},
+		{
+			"id": "group-perfre",
+			"type": "group",
+			"x": 1260,
+			"y": 820,
+			"width": 540,
+			"height": 1040,
+			"label": "Perf Reporting"
+		},
+		{
+			"id": "legend",
+			"type": "text",
+			"text": "## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent",
+			"x": -540,
+			"y": -310,
+			"width": 380,
+			"height": 230,
+			"color": "0"
+		},
+		{
+			"id": "canvas-warnings",
+			"type": "text",
+			"text": "## Warnings\n✓ None",
+			"x": -540,
+			"y": -530,
+			"width": 380,
+			"height": 200,
+			"color": "3"
+		},
+		{
+			"id": "canvas-errors",
+			"type": "text",
+			"text": "## Errors\n✓ None",
+			"x": -540,
+			"y": -750,
+			"width": 380,
+			"height": 200,
+			"color": "1"
+		},
+		{
+			"id": "3cbdcc10",
+			"type": "text",
+			"text": "## PB-01 Freeze representative realtime benchmark\nFrozen the conservative benchmark contract in docs/performance_realtime_baseline.md using scripts/profile_simulation.py with 0.2 mm and 0.05 mm meshes, steps=200000, warmup=5000, repeats=2, hotspots=both, and baseline report outputs/profiling/realtime_baseline_20260321.json. Current medians are 37714.66 steps/s at 0.2 mm (26.51x slower than realtime) and 24372.43 steps/s at 0.05 mm (41.03x slower than realtime). Dashboard artifact: outputs/profiling/performance_dashboard.html.",
+			"x": 80,
+			"y": 80,
+			"width": 420,
+			"height": 400,
+			"color": "4"
+		},
+		{
+			"id": "d378c8c0",
+			"type": "text",
+			"text": "## PB-02 Stabilize benchmark conditions\nRecord machine and power context so runs stay comparable. Capture whether the CPU is on battery, underclocked, or thermally limited, and keep a repeatable profiling preset for this PC.",
+			"x": 80,
+			"y": 860,
+			"width": 420,
+			"height": 220,
+			"color": "1"
+		},
+		{
+			"id": "c76f8859",
+			"type": "text",
+			"text": "## PG-01 Define no-regression fidelity checks\nOptimization work must preserve physics outputs and exported data. Compare crater count, mean wire temperature, max damage, termination reason, and dashboard-required signals against a baseline run.",
+			"x": 700,
+			"y": 860,
+			"width": 420,
+			"height": 220,
+			"color": "1"
+		},
+		{
+			"id": "f34bd19e",
+			"type": "text",
+			"text": "## PG-02 Automate perf-vs-fidelity verification\nMake it easy to rerun throughput and fidelity checks together before accepting optimizations.",
+			"x": 700,
+			"y": 1640,
+			"width": 420,
+			"height": 180,
+			"color": "0"
+		},
+		{
+			"id": "803d9f8e",
+			"type": "text",
+			"text": "## PR-01 Build bottleneck dashboard HTML\nGenerate a standalone HTML report from profiling JSON files with throughput trends, progress toward the realtime target, module wall-share bars, and top cProfile hotspots.",
+			"x": 1320,
+			"y": 860,
+			"width": 420,
+			"height": 220,
+			"color": "1"
+		},
+		{
+			"id": "91bfd94b",
+			"type": "text",
+			"text": "## PR-02 Track progress history\nArchive each profiling snapshot and surface before/after comparisons so the board follows sustained gains instead of one-off wins.",
+			"x": 1320,
+			"y": 1640,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		},
+		{
+			"id": "ce3f053c",
+			"type": "text",
+			"text": "## PH-01 Reduce wire module wall share\nAttack the wire update path first. It is the dominant hotspot in the current baseline and must improve without losing thermal or damage fidelity.",
+			"x": 1940,
+			"y": 1640,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		},
+		{
+			"id": "f9d70be6",
+			"type": "text",
+			"text": "## PH-02 Reduce ignition short-circuit overhead\nCut the cost of ignition bookkeeping and short-circuit detection while preserving spark statistics and transition behavior.",
+			"x": 2430,
+			"y": 1640,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		},
+		{
+			"id": "21775b2a",
+			"type": "text",
+			"text": "## PH-03 Reduce environment bookkeeping overhead\nTrim per-step action, observation, reward, and termination overhead after the dominant physics hotspots are under control.",
+			"x": 1940,
+			"y": 2420,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		},
+		{
+			"id": "ff634484",
+			"type": "text",
+			"text": "## PB-03 Reach conservative realtime milestone\nClose the gap to 1,000,000 steps/s on this PC for the conservative benchmark before moving on to more aggressive approximations.",
+			"x": 80,
+			"y": 3200,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		}
+	],
+	"edges": [
+		{
+			"id": "edge-001",
+			"fromNode": "3cbdcc10",
+			"fromSide": "bottom",
+			"toNode": "d378c8c0",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-002",
+			"fromNode": "3cbdcc10",
+			"fromSide": "bottom",
+			"toNode": "c76f8859",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-003",
+			"fromNode": "c76f8859",
+			"fromSide": "bottom",
+			"toNode": "f34bd19e",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-004",
+			"fromNode": "d378c8c0",
+			"fromSide": "bottom",
+			"toNode": "f34bd19e",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-005",
+			"fromNode": "3cbdcc10",
+			"fromSide": "bottom",
+			"toNode": "803d9f8e",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-006",
+			"fromNode": "803d9f8e",
+			"fromSide": "bottom",
+			"toNode": "91bfd94b",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-007",
+			"fromNode": "d378c8c0",
+			"fromSide": "bottom",
+			"toNode": "91bfd94b",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-008",
+			"fromNode": "c76f8859",
+			"fromSide": "bottom",
+			"toNode": "ce3f053c",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-009",
+			"fromNode": "803d9f8e",
+			"fromSide": "bottom",
+			"toNode": "ce3f053c",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-010",
+			"fromNode": "c76f8859",
+			"fromSide": "bottom",
+			"toNode": "f9d70be6",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-011",
+			"fromNode": "803d9f8e",
+			"fromSide": "bottom",
+			"toNode": "f9d70be6",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-012",
+			"fromNode": "ce3f053c",
+			"fromSide": "bottom",
+			"toNode": "21775b2a",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-013",
+			"fromNode": "f9d70be6",
+			"fromSide": "bottom",
+			"toNode": "21775b2a",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-014",
+			"fromNode": "f34bd19e",
+			"fromSide": "bottom",
+			"toNode": "21775b2a",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-015",
+			"fromNode": "91bfd94b",
+			"fromSide": "bottom",
+			"toNode": "ff634484",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-016",
+			"fromNode": "21775b2a",
+			"fromSide": "bottom",
+			"toNode": "ff634484",
+			"toSide": "top"
+		}
+	]
+}

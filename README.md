@@ -85,11 +85,24 @@ The script reports:
 - `cProfile` hotspots for deeper function-level analysis
 - crater counts per run so you can confirm the benchmark is actually sparking
 
+The conservative realtime benchmark contract for this PC is documented in
+[`docs/performance_realtime_baseline.md`](docs/performance_realtime_baseline.md).
+
 You can also write a machine-readable snapshot for later comparison:
 
 ```bash
 python scripts/profile_simulation.py --json-out outputs/profiling/baseline.json
 ```
+
+To turn collected profiling JSON files into a standalone progress dashboard:
+
+```bash
+python scripts/build_perf_dashboard.py
+```
+
+That writes `outputs/profiling/performance_dashboard.html`, which tracks
+throughput history, distance to the 1 s wall / 1 s simulated target, and the
+latest module plus `cProfile` bottlenecks.
 
 ## Advanced Usage
 
