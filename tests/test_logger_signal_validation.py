@@ -31,6 +31,29 @@ def test_logger_accepts_supported_derived_signal():
     assert logger.get_data()["gap_um"] == [13.0]
 
 
+def test_logger_accepts_wire_diagnostics_from_state_contract():
+    logger = SimulationLogger(
+        _memory_logger_config(
+            ["wire_head_idx", "wire_offset_mm", "wire_material_positions_mm"]
+        )
+    )
+    state = EDMState(
+        wire_head_idx=7,
+        wire_offset_mm=12.5,
+        wire_material_positions_mm=np.array([0.1, 0.3, 0.5], dtype=np.float64),
+    )
+
+    logger.collect(state)
+
+    data = logger.get_data()
+    assert data["wire_head_idx"] == [7]
+    assert data["wire_offset_mm"] == [12.5]
+    np.testing.assert_array_equal(
+        data["wire_material_positions_mm"][0],
+        np.array([0.1, 0.3, 0.5], dtype=np.float64),
+    )
+
+
 def test_logger_rejects_unknown_signal_name():
     with pytest.raises(ValueError, match="Unknown signals_to_log entries: gap_width"):
         SimulationLogger(_memory_logger_config(["gap_width"]))

@@ -63,7 +63,7 @@ class WireModuleParameters:
 _DAMAGE_TEMPERATURE_THRESHOLD_K = 423.0
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=False, fastmath=True)
 def accumulate_damage(
     damage: np.ndarray,
     temperature: np.ndarray,

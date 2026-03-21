@@ -18,12 +18,14 @@ import numpy as np
 import sys
 import pathlib
 
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from src.wedm.envs import WireEDMEnv
-from src.wedm.utils.logger import SimulationLogger, LoggerConfig
-from src.wedm.modules.wire import WireModuleParameters
-from src.wedm.core.env_config import EnvironmentConfig
+from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
+from wedm.utils.logger import SimulationLogger, LoggerConfig
 
 
 def create_gap_controller(
@@ -233,8 +235,8 @@ def initialize_environment(
     control_mode: str,
     seed: int = 0,
     log_strategy: str = "full_field",
-    segment_len_um: float = 200.0,
-    workpiece_height_mm: float = 20.0,
+    segment_len_um: float = 500.0,
+    workpiece_height_mm: float = 10.0,
 ) -> WireEDMEnv:
     """
     Initialize and setup the EDM environment with appropriate wire configuration.
@@ -1122,7 +1124,7 @@ def main():
             # Convert µm/s to mm/min: 1 µm/s = 0.06 mm/min
             avg_velocity_mm_min = avg_velocity_um_s * 0.06
             print(
-                f"\n📈 Average wire speed (last 100ms): {avg_velocity_mm_min:.2f} mm/min ({avg_velocity_um_s:.1f} µm/s)"
+                f"\n[INFO] Average wire speed (last 100ms): {avg_velocity_mm_min:.2f} mm/min ({avg_velocity_um_s:.1f} µm/s)"
             )
         else:
             print(f"\n[INFO] Insufficient data for last 100ms speed calculation")

@@ -183,6 +183,41 @@ def test_numpy_logger_writes_pack_and_decomposes_spark_status(tmp_path):
     )
 
 
+def test_numpy_logger_writes_wire_material_positions_from_state_contract(tmp_path):
+    output_path = tmp_path / "wire_positions_pack.npz"
+    logger = SimulationLogger(
+        _numpy_logger_config(
+            ["time", "wire_temperature", "wire_material_positions_mm"], output_path
+        )
+    )
+
+    logger.collect(
+        EDMState(
+            time=0,
+            wire_temperature=np.array([10.0, 20.0], dtype=np.float32),
+            wire_material_positions_mm=np.array([0.0, 0.2], dtype=np.float64),
+        )
+    )
+    logger.collect(
+        EDMState(
+            time=1,
+            wire_temperature=np.array([11.0, 21.0], dtype=np.float32),
+            wire_material_positions_mm=np.array([0.1, 0.3], dtype=np.float64),
+        )
+    )
+    logger.finalize()
+
+    with zipfile.ZipFile(output_path) as zf:
+        header = json.loads(zf.read("header.json"))
+
+    manifest_names = {entry["name"] for entry in header["arrays"]}
+    assert "wire_material_positions_mm" in manifest_names
+    np.testing.assert_array_equal(
+        _read_packed_array(output_path, "wire_material_positions_mm"),
+        np.array([[0.0, 0.2], [0.1, 0.3]], dtype=np.float64),
+    )
+
+
 def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, capsys):
     output_path = tmp_path / "partial_pack.npz"
     logger = SimulationLogger(_numpy_logger_config(["time"], output_path))

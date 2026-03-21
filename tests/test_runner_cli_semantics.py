@@ -52,3 +52,29 @@ def test_experiment_runner_rejects_legacy_target_voltage_flag() -> None:
     assert "ambiguous" in result.stderr
     assert "--generator-voltage" in result.stderr
     assert "--target-avg-voltage" in result.stderr
+
+
+def test_example_runner_smoke_run_completes(tmp_path) -> None:
+    output_path = tmp_path / "example_smoke.npz"
+    result = run_cli(
+        EXAMPLE_RUNNER,
+        "--steps",
+        "5",
+        "--quiet",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output_path.exists()
+
+
+def test_experiment_runner_smoke_run_completes() -> None:
+    result = run_cli(
+        EXPERIMENT_RUNNER,
+        "--steps",
+        "5",
+        "--no-log",
+    )
+
+    assert result.returncode == 0, result.stderr
