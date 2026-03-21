@@ -31,6 +31,7 @@ def create_gap_controller(
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
+    generator_voltage: float = 80.0,
 ):  # µm
     """Create adaptive gap controller that works with both control modes."""
 
@@ -49,7 +50,7 @@ def create_gap_controller(
         return {
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
+                "target_voltage": np.array([generator_voltage], dtype=np.float32),
                 # Current mode selection (1-19 maps directly to I1-I19):
                 # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
                 "current_mode": np.array([current_mode], dtype=np.int32),
@@ -62,10 +63,11 @@ def create_gap_controller(
 
 
 def create_voltage_controller(
-    target_voltage: float = 30.0,
+    target_avg_voltage: float = 30.0,
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
+    generator_voltage: float = 80.0,
 ):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
 
@@ -87,7 +89,7 @@ def create_voltage_controller(
             avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
 
         # PI control
-        error = target_voltage - avg_voltage
+        error = target_avg_voltage - avg_voltage
         integral_error += error
 
         # Integral windup protection
@@ -111,7 +113,31 @@ def create_voltage_controller(
         return {
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
+                "target_voltage": np.array([generator_voltage], dtype=np.float32),
+                "current_mode": np.array([current_mode], dtype=np.int32),
+                "ON_time": np.array([on_time], dtype=np.float32),
+                "OFF_time": np.array([off_time], dtype=np.float32),
+            },
+        }
+
+    return controller
+
+
+def create_fixed_servo_controller(
+    servo: float = 0.25,
+    current_mode: int = 7,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
+    generator_voltage: float = 80.0,
+):
+    """Create a controller that keeps a constant servo command."""
+
+    def controller(env: WireEDMEnv) -> Dict[str, Any]:
+        del env
+        return {
+            "servo": np.array([servo], dtype=np.float32),
+            "generator_control": {
+                "target_voltage": np.array([generator_voltage], dtype=np.float32),
                 "current_mode": np.array([current_mode], dtype=np.int32),
                 "ON_time": np.array([on_time], dtype=np.float32),
                 "OFF_time": np.array([off_time], dtype=np.float32),
@@ -267,7 +293,10 @@ def run_simulation(
     verbose: bool,
     logger_config: LoggerConfig,
     controller_type: str = "gap",
-    target_voltage: float = 30.0,
+    target_gap: float = 5.0,
+    target_avg_voltage: float = 30.0,
+    generator_voltage: float = 80.0,
+    fixed_servo: float = 0.25,
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
@@ -278,11 +307,15 @@ def run_simulation(
     )
 
     if controller_type == "gap":
-        print(f"[CTRL] Using GAP controller (target: 5.0 um)")
-    else:
+        print(f"[CTRL] Using GAP controller (target: {target_gap:.1f} um)")
+    elif controller_type == "voltage":
         print(
-            f"[CTRL] Using VOLTAGE controller (target: {target_voltage:.1f} V average over 1ms)"
+            "[CTRL] Using VOLTAGE controller "
+            f"(target: {target_avg_voltage:.1f} V average over 1ms)"
         )
+    else:
+        print(f"[CTRL] Using FIXED-SERVO controller (servo: {fixed_servo:.3f})")
+    print(f"[GEN] Generator voltage setpoint: {generator_voltage:.1f} V")
 
     logger = SimulationLogger(config=logger_config, env_reference=env)
     logger.reset()
@@ -290,25 +323,37 @@ def run_simulation(
     # Create the appropriate controller
     if controller_type == "gap":
         controller = create_gap_controller(
-            current_mode=current_mode, on_time=on_time, off_time=off_time
-        )
-    else:  # voltage
-        controller = create_voltage_controller(
-            target_voltage,
+            desired_gap=target_gap,
             current_mode=current_mode,
             on_time=on_time,
             off_time=off_time,
+            generator_voltage=generator_voltage,
+        )
+    elif controller_type == "voltage":
+        controller = create_voltage_controller(
+            target_avg_voltage=target_avg_voltage,
+            current_mode=current_mode,
+            on_time=on_time,
+            off_time=off_time,
+            generator_voltage=generator_voltage,
+        )
+    else:
+        controller = create_fixed_servo_controller(
+            servo=fixed_servo,
+            current_mode=current_mode,
+            on_time=on_time,
+            off_time=off_time,
+            generator_voltage=generator_voltage,
         )
 
     # For voltage controller, maintain voltage history over last 1ms
     voltage_history = []
     time_history = []
 
-    action = (
-        controller(env)
-        if controller_type == "gap"
-        else controller(env, voltage_history)
-    )
+    if controller_type == "voltage":
+        action = controller(env, voltage_history)
+    else:
+        action = controller(env)
 
     # Print simulation start message
     print(f"[START] Starting simulation for {max_steps:,} us...")
@@ -337,20 +382,35 @@ def run_simulation(
         if info.get("control_step", False):
             if controller_type == "gap":
                 action = controller(env)
-            else:  # voltage - pass the collected voltage history
+            elif controller_type == "voltage":
                 action = controller(
                     env, voltage_history.copy()
                 )  # Pass copy to avoid modification
+            else:
+                action = controller(env)
 
             if verbose:
                 # Calculate true average for display
                 if controller_type == "voltage" and voltage_history:
                     true_avg_voltage = np.mean(voltage_history)
                     print_step_info(
-                        env, step, controller_type, target_voltage, true_avg_voltage
+                        env,
+                        step,
+                        controller_type,
+                        target_gap=target_gap,
+                        target_avg_voltage=target_avg_voltage,
+                        fixed_servo=fixed_servo,
+                        true_avg_voltage=true_avg_voltage,
                     )
                 else:
-                    print_step_info(env, step, controller_type, target_voltage)
+                    print_step_info(
+                        env,
+                        step,
+                        controller_type,
+                        target_gap=target_gap,
+                        target_avg_voltage=target_avg_voltage,
+                        fixed_servo=fixed_servo,
+                    )
 
         # Check termination
         if terminated or truncated:
@@ -377,7 +437,9 @@ def print_step_info(
     env: WireEDMEnv,
     step: int,
     controller_type: str = "gap",
-    target_voltage: float = 30.0,
+    target_gap: float = 5.0,
+    target_avg_voltage: float = 30.0,
+    fixed_servo: float = 0.25,
     true_avg_voltage: float = None,
 ) -> None:
     """Print verbose step information."""
@@ -390,26 +452,36 @@ def print_step_info(
     if controller_type == "gap":
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"gap={gap:6.1f} µm   "
+            f"gap={gap:6.1f} µm (target={target_gap:4.1f})   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
             f"V={env.state.voltage or 0.0:6.1f}  I={env.state.current or 0.0:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
-    else:  # voltage controller
+    elif controller_type == "voltage":
         current_voltage = env.state.voltage or 0.0
         # Use true average if available, otherwise use current voltage
         display_avg = (
             true_avg_voltage if true_avg_voltage is not None else current_voltage
         )
-        voltage_error = target_voltage - display_avg
+        voltage_error = target_avg_voltage - display_avg
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"Vavg={display_avg:6.1f} (target={target_voltage:4.1f}, err={voltage_error:6.1f})   "
+            f"Vavg={display_avg:6.1f} (target={target_avg_voltage:4.1f}, err={voltage_error:6.1f})   "
             f"gap={gap:6.1f} µm   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
             f"I={env.state.current or 0.0:6.1f}  "
+            f"AvgWireT={avg_wire_temp:6.1f} K"
+        )
+    else:
+        print(
+            f"[{env.state.time/1000:.1f} ms] "
+            f"gap={gap:6.1f} µm   "
+            f"servo={fixed_servo:6.2f}   "
+            f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
+            f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
+            f"V={env.state.voltage or 0.0:6.1f}  I={env.state.current or 0.0:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
 
@@ -804,7 +876,9 @@ def generate_output_filename(
     workpiece_height: float,
     current_mode: int,
     controller: str,
-    target_voltage: float = None,
+    target_avg_voltage: float = None,
+    generator_voltage: float = 80.0,
+    fixed_servo: float = None,
     on_time: float = 2.0,
     off_time: float = 33.0,
     mode: str = "position",
@@ -819,11 +893,14 @@ def generate_output_filename(
     parts.append(f"seg{segment_len:.0f}um")
     parts.append(f"h{workpiece_height:.0f}mm")
     parts.append(f"I{current_mode}")
+    parts.append(f"Vgen{generator_voltage:.0f}")
     parts.append(f"Ton{on_time:.1f}us")
     parts.append(f"Toff{off_time:.1f}us")
     parts.append(controller)
-    if controller == "voltage" and target_voltage is not None:
-        parts.append(f"V{target_voltage:.0f}")
+    if controller == "voltage" and target_avg_voltage is not None:
+        parts.append(f"Vavg{target_avg_voltage:.0f}")
+    if controller == "fixed-servo" and fixed_servo is not None:
+        parts.append(f"servo{fixed_servo:.2f}")
     parts.append(mode)
 
     # Add timestamp to avoid overwrites
@@ -871,15 +948,34 @@ def main():
     parser.add_argument(
         "--controller",
         type=str,
-        choices=["gap", "voltage"],
+        choices=["gap", "voltage", "fixed-servo"],
         default="gap",
-        help="Control strategy: 'gap' for constant gap control, 'voltage' for average voltage control (default: gap)",
+        help="Control strategy for the servo loop (default: gap)",
     )
     parser.add_argument(
-        "--target-voltage",
+        "--target-gap",
+        type=float,
+        default=5.0,
+        help="Target gap for gap controller in um (default: 5.0)",
+    )
+    parser.add_argument(
+        "--target-avg-voltage",
         type=float,
         default=30.0,
         help="Target average voltage for voltage controller in V (default: 30.0)",
+    )
+    parser.add_argument(
+        "--target-voltage",
+        dest="legacy_target_voltage",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--servo",
+        type=float,
+        default=0.25,
+        help="Fixed servo command used by fixed-servo controller (default: 0.25)",
     )
     parser.add_argument(
         "--segment-len",
@@ -915,6 +1011,12 @@ def main():
         help="Pulse OFF time in µs (default: 33.0)",
     )
     parser.add_argument(
+        "--generator-voltage",
+        type=float,
+        default=80.0,
+        help="Generator target voltage in V (default: 80.0)",
+    )
+    parser.add_argument(
         "--output",
         "-o",
         type=str,
@@ -923,6 +1025,18 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.legacy_target_voltage is not None:
+        parser.error(
+            "`--target-voltage` is ambiguous. Use `--generator-voltage` for the "
+            "generator setpoint or `--target-avg-voltage` for voltage control."
+        )
+
+    if args.target_avg_voltage < 0.0:
+        parser.error("`--target-avg-voltage` must be non-negative.")
+
+    if args.generator_voltage < 0.0:
+        parser.error("`--generator-voltage` must be non-negative.")
 
     # Process flexible -I argument
     current_mode = 7
@@ -946,9 +1060,11 @@ def main():
             workpiece_height=args.workpiece_height,
             current_mode=current_mode,
             controller=args.controller,
-            target_voltage=(
-                args.target_voltage if args.controller == "voltage" else None
+            target_avg_voltage=(
+                args.target_avg_voltage if args.controller == "voltage" else None
             ),
+            generator_voltage=args.generator_voltage,
+            fixed_servo=(args.servo if args.controller == "fixed-servo" else None),
             on_time=on_time,
             off_time=args.off_time,
             mode=args.mode,
@@ -978,7 +1094,10 @@ def main():
         args.verbose,
         logger_config,
         args.controller,
-        args.target_voltage,
+        args.target_gap,
+        args.target_avg_voltage,
+        args.generator_voltage,
+        args.servo,
         current_mode,
         on_time,
         args.off_time,

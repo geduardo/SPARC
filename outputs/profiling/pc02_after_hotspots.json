@@ -1,0 +1,338 @@
+{
+  "metadata": {
+    "repo_root": "C:\\Users\\GonzalezSanchezEduar\\Repositorios\\SPARC (fresh clone)\\SPARC",
+    "import_root": "C:\\Users\\GonzalezSanchezEduar\\Repositorios\\SPARC (fresh clone)\\SPARC\\src",
+    "steps": 50000,
+    "warmup": 2000,
+    "repeats": 1,
+    "seed": 123,
+    "initial_gap_um": 12.0,
+    "servo_interval_us": 1,
+    "workpiece_height_mm": 20.0,
+    "segment_lengths_mm": [
+      0.2,
+      0.05
+    ],
+    "hotspots": "both",
+    "profile_sort": "cumulative"
+  },
+  "action": {
+    "servo": 0.25,
+    "target_voltage": 90.0,
+    "current_mode": "I5",
+    "on_time_us": 3.0,
+    "off_time_us": 20.0
+  },
+  "scenarios": [
+    {
+      "segment_len_mm": 0.2,
+      "n_segments": 400,
+      "benchmark": {
+        "repeats": 1,
+        "steps_requested": 50000,
+        "median_wall_seconds": 2.959591200000432,
+        "median_steps_per_second": 16894.22512135889,
+        "mean_steps_per_second": 16894.22512135889,
+        "samples": [
+          {
+            "wall_seconds": 2.959591200000432,
+            "steps_run": 50000,
+            "steps_per_second": 16894.22512135889,
+            "simulated_us": 50000,
+            "termination_reason": "completed",
+            "crater_count": 775,
+            "wire_temperature_mean": 336.5390319824219,
+            "wire_max_damage": 0.000166705144366146
+          }
+        ]
+      },
+      "module_hotspots": [
+        {
+          "name": "wire",
+          "wall_share_pct": 49.17137807852349,
+          "avg_call_us": 35.253628,
+          "calls": 50000,
+          "total_seconds": 1.7626814
+        },
+        {
+          "name": "ignition",
+          "wall_share_pct": 24.904981383498754,
+          "avg_call_us": 17.855732,
+          "calls": 50000,
+          "total_seconds": 0.8927866
+        },
+        {
+          "name": "env._apply_action",
+          "wall_share_pct": 3.9528519979228434,
+          "avg_call_us": 2.8340140000000003,
+          "calls": 50000,
+          "total_seconds": 0.1417007
+        },
+        {
+          "name": "dielectric",
+          "wall_share_pct": 3.823094762649213,
+          "avg_call_us": 2.740984,
+          "calls": 50000,
+          "total_seconds": 0.1370492
+        },
+        {
+          "name": "mechanics",
+          "wall_share_pct": 2.6886290539298754,
+          "avg_call_us": 1.927624,
+          "calls": 50000,
+          "total_seconds": 0.0963812
+        },
+        {
+          "name": "material",
+          "wall_share_pct": 1.2046375512068825,
+          "avg_call_us": 0.8636699999999999,
+          "calls": 50000,
+          "total_seconds": 0.0431835
+        },
+        {
+          "name": "env._check_termination",
+          "wall_share_pct": 1.0910180264794835,
+          "avg_call_us": 0.7822100000000001,
+          "calls": 50000,
+          "total_seconds": 0.0391105
+        },
+        {
+          "name": "env._get_obs",
+          "wall_share_pct": 0.5397248226057555,
+          "avg_call_us": 0.3869502609947801,
+          "calls": 50001,
+          "total_seconds": 0.0193479
+        }
+      ],
+      "cprofile_hotspots": [
+        {
+          "function": "step",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 126,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.5208413000000001,
+          "cumulative_seconds": 5.283596200000001
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 294,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 1.9731546000000002,
+          "cumulative_seconds": 2.4420939
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 187,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.1007596,
+          "cumulative_seconds": 1.4955755000000002
+        },
+        {
+          "function": "_update_short_circuit_detection",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 209,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.6832144,
+          "cumulative_seconds": 1.0283212000000002
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\dielectric.py",
+          "line": 94,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.257938,
+          "cumulative_seconds": 0.3157518
+        },
+        {
+          "function": "_handle_idle_state",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 271,
+          "primitive_calls": 32175,
+          "total_calls": 32175,
+          "total_seconds": 0.0616239,
+          "cumulative_seconds": 0.3029267
+        },
+        {
+          "function": "_get_debris_short_probability",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 127,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.2598923,
+          "cumulative_seconds": 0.2771446
+        },
+        {
+          "function": "_accumulate_damage",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 591,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.1904559,
+          "cumulative_seconds": 0.2761443
+        }
+      ]
+    },
+    {
+      "segment_len_mm": 0.05,
+      "n_segments": 1600,
+      "benchmark": {
+        "repeats": 1,
+        "steps_requested": 50000,
+        "median_wall_seconds": 3.944345899995824,
+        "median_steps_per_second": 12676.37303311886,
+        "mean_steps_per_second": 12676.37303311886,
+        "samples": [
+          {
+            "wall_seconds": 3.944345899995824,
+            "steps_run": 50000,
+            "steps_per_second": 12676.37303311886,
+            "simulated_us": 50000,
+            "termination_reason": "completed",
+            "crater_count": 775,
+            "wire_temperature_mean": 336.5478515625,
+            "wire_max_damage": 0.013147661141803662
+          }
+        ]
+      },
+      "module_hotspots": [
+        {
+          "name": "wire",
+          "wall_share_pct": 54.64241768644731,
+          "avg_call_us": 46.456436000000004,
+          "calls": 50000,
+          "total_seconds": 2.3228218
+        },
+        {
+          "name": "ignition",
+          "wall_share_pct": 22.02791192622253,
+          "avg_call_us": 18.72791,
+          "calls": 50000,
+          "total_seconds": 0.9363955
+        },
+        {
+          "name": "env._apply_action",
+          "wall_share_pct": 3.8511086663235634,
+          "avg_call_us": 3.274174,
+          "calls": 50000,
+          "total_seconds": 0.1637087
+        },
+        {
+          "name": "dielectric",
+          "wall_share_pct": 3.2114539858486064,
+          "avg_call_us": 2.730346,
+          "calls": 50000,
+          "total_seconds": 0.1365173
+        },
+        {
+          "name": "mechanics",
+          "wall_share_pct": 2.4360790514134925,
+          "avg_call_us": 2.07113,
+          "calls": 50000,
+          "total_seconds": 0.1035565
+        },
+        {
+          "name": "material",
+          "wall_share_pct": 1.0402004502568392,
+          "avg_call_us": 0.884368,
+          "calls": 50000,
+          "total_seconds": 0.0442184
+        },
+        {
+          "name": "env._check_termination",
+          "wall_share_pct": 0.9359625715653199,
+          "avg_call_us": 0.795746,
+          "calls": 50000,
+          "total_seconds": 0.0397873
+        },
+        {
+          "name": "env._get_obs",
+          "wall_share_pct": 0.5105964669213439,
+          "avg_call_us": 0.4340953180936381,
+          "calls": 50001,
+          "total_seconds": 0.0217052
+        }
+      ],
+      "cprofile_hotspots": [
+        {
+          "function": "step",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 126,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.5707822,
+          "cumulative_seconds": 6.312591
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 294,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 2.5103383000000004,
+          "cumulative_seconds": 3.1992434000000003
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 187,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.1075648,
+          "cumulative_seconds": 1.6344923
+        },
+        {
+          "function": "_update_short_circuit_detection",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 209,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.7365762,
+          "cumulative_seconds": 1.1320645
+        },
+        {
+          "function": "_accumulate_damage",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 591,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.2412957,
+          "cumulative_seconds": 0.44287960000000004
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\dielectric.py",
+          "line": 94,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.2766996,
+          "cumulative_seconds": 0.33854100000000004
+        },
+        {
+          "function": "_handle_idle_state",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 271,
+          "primitive_calls": 32175,
+          "total_calls": 32175,
+          "total_seconds": 0.0673494,
+          "cumulative_seconds": 0.3303974
+        },
+        {
+          "function": "_get_debris_short_probability",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 127,
+          "primitive_calls": 50000,
+          "total_calls": 50000,
+          "total_seconds": 0.3018352,
+          "cumulative_seconds": 0.3192227
+        }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,8 @@
-# src/wedm/modules/wire_optimized.py
+# src/wedm/modules/wire.py
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, prange
+from numba import njit
 from dataclasses import dataclass
 
 from ..core.module import EDMModule
@@ -60,88 +60,31 @@ class WireModuleParameters:
     gas_constant: float = 8.314  # [J/(mol·K)] Universal gas constant R
 
 
-# Numba-compiled functions for performance-critical calculations
-@njit(cache=True, fastmath=True, parallel=True)
-def compute_thermal_update(
-    T,
-    dT_dt,
-    n_segments,
-    spool_T,
-    k_cond_coeff,
-    I_squared,
-    joule_geom_factor,
-    rho_elec,
-    alpha_rho,
-    temp_ref,
-    plasma_idx_phys,
-    plasma_heat,
-    h_eff_base,
-    h_eff_zone_phys,
-    dielectric_temp,
-    A,
-    adv_coeff,
-    temp_update_factor,
-    contact_bottom_idx_phys,
-    contact_top_idx_phys,
-    head_idx,
-):
-    """Optimized thermal update using circular-buffer aware indexing.
+_DAMAGE_TEMPERATURE_THRESHOLD_K = 423.0
 
-    Arrays T and dT_dt are stored in ring-buffer order. Physical order from inlet (i=0)
-    to outlet (i=N-1) maps to storage index s(i) = (head_idx + i + 1) % N.
-    """
-    # Helper: map physical index -> storage index
-    N = n_segments
 
-    # Apply inlet Dirichlet (physical i=0)
-    s_inlet = (head_idx + 1) % N
-    T[s_inlet] = spool_T
+@njit(cache=True, fastmath=True)
+def accumulate_damage(
+    damage: np.ndarray,
+    temperature: np.ndarray,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> float:
+    """Update accumulated damage in-place and return the new maximum damage."""
+    max_damage = 0.0
 
-    # Reset dT/dt in storage order
-    dT_dt[:] = 0.0
+    for i in range(temperature.shape[0]):
+        current_damage = damage[i]
+        temp = temperature[i]
+        if temp > threshold_k:
+            current_damage += stress_term_dt * np.exp(activation_scale / temp)
+            damage[i] = current_damage
 
-    # 1) Conduction (physical interior: i=1..N-2), Neumann at outlet (i=N-1)
-    if N > 1:
-        for i in prange(1, N - 1):
-            s_c = (head_idx + i + 1) % N
-            s_l = (head_idx + (i - 1) + 1) % N
-            s_r = (head_idx + (i + 1) + 1) % N
-            dT_dt[s_c] = k_cond_coeff * (T[s_l] - 2.0 * T[s_c] + T[s_r])
+        if current_damage > max_damage:
+            max_damage = current_damage
 
-        # Neumann at outlet (physical i=N-1): use last interior neighbor
-        s_out = (head_idx + (N - 1) + 1) % N
-        s_out_l = (head_idx + (N - 2) + 1) % N
-        dT_dt[s_out] = k_cond_coeff * (T[s_out_l] - T[s_out])
-
-    # 2) Joule heating between physical contact indices (inclusive)
-    if I_squared > 1e-6:
-        joule_factor = joule_geom_factor * I_squared * rho_elec
-        start_i = 0 if contact_bottom_idx_phys < 0 else contact_bottom_idx_phys
-        end_i = N - 1 if contact_top_idx_phys >= N else contact_top_idx_phys
-        for i in prange(start_i, end_i + 1):
-            s_i = (head_idx + i + 1) % N
-            rho_T = 1.0 + alpha_rho * (T[s_i] - temp_ref)
-            dT_dt[s_i] += joule_factor * rho_T
-
-    # 3) Plasma heating at physical index
-    if plasma_idx_phys >= 0 and plasma_idx_phys < N:
-        s_pl = (head_idx + plasma_idx_phys + 1) % N
-        dT_dt[s_pl] += plasma_heat
-
-    # 4) Convection using physical-indexed coefficients
-    for i in prange(N):
-        s_i = (head_idx + i + 1) % N
-        conv_coeff = h_eff_zone_phys[i] * A
-        dT_dt[s_i] -= conv_coeff * (T[s_i] - dielectric_temp)
-
-    # 5) Advection removed (adv_coeff ignored)
-
-    # 6) Temperature update in storage order
-    for i in prange(N):
-        T[i] += dT_dt[i] * temp_update_factor
-
-    # Re-apply inlet Dirichlet
-    T[s_inlet] = spool_T
+    return max_damage
 
 
 class WireModule(EDMModule):
@@ -261,6 +204,15 @@ class WireModule(EDMModule):
         self.wire_stress_mpa = (
             self.params.wire_tension_force / self.S
         ) / 1e6  # Convert Pa to MPa
+        self.damage_temperature_threshold_k = _DAMAGE_TEMPERATURE_THRESHOLD_K
+        self.damage_stress_term_dt = (
+            self.params.damage_rate_constant
+            * (self.wire_stress_mpa ** self.params.damage_stress_exponent)
+            * self.dt_sim
+        )
+        self.damage_activation_scale = (
+            -self.params.damage_activation_energy / self.params.gas_constant
+        )
 
         # Cache for last computed zone mean
         self._last_zone_mean = self.params.spool_T
@@ -587,8 +539,16 @@ class WireModule(EDMModule):
                 )
                 state.wire_temperature = T_vec.copy()
 
-        # Sync damage array to state for logging/visualization
-        state.wire_damage = self._damage.copy()
+        # Sync damage array to state for logging/visualization.
+        if not isinstance(state.wire_damage, np.ndarray):
+            state.wire_damage = self._damage.copy()
+        elif state.wire_damage.shape != self._damage.shape:
+            state.wire_damage = self._damage.copy()
+        else:
+            try:
+                state.wire_damage[:] = self._damage
+            except (TypeError, ValueError):
+                state.wire_damage = self._damage.copy()
 
         # Compute zone mean only when needed
         if self.params.compute_zone_mean:
@@ -634,33 +594,13 @@ class WireModule(EDMModule):
         Damage rate: D_dot = k * sigma^n * exp(-Q / (R * T))
         Wire breaks when any segment reaches D >= 1.0
         """
-        # Pre-computed constants
-        k = self.params.damage_rate_constant
-        n = self.params.damage_stress_exponent
-        Q = self.params.damage_activation_energy
-        R = self.params.gas_constant
-        sigma = self.wire_stress_mpa
-        dt = self.dt_sim  # Time step in seconds
-
-        # Stress term (constant for all segments)
-        stress_term = k * (sigma**n)
-
-        # Temperature-dependent damage rate for each segment
-        # Only accumulate damage where T > threshold (423K = 150C)
-        # Below this temperature, damage is negligible per the paper
-        T_threshold = 423.0  # K (150C)
-
-        for i in range(self.n_segments):
-            if T[i] > T_threshold:
-                # Arrhenius term
-                arrhenius = np.exp(-Q / (R * T[i]))
-                # Damage increment
-                d_damage = stress_term * arrhenius * dt
-                # Accumulate damage
-                self._damage[i] += d_damage
-
-        # Check for wire breakage - any segment reaching D >= 1 triggers breakage
-        max_damage = np.max(self._damage)
+        max_damage = accumulate_damage(
+            self._damage,
+            T,
+            self.damage_temperature_threshold_k,
+            self.damage_stress_term_dt,
+            self.damage_activation_scale,
+        )
         state.wire_max_damage = float(max_damage)
 
         if max_damage >= 1.0:
