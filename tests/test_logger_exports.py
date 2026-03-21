@@ -63,6 +63,15 @@ def _build_env(
             servo_interval=servo_interval,
         )
     )
+    env.wire = SimpleNamespace(
+        params=SimpleNamespace(
+            buffer_len_bottom=30.0,
+            buffer_len_top=30.0,
+            contact_offset_bottom=10.0,
+            contact_offset_top=10.0,
+            segment_len=0.2,
+        )
+    )
     if base_overcut is not None:
         env.material = SimpleNamespace(params=SimpleNamespace(base_overcut=base_overcut))
     return env
@@ -106,6 +115,7 @@ def test_json_logger_writes_serializable_payload_and_metadata(tmp_path):
     state = EDMState(
         time=7,
         wire_temperature=np.array([1.0, 2.0], dtype=np.float32),
+        wire_material_positions_mm=np.array([0.0, 0.2], dtype=np.float64),
         spark_status=[1, 0.5, 3],
         ionized_channel=(4.5, 6),
     )
@@ -117,6 +127,7 @@ def test_json_logger_writes_serializable_payload_and_metadata(tmp_path):
 
     assert payload["time"] == [7]
     assert payload["wire_temperature"] == [[1.0, 2.0]]
+    assert payload["wire_material_positions_mm"] == [[0.0, 0.2]]
     assert payload["spark_status"] == [[1, 0.5, 3]]
     assert payload["ionized_channel"] == [[4.5, 6]]
     assert payload["metadata"]["wire_diameter"] == 0.25
@@ -216,6 +227,39 @@ def test_numpy_logger_writes_wire_material_positions_from_state_contract(tmp_pat
         _read_packed_array(output_path, "wire_material_positions_mm"),
         np.array([[0.0, 0.2], [0.1, 0.3]], dtype=np.float64),
     )
+
+
+def test_numpy_logger_auto_includes_visualization_companions_and_metadata(tmp_path):
+    output_path = tmp_path / "visualization_pack.npz"
+    logger = SimulationLogger(
+        _numpy_logger_config(["time", "wire_temperature"], output_path),
+        _build_env(),
+    )
+
+    logger.collect(
+        EDMState(
+            time=0,
+            wire_temperature=np.array([10.0, 20.0], dtype=np.float32),
+            wire_head_idx=1,
+            wire_offset_mm=0.05,
+            wire_material_positions_mm=np.array([0.05, 0.25], dtype=np.float64),
+        )
+    )
+    logger.finalize()
+
+    with zipfile.ZipFile(output_path) as zf:
+        header = json.loads(zf.read("header.json"))
+
+    manifest_names = {entry["name"] for entry in header["arrays"]}
+    assert "wire_material_positions_mm" in manifest_names
+    assert "wire_head_idx" in manifest_names
+    assert "wire_offset_mm" in manifest_names
+    assert "wire_material_positions_mm" in header["signals"]
+    assert header["metadata"]["wire_diameter_um"] == 250.0
+    assert header["metadata"]["initial_gap"] == 12.0
+    assert header["metadata"]["workpiece_height_mm"] == 20.0
+    assert header["metadata"]["segment_len_mm"] == 0.2
+    assert header["metadata"]["base_overcut"] == 0.05
 
 
 def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, capsys):

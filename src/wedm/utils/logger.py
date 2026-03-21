@@ -64,14 +64,29 @@ class LoggerConfig(TypedDict):
     # Optional: buffer_size for file backends, etc.
 
 
+_VISUALIZATION_SIGNAL_DEPENDENCIES: Dict[str, tuple[str, ...]] = {
+    "wire_temperature": (
+        "wire_material_positions_mm",
+        "wire_head_idx",
+        "wire_offset_mm",
+    ),
+    "wire_damage": (
+        "wire_material_positions_mm",
+        "wire_head_idx",
+        "wire_offset_mm",
+    ),
+}
+
+
 class SimulationLogger:
     """
     Handles logging of simulation data based on a flexible configuration.
     """
 
     def __init__(self, config: LoggerConfig, env_reference: WireEDMEnv | None = None):
-        self.config = config
+        self.config = copy.deepcopy(config)
         self.env = env_reference  # Optional, for accessing env-level info if needed for signals
+        self._normalize_signals_to_log()
 
         self._validate_config()
 
@@ -86,6 +101,24 @@ class SimulationLogger:
         }
         self.signal_accessors: Dict[str, Callable[[EDMState], Any]] = {}
         self._prepare_signal_accessors()
+
+    def _normalize_signals_to_log(self) -> None:
+        """Normalize and augment requested signals for dashboard file backends."""
+        signals = list(dict.fromkeys(self.config.get("signals_to_log", [])))
+        backend = self.config.get("backend", {})
+        backend_type = backend.get("type")
+
+        if backend_type in {"json", "numpy"}:
+            extra_signals: list[str] = []
+            for signal_name in signals:
+                extra_signals.extend(
+                    _VISUALIZATION_SIGNAL_DEPENDENCIES.get(signal_name, ())
+                )
+            for signal_name in extra_signals:
+                if signal_name not in signals:
+                    signals.append(signal_name)
+
+        self.config["signals_to_log"] = signals
 
     def _validate_config(self):
         if not self.config.get("signals_to_log"):
@@ -314,25 +347,12 @@ class SimulationLogger:
             print("No signals could be serialized to JSON, skipping .json file creation.")
             return
 
-        # Add environment config as metadata for dashboard
-        if self.env and hasattr(self.env, 'config'):
-            try:
-                json_data['metadata'] = {
-                    'wire_diameter': float(self.env.config.wire_diameter),
-                    'wire_diameter_um': float(self.env.config.wire_diameter * 1000),
-                    'initial_gap': float(self.env.config.initial_gap),
-                    'workpiece_height': float(self.env.config.workpiece_height),
-                    'workpiece_height_mm': float(self.env.config.workpiece_height),
-                    'target_cutting_distance': float(self.env.config.target_cutting_distance),
-                    'dt': int(self.env.config.dt),
-                    'servo_interval': int(self.env.config.servo_interval),
-                }
-                # Add material parameters if available
-                if hasattr(self.env, 'material') and hasattr(self.env.material, 'params'):
-                    json_data['metadata']['base_overcut'] = float(self.env.material.params.base_overcut)
-                print("Added environment config as metadata to JSON")
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not add environment config to JSON metadata: {e}")
+        metadata = self._build_pack_metadata()
+        if metadata:
+            json_data["metadata"] = metadata
+            print("Added environment config as metadata to JSON")
+        elif self.env and hasattr(self.env, "config"):
+            print("Warning: Could not add environment config to JSON metadata")
 
         output_path = pathlib.Path(filepath_str)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -359,35 +379,17 @@ class SimulationLogger:
             spark_status_state (int8), spark_status_location_mm (float64), spark_status_extra (float64)
           - All numeric arrays are written losslessly as-is.
         """
-        # Build metadata from environment config
-        metadata = {}
-        if self.env and hasattr(self.env, 'config'):
-            try:
-                metadata = {
-                    "workpiece_height": float(self.env.config.workpiece_height),
-                    "wire_diameter": float(self.env.config.wire_diameter),
-                }
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract env config for metadata: {e}")
-
-        # Add wire module parameters if available
-        if self.env and hasattr(self.env, 'wire') and hasattr(self.env.wire, 'params'):
-            try:
-                wire_params = self.env.wire.params
-                metadata["buffer_len_bottom"] = float(getattr(wire_params, "buffer_len_bottom", 20.0))
-                metadata["buffer_len_top"] = float(getattr(wire_params, "buffer_len_top", 20.0))
-                metadata["contact_offset_bottom"] = float(getattr(wire_params, "contact_offset_bottom", 10.0))
-                metadata["contact_offset_top"] = float(getattr(wire_params, "contact_offset_top", 10.0))
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract wire params for metadata: {e}")
+        metadata = self._build_pack_metadata()
 
         # Set defaults if not already set
         metadata.setdefault("workpiece_height", 20.0)
+        metadata.setdefault("workpiece_height_mm", metadata["workpiece_height"])
         metadata.setdefault("buffer_len_bottom", 20.0)
         metadata.setdefault("buffer_len_top", 20.0)
         metadata.setdefault("contact_offset_bottom", 10.0)
         metadata.setdefault("contact_offset_top", 10.0)
         metadata.setdefault("wire_diameter", 0.25)
+        metadata.setdefault("wire_diameter_um", metadata["wire_diameter"] * 1000.0)
 
         arrays_manifest = []
 
@@ -464,6 +466,7 @@ class SimulationLogger:
             # Write header.json last
             header = {
                 "format": "sparc_pack_v1",
+                "signals": [entry["name"] for entry in arrays_manifest],
                 "arrays": arrays_manifest,
                 "metadata": metadata,
             }
@@ -488,6 +491,59 @@ class SimulationLogger:
             # User is responsible for loading the file.
             return self.config["backend"].get("filepath")
         return None
+
+    def _build_pack_metadata(self) -> Dict[str, Any]:
+        """Collect dashboard-relevant metadata for file exports."""
+        metadata: Dict[str, Any] = {}
+
+        if self.env and hasattr(self.env, "config"):
+            try:
+                metadata.update(
+                    {
+                        "wire_diameter": float(self.env.config.wire_diameter),
+                        "wire_diameter_um": float(self.env.config.wire_diameter * 1000),
+                        "initial_gap": float(self.env.config.initial_gap),
+                        "workpiece_height": float(self.env.config.workpiece_height),
+                        "workpiece_height_mm": float(self.env.config.workpiece_height),
+                        "target_cutting_distance": float(
+                            self.env.config.target_cutting_distance
+                        ),
+                        "dt": int(self.env.config.dt),
+                        "servo_interval": int(self.env.config.servo_interval),
+                    }
+                )
+            except (AttributeError, TypeError, ValueError) as e:
+                print(f"Warning: Could not extract env config for metadata: {e}")
+                return {}
+
+        if self.env and hasattr(self.env, "material") and hasattr(self.env.material, "params"):
+            try:
+                metadata["base_overcut"] = float(self.env.material.params.base_overcut)
+            except (AttributeError, TypeError, ValueError) as e:
+                print(f"Warning: Could not extract material params for metadata: {e}")
+
+        if self.env and hasattr(self.env, "wire") and hasattr(self.env.wire, "params"):
+            try:
+                wire_params = self.env.wire.params
+                metadata["buffer_len_bottom"] = float(
+                    getattr(wire_params, "buffer_len_bottom", 20.0)
+                )
+                metadata["buffer_len_top"] = float(
+                    getattr(wire_params, "buffer_len_top", 20.0)
+                )
+                metadata["contact_offset_bottom"] = float(
+                    getattr(wire_params, "contact_offset_bottom", 10.0)
+                )
+                metadata["contact_offset_top"] = float(
+                    getattr(wire_params, "contact_offset_top", 10.0)
+                )
+                metadata["segment_len_mm"] = float(
+                    getattr(wire_params, "segment_len", 0.2)
+                )
+            except (AttributeError, TypeError, ValueError) as e:
+                print(f"Warning: Could not extract wire params for metadata: {e}")
+
+        return metadata
 
     def reset(self):
         """

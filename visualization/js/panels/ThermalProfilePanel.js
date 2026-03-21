@@ -282,13 +282,13 @@ export class ThermalProfilePanel extends BasePanel {
         this.ctx.fillRect(0, 0, w, h);
 
         if (!frameData || !frameData.wire_temperature || !frameData.wire_material_positions_mm) {
-            this.drawText('No wire temperature data available', w / 2, h / 2 + 10, {
+            this.drawText('Thermal profile data is incomplete', w / 2, h / 2 + 10, {
                 color: COLORS.danger,
                 font: '14px sans-serif',
                 align: 'center',
                 baseline: 'middle'
             });
-            this.drawText('Ensure log_strategy="full_field" when running simulation', w / 2, h / 2 + 35, {
+            this.drawText('This panel needs wire_temperature and wire_material_positions_mm', w / 2, h / 2 + 35, {
                 color: COLORS.textMuted,
                 font: '12px sans-serif',
                 align: 'center',
