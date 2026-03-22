@@ -1,0 +1,812 @@
+{
+  "metadata": {
+    "repo_root": "C:\\Users\\GonzalezSanchezEduar\\Repositorios\\SPARC (fresh clone)\\SPARC",
+    "import_root": "C:\\Users\\GonzalezSanchezEduar\\Repositorios\\SPARC (fresh clone)\\SPARC\\src",
+    "steps": 200000,
+    "warmup": 5000,
+    "repeats": 2,
+    "seed": 123,
+    "initial_gap_um": 12.0,
+    "servo_interval_us": 1,
+    "workpiece_height_mm": 20.0,
+    "segment_lengths_mm": [
+      0.2,
+      0.05
+    ],
+    "hotspots": "both",
+    "profile_sort": "cumulative",
+    "system_context": {
+      "captured_at": "2026-03-22 00:48:28",
+      "host_name": "iprz-lp010",
+      "platform": {
+        "system": "Windows",
+        "release": "10",
+        "version": "10.0.26200",
+        "machine": "AMD64",
+        "python_version": "3.11.0"
+      },
+      "power_status": {
+        "available": true,
+        "power_source": "ac",
+        "battery_present": true,
+        "battery_percent": 100,
+        "battery_saver": false
+      },
+      "processor": {
+        "available": true,
+        "name": "Intel(R) Core(TM) Ultra 7 258V",
+        "packages": 1,
+        "physical_cores": 8,
+        "logical_processors": 8,
+        "current_clock_mhz": 2200.0,
+        "max_clock_mhz": 2200.0
+      },
+      "performance_snapshot": {
+        "processor_frequency_mhz": 2200.0,
+        "percent_of_max_frequency": 100.0,
+        "percent_processor_performance": 172.804596554662
+      },
+      "power_scheme": {
+        "available": true,
+        "guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+        "name": "Balanced",
+        "max_processor_state_pct": {
+          "ac": 100,
+          "dc": 100
+        },
+        "min_processor_state_pct": {
+          "ac": 5,
+          "dc": 5
+        }
+      },
+      "thermal": {
+        "available": false,
+        "reason": "Thermal sensors are not accessible through the OS on this machine."
+      },
+      "comparability": {
+        "power_source": "ac",
+        "active_processor_max_state_pct": 100,
+        "underclocked_policy_hint": false,
+        "frequency_limited_hint": false,
+        "thermal_limited_hint": null,
+        "warnings": [],
+        "notes": [
+          "Thermal sensors are not accessible through the OS on this machine."
+        ]
+      }
+    },
+    "workflow": "candidate_verification"
+  },
+  "action": {
+    "servo": 0.25,
+    "target_voltage": 90.0,
+    "current_mode": "I1",
+    "on_time_us": 3.0,
+    "off_time_us": 20.0
+  },
+  "scenarios": [
+    {
+      "segment_len_mm": 0.2,
+      "n_segments": 400,
+      "benchmark": {
+        "repeats": 2,
+        "steps_requested": 200000,
+        "median_wall_seconds": 4.278970100000151,
+        "median_steps_per_second": 46742.24430623153,
+        "mean_steps_per_second": 46742.24430623153,
+        "samples": [
+          {
+            "wall_seconds": 4.250804499984952,
+            "steps_run": 200000,
+            "steps_per_second": 47049.91725700583,
+            "simulated_us": 200000,
+            "termination_reason": "completed",
+            "crater_count": 5677,
+            "crater_volume_mm3": 0.0024015713795673757,
+            "wire_temperature_mean": 312.3026428222656,
+            "wire_max_damage": 1.0289423698850442e-05,
+            "workpiece_position_um": 12.524368119620787
+          },
+          {
+            "wall_seconds": 4.307135700015351,
+            "steps_run": 200000,
+            "steps_per_second": 46434.57135545722,
+            "simulated_us": 200000,
+            "termination_reason": "completed",
+            "crater_count": 5677,
+            "crater_volume_mm3": 0.0024015713795673757,
+            "wire_temperature_mean": 312.3026428222656,
+            "wire_max_damage": 1.0289423698850442e-05,
+            "workpiece_position_um": 12.524368119620787
+          }
+        ]
+      },
+      "fidelity_signature": {
+        "termination_reason": "completed",
+        "crater_count": 5677,
+        "crater_volume_mm3": 0.0024015713795673757,
+        "wire_temperature_mean": 312.3026428222656,
+        "wire_max_damage": 1.0289423698850442e-05,
+        "workpiece_position_um": 12.524368119620787,
+        "dashboard_required_signals": {
+          "wire_temperature": {
+            "present": true,
+            "shape": [
+              400
+            ]
+          },
+          "wire_material_positions_mm": {
+            "present": true,
+            "shape": [
+              400
+            ]
+          },
+          "wire_head_idx": {
+            "present": true,
+            "value": 0
+          },
+          "wire_offset_mm": {
+            "present": true,
+            "value": 0.07345350086688995
+          },
+          "thermal_profile_ready": true,
+          "required_signals": [
+            "wire_temperature",
+            "wire_material_positions_mm",
+            "wire_head_idx",
+            "wire_offset_mm"
+          ]
+        }
+      },
+      "module_hotspots": [
+        {
+          "name": "wire",
+          "wall_share_pct": 52.74168201509507,
+          "avg_call_us": 13.6540525,
+          "calls": 200000,
+          "total_seconds": 2.7308105
+        },
+        {
+          "name": "ignition",
+          "wall_share_pct": 18.094369702220487,
+          "avg_call_us": 4.6843685,
+          "calls": 200000,
+          "total_seconds": 0.9368737
+        },
+        {
+          "name": "env._apply_action",
+          "wall_share_pct": 4.074138280938301,
+          "avg_call_us": 1.054735,
+          "calls": 200000,
+          "total_seconds": 0.210947
+        },
+        {
+          "name": "dielectric",
+          "wall_share_pct": 3.9017087173114704,
+          "avg_call_us": 1.0100955,
+          "calls": 200000,
+          "total_seconds": 0.2020191
+        },
+        {
+          "name": "mechanics",
+          "wall_share_pct": 3.0110927065692064,
+          "avg_call_us": 0.779528,
+          "calls": 200000,
+          "total_seconds": 0.1559056
+        },
+        {
+          "name": "material",
+          "wall_share_pct": 1.426710318408724,
+          "avg_call_us": 0.3693545,
+          "calls": 200000,
+          "total_seconds": 0.0738709
+        },
+        {
+          "name": "env._check_termination",
+          "wall_share_pct": 1.2222492097068927,
+          "avg_call_us": 0.3164225,
+          "calls": 200000,
+          "total_seconds": 0.0632845
+        },
+        {
+          "name": "env._get_obs",
+          "wall_share_pct": 0.6331430329286676,
+          "avg_call_us": 0.1639106804465978,
+          "calls": 200001,
+          "total_seconds": 0.0327823
+        },
+        {
+          "name": "env._calc_reward",
+          "wall_share_pct": 0.5938418625499405,
+          "avg_call_us": 0.15373699999999998,
+          "calls": 200000,
+          "total_seconds": 0.0307474
+        }
+      ],
+      "cprofile_hotspots": [
+        {
+          "function": "step",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 126,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.9195446,
+          "cumulative_seconds": 8.1736401
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 294,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 3.1021795,
+          "cumulative_seconds": 3.9921837000000004
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 187,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.1743192,
+          "cumulative_seconds": 1.8229934
+        },
+        {
+          "function": "_update_short_circuit_detection",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 209,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.7754401000000001,
+          "cumulative_seconds": 1.1836064000000002
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\dielectric.py",
+          "line": 94,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.4769857,
+          "cumulative_seconds": 0.5811524
+        },
+        {
+          "function": "_accumulate_damage",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 591,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.2740365,
+          "cumulative_seconds": 0.4496608
+        },
+        {
+          "function": "_apply_action",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 209,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.3215061,
+          "cumulative_seconds": 0.3215061
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\mechanics.py",
+          "line": 100,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.2395651,
+          "cumulative_seconds": 0.30891850000000004
+        },
+        {
+          "function": "_handle_idle_state",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 271,
+          "primitive_calls": 69447,
+          "total_calls": 69447,
+          "total_seconds": 0.0724732,
+          "cumulative_seconds": 0.28598830000000003
+        },
+        {
+          "function": "_get_debris_short_probability",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 127,
+          "primitive_calls": 139977,
+          "total_calls": 139977,
+          "total_seconds": 0.2535237,
+          "cumulative_seconds": 0.2750387
+        }
+      ]
+    },
+    {
+      "segment_len_mm": 0.05,
+      "n_segments": 1600,
+      "benchmark": {
+        "repeats": 2,
+        "steps_requested": 200000,
+        "median_wall_seconds": 5.406821150012547,
+        "median_steps_per_second": 36995.490564275286,
+        "mean_steps_per_second": 36995.490564275286,
+        "samples": [
+          {
+            "wall_seconds": 5.342850300017744,
+            "steps_run": 200000,
+            "steps_per_second": 37433.20302261431,
+            "simulated_us": 200000,
+            "termination_reason": "completed",
+            "crater_count": 5677,
+            "crater_volume_mm3": 0.0024015713795673757,
+            "wire_temperature_mean": 312.3013916015625,
+            "wire_max_damage": 5.007663639844395e-05,
+            "workpiece_position_um": 12.524368119620787
+          },
+          {
+            "wall_seconds": 5.47079200000735,
+            "steps_run": 200000,
+            "steps_per_second": 36557.77810593627,
+            "simulated_us": 200000,
+            "termination_reason": "completed",
+            "crater_count": 5677,
+            "crater_volume_mm3": 0.0024015713795673757,
+            "wire_temperature_mean": 312.3013916015625,
+            "wire_max_damage": 5.007663639844395e-05,
+            "workpiece_position_um": 12.524368119620787
+          }
+        ]
+      },
+      "fidelity_signature": {
+        "termination_reason": "completed",
+        "crater_count": 5677,
+        "crater_volume_mm3": 0.0024015713795673757,
+        "wire_temperature_mean": 312.3013916015625,
+        "wire_max_damage": 5.007663639844395e-05,
+        "workpiece_position_um": 12.524368119620787,
+        "dashboard_required_signals": {
+          "wire_temperature": {
+            "present": true,
+            "shape": [
+              1600
+            ]
+          },
+          "wire_material_positions_mm": {
+            "present": true,
+            "shape": [
+              1600
+            ]
+          },
+          "wire_head_idx": {
+            "present": true,
+            "value": 0
+          },
+          "wire_offset_mm": {
+            "present": true,
+            "value": 0.023045752197504044
+          },
+          "thermal_profile_ready": true,
+          "required_signals": [
+            "wire_temperature",
+            "wire_material_positions_mm",
+            "wire_head_idx",
+            "wire_offset_mm"
+          ]
+        }
+      },
+      "module_hotspots": [
+        {
+          "name": "wire",
+          "wall_share_pct": 60.50616223026517,
+          "avg_call_us": 19.728106500000003,
+          "calls": 200000,
+          "total_seconds": 3.9456213
+        },
+        {
+          "name": "ignition",
+          "wall_share_pct": 15.239752456697891,
+          "avg_call_us": 4.9689395,
+          "calls": 200000,
+          "total_seconds": 0.9937879
+        },
+        {
+          "name": "env._apply_action",
+          "wall_share_pct": 3.4716910023973377,
+          "avg_call_us": 1.131949,
+          "calls": 200000,
+          "total_seconds": 0.2263898
+        },
+        {
+          "name": "dielectric",
+          "wall_share_pct": 3.241914203081638,
+          "avg_call_us": 1.05703,
+          "calls": 200000,
+          "total_seconds": 0.211406
+        },
+        {
+          "name": "mechanics",
+          "wall_share_pct": 2.2762284309418748,
+          "avg_call_us": 0.742167,
+          "calls": 200000,
+          "total_seconds": 0.1484334
+        },
+        {
+          "name": "material",
+          "wall_share_pct": 1.1942894428000042,
+          "avg_call_us": 0.3893995,
+          "calls": 200000,
+          "total_seconds": 0.0778799
+        },
+        {
+          "name": "env._check_termination",
+          "wall_share_pct": 0.8945512375767196,
+          "avg_call_us": 0.2916695,
+          "calls": 200000,
+          "total_seconds": 0.0583339
+        },
+        {
+          "name": "env._get_obs",
+          "wall_share_pct": 0.5178879960871112,
+          "avg_call_us": 0.1688571557142214,
+          "calls": 200001,
+          "total_seconds": 0.0337716
+        },
+        {
+          "name": "env._calc_reward",
+          "wall_share_pct": 0.4762058915328593,
+          "avg_call_us": 0.1552675,
+          "calls": 200000,
+          "total_seconds": 0.0310535
+        }
+      ],
+      "cprofile_hotspots": [
+        {
+          "function": "step",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 126,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.9906258000000001,
+          "cumulative_seconds": 9.635649200000001
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 294,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 3.9459831000000003,
+          "cumulative_seconds": 5.2264214
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 187,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.1932433,
+          "cumulative_seconds": 1.9597318000000001
+        },
+        {
+          "function": "_update_short_circuit_detection",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 209,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.8596173,
+          "cumulative_seconds": 1.2774589
+        },
+        {
+          "function": "_accumulate_damage",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 591,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.29336,
+          "cumulative_seconds": 0.7705952
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\dielectric.py",
+          "line": 94,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.47858880000000004,
+          "cumulative_seconds": 0.5954854
+        },
+        {
+          "function": "accumulate_damage",
+          "file": "src\\wedm\\modules\\wire.py",
+          "line": 66,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.4772352,
+          "cumulative_seconds": 0.4772352
+        },
+        {
+          "function": "update",
+          "file": "src\\wedm\\modules\\mechanics.py",
+          "line": 100,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.24827590000000002,
+          "cumulative_seconds": 0.3213095
+        },
+        {
+          "function": "_apply_action",
+          "file": "src\\wedm\\envs\\wire_edm.py",
+          "line": 209,
+          "primitive_calls": 200000,
+          "total_calls": 200000,
+          "total_seconds": 0.32055710000000004,
+          "cumulative_seconds": 0.32055710000000004
+        },
+        {
+          "function": "_handle_idle_state",
+          "file": "src\\wedm\\modules\\ignition.py",
+          "line": 271,
+          "primitive_calls": 69447,
+          "total_calls": 69447,
+          "total_seconds": 0.0775208,
+          "cumulative_seconds": 0.30624650000000003
+        }
+      ]
+    }
+  ],
+  "fidelity_comparison": {
+    "passed": true,
+    "tolerances": {
+      "crater_count_abs": 0.0,
+      "wire_temperature_mean_abs": 0.5,
+      "wire_max_damage_abs": 0.0001,
+      "workpiece_position_um_abs": 0.1
+    },
+    "scenarios": [
+      {
+        "scenario": "0.200000|400",
+        "passed": true,
+        "metrics": [
+          {
+            "field": "termination_reason",
+            "passed": true,
+            "baseline": "completed",
+            "current": "completed"
+          },
+          {
+            "field": "crater_count",
+            "passed": true,
+            "baseline": 5677.0,
+            "current": 5677.0,
+            "abs_delta": 0.0,
+            "tolerance": 0.0
+          },
+          {
+            "field": "wire_temperature_mean",
+            "passed": true,
+            "baseline": 312.3026428222656,
+            "current": 312.3026428222656,
+            "abs_delta": 0.0,
+            "tolerance": 0.5
+          },
+          {
+            "field": "wire_max_damage",
+            "passed": true,
+            "baseline": 1.0289423698850442e-05,
+            "current": 1.0289423698850442e-05,
+            "abs_delta": 0.0,
+            "tolerance": 0.0001
+          },
+          {
+            "field": "workpiece_position_um",
+            "passed": true,
+            "baseline": 12.524368119620787,
+            "current": 12.524368119620787,
+            "abs_delta": 0.0,
+            "tolerance": 0.1
+          }
+        ],
+        "dashboard_required_signals": {
+          "passed": true,
+          "checks": [
+            {
+              "field": "wire_temperature",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "shape": [
+                  400
+                ]
+              },
+              "current": {
+                "present": true,
+                "shape": [
+                  400
+                ]
+              }
+            },
+            {
+              "field": "wire_material_positions_mm",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "shape": [
+                  400
+                ]
+              },
+              "current": {
+                "present": true,
+                "shape": [
+                  400
+                ]
+              }
+            },
+            {
+              "field": "wire_head_idx",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "value": 0
+              },
+              "current": {
+                "present": true,
+                "value": 0
+              }
+            },
+            {
+              "field": "wire_offset_mm",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "value": 0.07345350086688995
+              },
+              "current": {
+                "present": true,
+                "value": 0.07345350086688995
+              }
+            },
+            {
+              "field": "thermal_profile_ready",
+              "passed": true,
+              "baseline": true,
+              "current": true
+            }
+          ]
+        }
+      },
+      {
+        "scenario": "0.050000|1600",
+        "passed": true,
+        "metrics": [
+          {
+            "field": "termination_reason",
+            "passed": true,
+            "baseline": "completed",
+            "current": "completed"
+          },
+          {
+            "field": "crater_count",
+            "passed": true,
+            "baseline": 5677.0,
+            "current": 5677.0,
+            "abs_delta": 0.0,
+            "tolerance": 0.0
+          },
+          {
+            "field": "wire_temperature_mean",
+            "passed": true,
+            "baseline": 312.3013916015625,
+            "current": 312.3013916015625,
+            "abs_delta": 0.0,
+            "tolerance": 0.5
+          },
+          {
+            "field": "wire_max_damage",
+            "passed": true,
+            "baseline": 5.007663639844395e-05,
+            "current": 5.007663639844395e-05,
+            "abs_delta": 0.0,
+            "tolerance": 0.0001
+          },
+          {
+            "field": "workpiece_position_um",
+            "passed": true,
+            "baseline": 12.524368119620787,
+            "current": 12.524368119620787,
+            "abs_delta": 0.0,
+            "tolerance": 0.1
+          }
+        ],
+        "dashboard_required_signals": {
+          "passed": true,
+          "checks": [
+            {
+              "field": "wire_temperature",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "shape": [
+                  1600
+                ]
+              },
+              "current": {
+                "present": true,
+                "shape": [
+                  1600
+                ]
+              }
+            },
+            {
+              "field": "wire_material_positions_mm",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "shape": [
+                  1600
+                ]
+              },
+              "current": {
+                "present": true,
+                "shape": [
+                  1600
+                ]
+              }
+            },
+            {
+              "field": "wire_head_idx",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "value": 0
+              },
+              "current": {
+                "present": true,
+                "value": 0
+              }
+            },
+            {
+              "field": "wire_offset_mm",
+              "passed": true,
+              "baseline": {
+                "present": true,
+                "value": 0.023045752197504044
+              },
+              "current": {
+                "present": true,
+                "value": 0.023045752197504044
+              }
+            },
+            {
+              "field": "thermal_profile_ready",
+              "passed": true,
+              "baseline": true,
+              "current": true
+            }
+          ]
+        }
+      }
+    ],
+    "baseline_report_path": "outputs\\profiling\\realtime_baseline_20260322_i1.json"
+  },
+  "verification_summary": {
+    "baseline_report_path": "outputs/profiling/realtime_baseline_20260322_i1.json",
+    "baseline_report_name": "realtime_baseline_20260322_i1",
+    "fidelity_passed": true,
+    "scenarios": [
+      {
+        "scenario": "0.20 mm / 400 seg",
+        "key": "0.200000|400",
+        "baseline_steps_per_second": 38284.47740279334,
+        "candidate_steps_per_second": 46742.24430623153,
+        "delta_steps_per_second": 8457.76690343819,
+        "delta_pct": 22.091895925477854,
+        "fidelity_passed": true,
+        "termination_reason": "completed"
+      },
+      {
+        "scenario": "0.05 mm / 1600 seg",
+        "key": "0.050000|1600",
+        "baseline_steps_per_second": 34476.809315916806,
+        "candidate_steps_per_second": 36995.490564275286,
+        "delta_steps_per_second": 2518.68124835848,
+        "delta_pct": 7.305436025936681,
+        "fidelity_passed": true,
+        "termination_reason": "completed"
+      }
+    ]
+  }
+}

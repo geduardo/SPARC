@@ -50,6 +50,17 @@ def make_report(path: Path, name_suffix: str, steps_per_second: float) -> None:
                         "wall_share_pct": 22.6,
                     },
                 ],
+                "module_subhotspots": {
+                    "wire": [
+                        {
+                            "name": "thermal_core",
+                            "wall_share_pct": 31.2,
+                            "avg_call_us": 8.5,
+                            "calls": 50000,
+                            "total_seconds": 0.425,
+                        }
+                    ]
+                },
                 "cprofile_hotspots": [
                     {
                         "function": "update",
@@ -93,4 +104,11 @@ def test_build_perf_dashboard_generates_html(tmp_path: Path) -> None:
     assert "0.20 mm / 400 seg" in html
     assert "40,000.00 steps/s" in html
     assert "wire dominates latest profile" in html
+    assert "Performance Plot" in html
+    assert "Before / After" in html
+    assert "Module Drilldown" in html
+    assert "module_subhotspots" in html
+    assert "thermal_core" in html
+    assert "Y min" in html
+    assert "Vs baseline" in html
     assert "2 profiling report(s)" in result.stdout

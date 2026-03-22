@@ -1,39 +1,39 @@
 {
 	"nodes": [
 		{
+			"id": "group-perfho",
+			"type": "group",
+			"x": 1880,
+			"y": 800,
+			"width": 1520,
+			"height": 1100,
+			"label": "Perf Hotspots"
+		},
+		{
 			"id": "group-perfba",
 			"type": "group",
 			"x": 20,
 			"y": 40,
 			"width": 540,
-			"height": 3380,
+			"height": 1780,
 			"label": "Perf Baseline"
-		},
-		{
-			"id": "group-perfho",
-			"type": "group",
-			"x": 1880,
-			"y": 1600,
-			"width": 1030,
-			"height": 1040,
-			"label": "Perf Hotspots"
 		},
 		{
 			"id": "group-perfgu",
 			"type": "group",
 			"x": 640,
-			"y": 820,
+			"y": 420,
 			"width": 540,
-			"height": 1040,
+			"height": 640,
 			"label": "Perf Guardrails"
 		},
 		{
 			"id": "group-perfre",
 			"type": "group",
 			"x": 1260,
-			"y": 820,
+			"y": 420,
 			"width": 540,
-			"height": 1040,
+			"height": 640,
 			"label": "Perf Reporting"
 		},
 		{
@@ -73,65 +73,85 @@
 			"x": 80,
 			"y": 80,
 			"width": 420,
-			"height": 400,
+			"height": 180,
 			"color": "4"
 		},
 		{
 			"id": "d378c8c0",
 			"type": "text",
-			"text": "## PB-02 Stabilize benchmark conditions\nRecord machine and power context so runs stay comparable. Capture whether the CPU is on battery, underclocked, or thermally limited, and keep a repeatable profiling preset for this PC.",
+			"text": "## PB-02 Stabilize benchmark conditions\nAdded machine and power-context capture to scripts/profile_simulation.py so each profiling report records host/platform, power source, battery state, active power scheme, processor policy caps, frequency/performance counters, and a comparability assessment. Added the repeatable preset runner scripts/profile_realtime_baseline.py to run the frozen conservative baseline and refresh the HTML dashboard in one command. Updated the dashboard meta panel to surface power context and comparability notes. Verified with pytest tests/test_profile_baseline_preset.py tests/test_perf_dashboard.py -q and a real baseline run to outputs/profiling/realtime_baseline_pb02_verify.json. Fresh baseline medians: 40516.49 steps/s at 0.2 mm and 31411.69 steps/s at 0.05 mm; current run was on AC, Balanced plan, max processor state 100, with no battery or policy-cap warning recorded.",
 			"x": 80,
-			"y": 860,
+			"y": 460,
 			"width": 420,
-			"height": 220,
-			"color": "1"
+			"height": 180,
+			"color": "4"
 		},
 		{
 			"id": "c76f8859",
 			"type": "text",
-			"text": "## PG-01 Define no-regression fidelity checks\nOptimization work must preserve physics outputs and exported data. Compare crater count, mean wire temperature, max damage, termination reason, and dashboard-required signals against a baseline run.",
+			"text": "## PG-01 Define no-regression fidelity checks\nDefined explicit fidelity guardrails in scripts/profile_simulation.py by adding per-scenario fidelity_signature data and optional baseline comparison via --compare-to. Guardrails now cover termination_reason, crater_count, crater_volume_mm3, mean wire temperature, max wire damage, final workpiece position, and dashboard-required signals (wire_temperature, wire_material_positions_mm, wire_head_idx, wire_offset_mm). Regenerated the canonical baseline at outputs/profiling/realtime_baseline_20260322_i1.json so it includes fidelity_signature, updated docs/README with the comparison workflow, and added regression tests in tests/test_profile_fidelity.py. Verified with pytest tests/test_profile_fidelity.py tests/test_profile_baseline_preset.py tests/test_perf_dashboard.py -q (8 passed) and a self-compare of the canonical baseline report.",
 			"x": 700,
-			"y": 860,
+			"y": 460,
 			"width": 420,
-			"height": 220,
-			"color": "1"
+			"height": 180,
+			"color": "4"
+		},
+		{
+			"id": "ff634484",
+			"type": "text",
+			"text": "## PB-03 Reach conservative realtime milestone\nClose the gap to 1,000,000 steps/s on this PC for the conservative benchmark before moving on to more aggressive approximations.",
+			"x": 80,
+			"y": 1600,
+			"width": 420,
+			"height": 180,
+			"color": "6"
+		},
+		{
+			"id": "e5f903cc",
+			"type": "text",
+			"text": "## PB-04 Lower conservative benchmark current to I1\nChange the conservative realtime baseline preset from I5 to I1 so the benchmark avoids wire-broken termination when possible, then regenerate the baseline JSON, docs, and dashboard against the new contract.",
+			"x": 80,
+			"y": 840,
+			"width": 420,
+			"height": 180,
+			"color": "4"
 		},
 		{
 			"id": "f34bd19e",
 			"type": "text",
 			"text": "## PG-02 Automate perf-vs-fidelity verification\nMake it easy to rerun throughput and fidelity checks together before accepting optimizations.",
 			"x": 700,
-			"y": 1640,
+			"y": 840,
 			"width": 420,
 			"height": 180,
-			"color": "0"
+			"color": "4"
 		},
 		{
 			"id": "803d9f8e",
 			"type": "text",
-			"text": "## PR-01 Build bottleneck dashboard HTML\nGenerate a standalone HTML report from profiling JSON files with throughput trends, progress toward the realtime target, module wall-share bars, and top cProfile hotspots.",
+			"text": "## PR-01 Build bottleneck dashboard HTML\nExpanded the performance dashboard in scripts/build_perf_dashboard.py from a static summary into an interactive report. Added a plot control bar with metric selection plus manual y-axis min/max inputs and apply/reset actions, and replaced the flat hotspot section with a module drilldown panel that lets you click a module such as wire and inspect the heaviest matching cProfile functions/lines per scenario. Regenerated outputs/profiling/performance_dashboard.html and tightened tests/test_perf_dashboard.py so the smoke test now covers the new plot controls and drilldown section. Verified with python scripts/build_perf_dashboard.py and pytest tests/test_perf_dashboard.py -q (1 passed).",
 			"x": 1320,
-			"y": 860,
+			"y": 460,
 			"width": 420,
-			"height": 220,
-			"color": "1"
+			"height": 180,
+			"color": "4"
 		},
 		{
 			"id": "91bfd94b",
 			"type": "text",
-			"text": "## PR-02 Track progress history\nArchive each profiling snapshot and surface before/after comparisons so the board follows sustained gains instead of one-off wins.",
+			"text": "## PR-02 Track progress history\nExtended the standalone performance dashboard to track archived progress instead of only raw snapshots. scripts/build_perf_dashboard.py now reads verification_summary from candidate reports, computes per-scenario deltas versus the previous archived run and versus the baseline, adds a Before / After panel for the latest verified candidate, and shows Vs previous / Vs baseline columns in both the latest snapshot table and the full history table. Regenerated outputs/profiling/performance_dashboard.html from 10 archived profiling reports, including outputs/profiling/perf_candidate_pg02_pr02_verify.json, and updated README.md plus docs/performance_realtime_baseline.md so the verification-and-history workflow is documented. Verified with pytest tests/test_perf_verification_workflow.py tests/test_perf_dashboard.py tests/test_profile_baseline_preset.py tests/test_profile_fidelity.py -q (10 passed).",
 			"x": 1320,
-			"y": 1640,
+			"y": 840,
 			"width": 420,
 			"height": 180,
-			"color": "6"
+			"color": "4"
 		},
 		{
-			"id": "ce3f053c",
+			"id": "21775b2a",
 			"type": "text",
-			"text": "## PH-01 Reduce wire module wall share\nAttack the wire update path first. It is the dominant hotspot in the current baseline and must improve without losing thermal or damage fidelity.",
+			"text": "## PH-03 Reduce environment bookkeeping overhead\nTrim per-step action, observation, reward, and termination overhead after the dominant physics hotspots are under control.",
 			"x": 1940,
-			"y": 1640,
+			"y": 1220,
 			"width": 420,
 			"height": 180,
 			"color": "6"
@@ -140,31 +160,51 @@
 			"id": "f9d70be6",
 			"type": "text",
 			"text": "## PH-02 Reduce ignition short-circuit overhead\nCut the cost of ignition bookkeeping and short-circuit detection while preserving spark statistics and transition behavior.",
-			"x": 2430,
-			"y": 1640,
-			"width": 420,
-			"height": 180,
-			"color": "6"
-		},
-		{
-			"id": "21775b2a",
-			"type": "text",
-			"text": "## PH-03 Reduce environment bookkeeping overhead\nTrim per-step action, observation, reward, and termination overhead after the dominant physics hotspots are under control.",
 			"x": 1940,
-			"y": 2420,
+			"y": 840,
 			"width": 420,
 			"height": 180,
 			"color": "6"
 		},
 		{
-			"id": "ff634484",
+			"id": "a1478aa8",
 			"type": "text",
-			"text": "## PB-03 Reach conservative realtime milestone\nClose the gap to 1,000,000 steps/s on this PC for the conservative benchmark before moving on to more aggressive approximations.",
-			"x": 80,
-			"y": 3200,
+			"text": "## PH-05 Eliminate O(N) wire rollover copies\nReplace the current moving-segment rollover in src/wedm/modules/wire.py with a logical ring-buffer or equivalent approach so transport does not shift y, temperature, and damage arrays through memory when the wire advances. Preserve thermal fidelity and the exported dashboard/logging signals.",
+			"x": 1940,
+			"y": 1600,
+			"width": 420,
+			"height": 260,
+			"color": "1"
+		},
+		{
+			"id": "e2af75aa",
+			"type": "text",
+			"text": "## PH-06 Reduce wire state-sync and export copy cost\nTrim the per-step sync/export overhead in the wire path without weakening the logging contract. Target wire_temperature, wire_damage, wire_material_positions_mm, head/offset diagnostics, and any fallback copies that still happen every step.",
+			"x": 2430,
+			"y": 1600,
+			"width": 420,
+			"height": 260,
+			"color": "1"
+		},
+		{
+			"id": "2aa0fa92",
+			"type": "text",
+			"text": "## PH-07 Reduce wire thermal-core memory traffic\nOptimize the thermal part of WireModule.update after PH-04 exposes its share. Focus on fused or in-place conduction, Joule-heating, plasma, and convection updates so the wire core stops creating avoidable full-array temporaries at fine meshes.",
+			"x": 2920,
+			"y": 1600,
+			"width": 420,
+			"height": 260,
+			"color": "1"
+		},
+		{
+			"id": "2fd8a300",
+			"type": "text",
+			"text": "## PH-04 Instrument wire sub-buckets\nBreak WireModule.update into measured sub-buckets in the profiling harness and dashboard: transport/rollover, thermal core, damage, and state sync/export. The current wire hotspot is too monolithic; this task creates the internal breakdown needed to choose the next optimization with data instead of guesswork.",
+			"x": 2430,
+			"y": 1220,
 			"width": 420,
 			"height": 180,
-			"color": "6"
+			"color": "4"
 		}
 	],
 	"edges": [
@@ -218,20 +258,6 @@
 			"toSide": "top"
 		},
 		{
-			"id": "edge-008",
-			"fromNode": "c76f8859",
-			"fromSide": "bottom",
-			"toNode": "ce3f053c",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-009",
-			"fromNode": "803d9f8e",
-			"fromSide": "bottom",
-			"toNode": "ce3f053c",
-			"toSide": "top"
-		},
-		{
 			"id": "edge-010",
 			"fromNode": "c76f8859",
 			"fromSide": "bottom",
@@ -243,13 +269,6 @@
 			"fromNode": "803d9f8e",
 			"fromSide": "bottom",
 			"toNode": "f9d70be6",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-012",
-			"fromNode": "ce3f053c",
-			"fromSide": "bottom",
-			"toNode": "21775b2a",
 			"toSide": "top"
 		},
 		{
@@ -278,6 +297,41 @@
 			"fromNode": "21775b2a",
 			"fromSide": "bottom",
 			"toNode": "ff634484",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-018",
+			"fromNode": "d378c8c0",
+			"fromSide": "bottom",
+			"toNode": "e5f903cc",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-019",
+			"fromNode": "91bfd94b",
+			"fromSide": "bottom",
+			"toNode": "2fd8a300",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-020",
+			"fromNode": "2fd8a300",
+			"fromSide": "bottom",
+			"toNode": "a1478aa8",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-021",
+			"fromNode": "2fd8a300",
+			"fromSide": "bottom",
+			"toNode": "e2af75aa",
+			"toSide": "top"
+		},
+		{
+			"id": "edge-022",
+			"fromNode": "2fd8a300",
+			"fromSide": "bottom",
+			"toNode": "2aa0fa92",
 			"toSide": "top"
 		}
 	]
