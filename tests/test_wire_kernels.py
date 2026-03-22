@@ -2,7 +2,11 @@
 
 import numpy as np
 
-from wedm.modules.wire import apply_thermal_core_inplace
+from wedm.modules.wire import (
+    accumulate_damage,
+    apply_thermal_core_inplace,
+    apply_thermal_damage_core_inplace,
+)
 
 
 def _thermal_reference(
@@ -103,3 +107,76 @@ def test_apply_thermal_core_inplace_matches_reference():
     )
 
     np.testing.assert_allclose(temperature, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_apply_thermal_damage_core_inplace_matches_legacy_composition():
+    temperature = np.array(
+        [293.15, 305.0, 318.5, 330.0, 341.0, 352.5], dtype=np.float32
+    )
+    damage = np.array([0.0, 0.2, 0.0, 0.1, 0.4, 0.0], dtype=np.float32)
+    dT_dt = np.zeros_like(temperature)
+    conv_loss_coeff = np.array([0.0, 0.7, 0.8, 0.9, 1.0, 1.1], dtype=np.float32)
+
+    params = {
+        "k_cond_coeff": 2.4,
+        "temp_update_factor": 1.5e-4,
+        "dielectric_temp": 298.0,
+        "temp_ref": 293.15,
+        "alpha_rho": 0.0034,
+        "bottom_start": 1,
+        "bottom_end": 3,
+        "bottom_joule_factor": 0.85,
+        "top_start": 4,
+        "top_end": 6,
+        "top_joule_factor": 0.55,
+        "plasma_idx": 3,
+        "plasma_heat": 12.0,
+        "spool_temp": 293.15,
+    }
+    damage_params = {
+        "threshold_k": 320.0,
+        "stress_term_dt": 1.3e-4,
+        "activation_scale": -175.0,
+    }
+
+    expected_temperature = _thermal_reference(
+        temperature,
+        conv_loss_coeff,
+        **params,
+    )
+    expected_damage = damage.copy()
+    expected_max_damage = accumulate_damage(
+        expected_damage,
+        expected_temperature,
+        damage_params["threshold_k"],
+        damage_params["stress_term_dt"],
+        damage_params["activation_scale"],
+    )
+
+    max_damage = apply_thermal_damage_core_inplace(
+        temperature,
+        damage,
+        dT_dt,
+        conv_loss_coeff,
+        params["k_cond_coeff"],
+        params["temp_update_factor"],
+        params["dielectric_temp"],
+        params["temp_ref"],
+        params["alpha_rho"],
+        params["bottom_start"],
+        params["bottom_end"],
+        params["bottom_joule_factor"],
+        params["top_start"],
+        params["top_end"],
+        params["top_joule_factor"],
+        params["plasma_idx"],
+        params["plasma_heat"],
+        params["spool_temp"],
+        damage_params["threshold_k"],
+        damage_params["stress_term_dt"],
+        damage_params["activation_scale"],
+    )
+
+    np.testing.assert_allclose(temperature, expected_temperature, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(damage, expected_damage, rtol=1e-6, atol=1e-6)
+    assert max_damage == expected_max_damage

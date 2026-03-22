@@ -149,6 +149,90 @@ def apply_thermal_core_inplace(
     temperature[0] = spool_temp
 
 
+@njit(cache=False, fastmath=True)
+def apply_thermal_damage_core_inplace(
+    temperature: np.ndarray,
+    damage: np.ndarray,
+    dT_dt: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    bottom_start: int,
+    bottom_end: int,
+    bottom_joule_factor: float,
+    top_start: int,
+    top_end: int,
+    top_joule_factor: float,
+    plasma_idx: int,
+    plasma_heat: float,
+    spool_temp: float,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> float:
+    """Apply one fused thermal update and damage accumulation step in-place."""
+    n_segments = temperature.shape[0]
+    if n_segments == 0:
+        return 0.0
+
+    dT_dt[0] = 0.0
+
+    if n_segments > 1:
+        for i in range(1, n_segments - 1):
+            temp = temperature[i]
+            dT_dt[i] = (
+                k_cond_coeff * (temperature[i - 1] - 2.0 * temp + temperature[i + 1])
+                - conv_loss_coeff[i] * (temp - dielectric_temp)
+            )
+
+        temp_last = temperature[n_segments - 1]
+        dT_dt[n_segments - 1] = (
+            k_cond_coeff * (temperature[n_segments - 2] - temp_last)
+            - conv_loss_coeff[n_segments - 1] * (temp_last - dielectric_temp)
+        )
+
+    if bottom_joule_factor != 0.0:
+        for i in range(bottom_start, bottom_end):
+            dT_dt[i] += bottom_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if top_joule_factor != 0.0:
+        for i in range(top_start, top_end):
+            dT_dt[i] += top_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if 0 <= plasma_idx < n_segments:
+        dT_dt[plasma_idx] += plasma_heat
+
+    max_damage = 0.0
+    for i in range(1, n_segments):
+        temperature[i] += dT_dt[i] * temp_update_factor
+
+        current_damage = damage[i]
+        temp = temperature[i]
+        if temp > threshold_k:
+            current_damage += stress_term_dt * np.exp(activation_scale / temp)
+            damage[i] = current_damage
+
+        if current_damage > max_damage:
+            max_damage = current_damage
+
+    temperature[0] = spool_temp
+    current_damage = damage[0]
+    if spool_temp > threshold_k:
+        current_damage += stress_term_dt * np.exp(activation_scale / spool_temp)
+        damage[0] = current_damage
+    if current_damage > max_damage:
+        max_damage = current_damage
+
+    return max_damage
+
+
 class WireModule(EDMModule):
     """Optimized 1-D transient heat model of the travelling wire with automatic material loading."""
 
@@ -424,14 +508,16 @@ class WireModule(EDMModule):
         T_vec = self._temperature
         if self._profile_update_subhotspots:
             self._advance_transport(wire_unwind_vel)
-            self._apply_thermal_core(
+            max_damage = self._apply_thermal_core(
                 state,
                 T_vec,
                 I,
                 I_squared,
                 dielectric_temp,
             )
-            self._accumulate_damage(state, T_vec)
+            state.wire_max_damage = float(max_damage)
+            if max_damage >= 1.0:
+                state.is_wire_broken = True
             self._sync_state_views(state, T_vec)
         else:
             if self.params.moving_segments:
@@ -449,15 +535,16 @@ class WireModule(EDMModule):
 
                     if rollover_count:
                         self._roll_in_fresh_segments(rollover_count)
-            self._apply_thermal_core(
+            max_damage = self._apply_thermal_core(
                 state,
                 T_vec,
                 I,
                 I_squared,
                 dielectric_temp,
             )
-
-            self._accumulate_damage(state, T_vec)
+            state.wire_max_damage = float(max_damage)
+            if max_damage >= 1.0:
+                state.is_wire_broken = True
             self._sync_state_views(state, T_vec)
 
         # Compute zone mean only when needed
@@ -500,8 +587,8 @@ class WireModule(EDMModule):
         current: float,
         current_squared: float,
         dielectric_temp: float,
-    ) -> None:
-        """Apply conduction, Joule heating, plasma heating, convection, and dT update."""
+    ) -> float:
+        """Apply conduction, Joule heating, plasma heating, dT update, and damage."""
         plasma_idx = -1
         plasma_heat = 0.0
         bottom_start = 0
@@ -571,8 +658,9 @@ class WireModule(EDMModule):
                 top_end = self.contact_top_idx + 1
                 top_joule_factor = self.joule_factor_base * (I_top * I_top)
 
-        apply_thermal_core_inplace(
+        return apply_thermal_damage_core_inplace(
             T_vec,
+            self._damage,
             self.dT_dt,
             self.conv_loss_coeff,
             self.k_cond_coeff,
@@ -589,6 +677,9 @@ class WireModule(EDMModule):
             plasma_idx,
             plasma_heat,
             float(self.params.spool_T),
+            self.damage_temperature_threshold_k,
+            self.damage_stress_term_dt,
+            self.damage_activation_scale,
         )
 
     def _sync_state_views(self, state: EDMState, T_vec: np.ndarray) -> None:
