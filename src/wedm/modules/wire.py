@@ -146,7 +146,11 @@ class WireModule(EDMModule):
 
         # ── Internal NumPy arrays for fast access (optimization) ──
         # Store segment data in arrays to avoid list comprehensions
-        self._y_start_mm = self._build_initial_positions()
+        self._base_positions_mm = self._build_initial_positions()
+        self._y_start_mm = self._base_positions_mm.copy()
+        self._position_offset_mm = 0.0
+        self._position_wrap_threshold_mm = self._compute_position_wrap_threshold()
+        self._positions_dirty = False
         self._temperature = np.full(
             self.n_segments, self.params.spool_T, dtype=np.float32
         )
@@ -261,12 +265,49 @@ class WireModule(EDMModule):
             self.segment_len_mm
         )
 
+    def _compute_position_wrap_threshold(self) -> float:
+        """Return the distance advanced before the leading segment rolls over."""
+        threshold = float(
+            self.total_L - (self.segment_len_mm * float(max(self.n_segments - 1, 0)))
+        )
+        if threshold <= 0.0:
+            return self.segment_len_mm
+        return threshold
+
+    def _ensure_position_buffer(self) -> np.ndarray:
+        """Refresh the compatibility position snapshot only when transport moved."""
+        if self._positions_dirty and self._y_start_mm.size > 0:
+            np.add(
+                self._base_positions_mm,
+                self._position_offset_mm,
+                out=self._y_start_mm,
+                casting="unsafe",
+            )
+            self._positions_dirty = False
+        return self._y_start_mm
+
+    def _roll_in_fresh_segments(self, count: int) -> None:
+        """Insert fresh spool segments after one or more wraparound events."""
+        if count <= 0:
+            return
+
+        if count >= self.n_segments:
+            self._temperature.fill(np.float32(self.params.spool_T))
+            self._damage.fill(0.0)
+            return
+
+        self._temperature[count:] = self._temperature[:-count]
+        self._damage[count:] = self._damage[:-count]
+        self._temperature[:count] = np.float32(self.params.spool_T)
+        self._damage[:count] = 0.0
+
     @property
     def segments(self) -> list:
         """Return a point-in-time snapshot of segment data for compatibility."""
+        y_start_mm = self._ensure_position_buffer()
         return [
             self._Segment(
-                float(self._y_start_mm[i]),
+                float(y_start_mm[i]),
                 float(self._temperature[i]),
                 float(self._damage[i]),
             )
@@ -275,7 +316,9 @@ class WireModule(EDMModule):
 
     def reset(self, state: EDMState) -> None:
         """Restore wire thermal, damage, and transport state for a new episode."""
-        self._y_start_mm = self._build_initial_positions()
+        self._position_offset_mm = 0.0
+        self._positions_dirty = False
+        self._y_start_mm = self._base_positions_mm.copy()
         self._temperature.fill(np.float32(self.params.spool_T))
         self._damage.fill(0.0)
         self.dT_dt.fill(0.0)
@@ -291,6 +334,9 @@ class WireModule(EDMModule):
         state.wire_average_temperature = (
             self._last_zone_mean if self.params.compute_zone_mean else None
         )
+        state.wire_head_idx = 0
+        state.wire_offset_mm = 0.0
+        state.wire_material_positions_mm = self._base_positions_mm.copy()
 
     def update(self, state: EDMState) -> None:
         if state.is_wire_broken:
@@ -335,17 +381,17 @@ class WireModule(EDMModule):
                 dt_us = float(self.env.config.dt)
                 v_mm_per_us = float(wire_unwind_vel) * 1e-3
                 delta_mm = v_mm_per_us * dt_us
+                if delta_mm != 0.0:
+                    self._position_offset_mm += delta_mm
+                    self._positions_dirty = True
 
-                self._y_start_mm += delta_mm
+                    rollover_count = 0
+                    while self._position_offset_mm > self._position_wrap_threshold_mm:
+                        self._position_offset_mm -= self._position_wrap_threshold_mm
+                        rollover_count += 1
 
-                if self._y_start_mm[-1] > self.total_L:
-                    remainder = self._y_start_mm[-1] - self.total_L
-                    self._y_start_mm[1:] = self._y_start_mm[:-1]
-                    self._temperature[1:] = self._temperature[:-1]
-                    self._damage[1:] = self._damage[:-1]
-                    self._y_start_mm[0] = remainder
-                    self._temperature[0] = float(self.params.spool_T)
-                    self._damage[0] = 0.0
+                    if rollover_count:
+                        self._roll_in_fresh_segments(rollover_count)
 
             plasma_idx = -1
             plasma_heat = 0.0
@@ -461,17 +507,19 @@ class WireModule(EDMModule):
         dt_us = float(self.env.config.dt)
         v_mm_per_us = float(wire_unwind_vel) * 1e-3
         delta_mm = v_mm_per_us * dt_us
+        if delta_mm == 0.0:
+            return
 
-        self._y_start_mm += delta_mm
+        self._position_offset_mm += delta_mm
+        self._positions_dirty = True
 
-        if self._y_start_mm[-1] > self.total_L:
-            remainder = self._y_start_mm[-1] - self.total_L
-            self._y_start_mm[1:] = self._y_start_mm[:-1]
-            self._temperature[1:] = self._temperature[:-1]
-            self._damage[1:] = self._damage[:-1]
-            self._y_start_mm[0] = remainder
-            self._temperature[0] = float(self.params.spool_T)
-            self._damage[0] = 0.0
+        rollover_count = 0
+        while self._position_offset_mm > self._position_wrap_threshold_mm:
+            self._position_offset_mm -= self._position_wrap_threshold_mm
+            rollover_count += 1
+
+        if rollover_count:
+            self._roll_in_fresh_segments(rollover_count)
 
     def _apply_thermal_core(
         self,
@@ -573,9 +621,28 @@ class WireModule(EDMModule):
     def _sync_state_views(self, state: EDMState, T_vec: np.ndarray) -> None:
         """Sync wire diagnostics back into the shared state buffers."""
         state.wire_head_idx = 0
-        if self._y_start_mm.size > 0:
-            state.wire_offset_mm = float(self._y_start_mm[0])
-            state.wire_material_positions_mm = self._y_start_mm.copy()
+        if self._base_positions_mm.size > 0:
+            state.wire_offset_mm = float(self._position_offset_mm)
+            positions = state.wire_material_positions_mm
+            if (
+                not isinstance(positions, np.ndarray)
+                or positions.shape != self._base_positions_mm.shape
+            ):
+                state.wire_material_positions_mm = (
+                    self._base_positions_mm + self._position_offset_mm
+                )
+            else:
+                try:
+                    np.add(
+                        self._base_positions_mm,
+                        self._position_offset_mm,
+                        out=positions,
+                        casting="unsafe",
+                    )
+                except (TypeError, ValueError):
+                    state.wire_material_positions_mm = (
+                        self._base_positions_mm + self._position_offset_mm
+                    )
         else:
             state.wire_offset_mm = 0.0
             state.wire_material_positions_mm = np.array([], dtype=np.float64)

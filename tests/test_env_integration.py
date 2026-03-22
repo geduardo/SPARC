@@ -180,6 +180,40 @@ class TestWireEDMEnv:
         assert env.wire._temperature[0] == pytest.approx(env.wire.params.spool_T)
         assert env.wire._damage[0] == pytest.approx(0.0)
 
+    def test_wire_transport_rollover_uses_offset_and_rolls_fresh_segments(self):
+        """Wire transport should advance positions via offset and preserve roll-in semantics."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.wire._temperature[:] = np.arange(env.wire.n_segments, dtype=np.float32) + 100.0
+        env.wire._damage[:] = np.arange(env.wire.n_segments, dtype=np.float32) / 10.0
+
+        remainder_mm = 0.05
+        delta_mm = env.wire._position_wrap_threshold_mm + remainder_mm
+        wire_unwind_vel = delta_mm * 1e3 / env.config.dt
+
+        env.wire._advance_transport(wire_unwind_vel)
+
+        expected_positions = np.arange(
+            env.wire.n_segments, dtype=np.float32
+        ) * np.float32(env.wire.segment_len_mm) + np.float32(remainder_mm)
+
+        assert env.wire._position_offset_mm == pytest.approx(remainder_mm)
+        np.testing.assert_allclose(
+            env.wire._ensure_position_buffer(),
+            expected_positions,
+        )
+        assert env.wire._temperature[0] == pytest.approx(env.wire.params.spool_T)
+        np.testing.assert_allclose(
+            env.wire._temperature[1:],
+            np.arange(env.wire.n_segments - 1, dtype=np.float32) + 100.0,
+        )
+        assert env.wire._damage[0] == pytest.approx(0.0)
+        np.testing.assert_allclose(
+            env.wire._damage[1:],
+            np.arange(env.wire.n_segments - 1, dtype=np.float32) / 10.0,
+        )
+
     def test_module_reset_hooks_sync_dirty_existing_state(self):
         """Module reset hooks should clean mirrored state, not just private caches."""
         env = WireEDMEnv()
