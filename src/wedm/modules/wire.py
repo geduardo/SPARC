@@ -233,6 +233,285 @@ def apply_thermal_damage_core_inplace(
     return max_damage
 
 
+@njit(cache=False)
+def resolve_discharge_partition(
+    spark_state: int,
+    spark_location_mm: float,
+    voltage: float,
+    current: float,
+    current_squared: float,
+    segment_len_mm: float,
+    zone_start: int,
+    zone_end: int,
+    n_segments: int,
+    contact_bottom_idx: int,
+    contact_top_idx: int,
+    plasma_efficiency: float,
+    joule_factor_base: float,
+) -> tuple[int, float, int, int, float, int, int, float]:
+    """Resolve spark index, plasma heating, and contact-current partitioning."""
+    plasma_idx = -1
+    plasma_heat = 0.0
+    bottom_start = 0
+    bottom_end = 0
+    bottom_joule_factor = 0.0
+    top_start = 0
+    top_end = 0
+    top_joule_factor = 0.0
+
+    is_active_discharge = spark_state == 1 or spark_state == -1
+    if is_active_discharge and not np.isnan(spark_location_mm):
+        if segment_len_mm > 0.0 and zone_end > zone_start:
+            rel_idx_float = spark_location_mm / segment_len_mm
+            zone_len = zone_end - zone_start
+            rel_idx = int(min(max(0.0, rel_idx_float), float(zone_len - 1)))
+            plasma_idx = zone_start + rel_idx
+
+        if 0 <= plasma_idx < n_segments:
+            plasma_heat = plasma_efficiency * voltage * current
+            if not np.isfinite(plasma_heat):
+                plasma_heat = 0.0
+
+    if (
+        not is_active_discharge
+        or current_squared <= 1e-6
+        or contact_top_idx < contact_bottom_idx
+    ):
+        return (
+            plasma_idx,
+            plasma_heat,
+            bottom_start,
+            bottom_end,
+            bottom_joule_factor,
+            top_start,
+            top_end,
+            top_joule_factor,
+        )
+
+    spark_idx = plasma_idx
+    if spark_idx < 0 and not np.isnan(spark_location_mm):
+        spark_idx = int(
+            min(max(spark_location_mm / segment_len_mm, 0.0), float(n_segments - 1))
+        )
+
+    spark_idx = min(max(int(spark_idx), contact_bottom_idx), contact_top_idx)
+
+    L_bottom = max(0, spark_idx - contact_bottom_idx)
+    L_top = max(0, contact_top_idx - spark_idx)
+    total_length = L_bottom + L_top
+    if total_length > 0:
+        if L_bottom == 0:
+            i_bottom = 0.0
+            i_top = current
+        elif L_top == 0:
+            i_bottom = current
+            i_top = 0.0
+        else:
+            i_bottom = current * (L_top / total_length)
+            i_top = current * (L_bottom / total_length)
+    else:
+        i_bottom = current * 0.5
+        i_top = current * 0.5
+
+    if L_bottom > 0 and spark_idx > contact_bottom_idx:
+        bottom_start = contact_bottom_idx
+        bottom_end = spark_idx
+        bottom_joule_factor = joule_factor_base * (i_bottom * i_bottom)
+
+    if L_top > 0 and spark_idx < contact_top_idx:
+        top_start = spark_idx + 1
+        top_end = contact_top_idx + 1
+        top_joule_factor = joule_factor_base * (i_top * i_top)
+
+    return (
+        plasma_idx,
+        plasma_heat,
+        bottom_start,
+        bottom_end,
+        bottom_joule_factor,
+        top_start,
+        top_end,
+        top_joule_factor,
+    )
+
+
+@njit(cache=False, fastmath=True)
+def advance_wire_step_inplace(
+    temperature: np.ndarray,
+    damage: np.ndarray,
+    dT_dt: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    position_offset_mm: float,
+    position_wrap_threshold_mm: float,
+    delta_mm: float,
+    spool_temp: float,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    spark_state: int,
+    has_spark_location: bool,
+    spark_location_mm: float,
+    voltage: float,
+    current: float,
+    current_squared: float,
+    segment_len_mm: float,
+    zone_start: int,
+    zone_end: int,
+    contact_bottom_idx: int,
+    contact_top_idx: int,
+    plasma_efficiency: float,
+    joule_factor_base: float,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> tuple[float, float]:
+    """Advance transport and apply the full discharge thermal-damage step."""
+    n_segments = temperature.shape[0]
+    if n_segments == 0:
+        return position_offset_mm, 0.0
+
+    if delta_mm != 0.0:
+        position_offset_mm += delta_mm
+        rollover_count = 0
+        while position_offset_mm > position_wrap_threshold_mm:
+            position_offset_mm -= position_wrap_threshold_mm
+            rollover_count += 1
+
+        if rollover_count >= n_segments:
+            for i in range(n_segments):
+                temperature[i] = spool_temp
+                damage[i] = 0.0
+        elif rollover_count > 0:
+            for i in range(n_segments - 1, rollover_count - 1, -1):
+                temperature[i] = temperature[i - rollover_count]
+                damage[i] = damage[i - rollover_count]
+
+            for i in range(rollover_count):
+                temperature[i] = spool_temp
+                damage[i] = 0.0
+
+    plasma_idx = -1
+    plasma_heat = 0.0
+    bottom_start = 0
+    bottom_end = 0
+    bottom_joule_factor = 0.0
+    top_start = 0
+    top_end = 0
+    top_joule_factor = 0.0
+
+    is_active_discharge = spark_state == 1 or spark_state == -1
+    if is_active_discharge and has_spark_location:
+        if segment_len_mm > 0.0 and zone_end > zone_start:
+            rel_idx_float = spark_location_mm / segment_len_mm
+            zone_len = zone_end - zone_start
+            rel_idx = int(min(max(0.0, rel_idx_float), float(zone_len - 1)))
+            plasma_idx = zone_start + rel_idx
+
+        if 0 <= plasma_idx < n_segments:
+            plasma_heat = plasma_efficiency * voltage * current
+            if not np.isfinite(plasma_heat):
+                plasma_heat = 0.0
+
+    if (
+        is_active_discharge
+        and current_squared > 1e-6
+        and contact_top_idx >= contact_bottom_idx
+    ):
+        spark_idx = plasma_idx
+        if spark_idx < 0 and has_spark_location:
+            spark_idx = int(
+                min(
+                    max(spark_location_mm / segment_len_mm, 0.0),
+                    float(n_segments - 1),
+                )
+            )
+
+        spark_idx = min(max(int(spark_idx), contact_bottom_idx), contact_top_idx)
+
+        l_bottom = max(0, spark_idx - contact_bottom_idx)
+        l_top = max(0, contact_top_idx - spark_idx)
+        total_length = l_bottom + l_top
+        if total_length > 0:
+            if l_bottom == 0:
+                i_bottom = 0.0
+                i_top = current
+            elif l_top == 0:
+                i_bottom = current
+                i_top = 0.0
+            else:
+                i_bottom = current * (l_top / total_length)
+                i_top = current * (l_bottom / total_length)
+        else:
+            i_bottom = current * 0.5
+            i_top = current * 0.5
+
+        if l_bottom > 0 and spark_idx > contact_bottom_idx:
+            bottom_start = contact_bottom_idx
+            bottom_end = spark_idx
+            bottom_joule_factor = joule_factor_base * (i_bottom * i_bottom)
+
+        if l_top > 0 and spark_idx < contact_top_idx:
+            top_start = spark_idx + 1
+            top_end = contact_top_idx + 1
+            top_joule_factor = joule_factor_base * (i_top * i_top)
+
+    dT_dt[0] = 0.0
+
+    if n_segments > 1:
+        for i in range(1, n_segments - 1):
+            temp = temperature[i]
+            dT_dt[i] = (
+                k_cond_coeff * (temperature[i - 1] - 2.0 * temp + temperature[i + 1])
+                - conv_loss_coeff[i] * (temp - dielectric_temp)
+            )
+
+        temp_last = temperature[n_segments - 1]
+        dT_dt[n_segments - 1] = (
+            k_cond_coeff * (temperature[n_segments - 2] - temp_last)
+            - conv_loss_coeff[n_segments - 1] * (temp_last - dielectric_temp)
+        )
+
+    if bottom_joule_factor != 0.0:
+        for i in range(bottom_start, bottom_end):
+            dT_dt[i] += bottom_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if top_joule_factor != 0.0:
+        for i in range(top_start, top_end):
+            dT_dt[i] += top_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if 0 <= plasma_idx < n_segments:
+        dT_dt[plasma_idx] += plasma_heat
+
+    max_damage = 0.0
+    for i in range(1, n_segments):
+        temperature[i] += dT_dt[i] * temp_update_factor
+
+        current_damage = damage[i]
+        temp = temperature[i]
+        if temp > threshold_k:
+            current_damage += stress_term_dt * np.exp(activation_scale / temp)
+            damage[i] = current_damage
+
+        if current_damage > max_damage:
+            max_damage = current_damage
+
+    temperature[0] = spool_temp
+    current_damage = damage[0]
+    if spool_temp > threshold_k:
+        current_damage += stress_term_dt * np.exp(activation_scale / spool_temp)
+        damage[0] = current_damage
+    if current_damage > max_damage:
+        max_damage = current_damage
+
+    return position_offset_mm, max_damage
+
+
 class WireModule(EDMModule):
     """Optimized 1-D transient heat model of the travelling wire with automatic material loading."""
 
@@ -520,27 +799,46 @@ class WireModule(EDMModule):
                 state.is_wire_broken = True
             self._sync_state_views(state, T_vec)
         else:
+            delta_mm = 0.0
             if self.params.moving_segments:
                 dt_us = float(self.env.config.dt)
-                v_mm_per_us = float(wire_unwind_vel) * 1e-3
-                delta_mm = v_mm_per_us * dt_us
+                delta_mm = float(wire_unwind_vel) * 1e-3 * dt_us
                 if delta_mm != 0.0:
-                    self._position_offset_mm += delta_mm
                     self._positions_dirty = True
 
-                    rollover_count = 0
-                    while self._position_offset_mm > self._position_wrap_threshold_mm:
-                        self._position_offset_mm -= self._position_wrap_threshold_mm
-                        rollover_count += 1
+            has_spark_location = state.spark_status[1] is not None
+            spark_location_mm = float(state.spark_status[1]) if has_spark_location else 0.0
 
-                    if rollover_count:
-                        self._roll_in_fresh_segments(rollover_count)
-            max_damage = self._apply_thermal_core(
-                state,
+            self._position_offset_mm, max_damage = advance_wire_step_inplace(
                 T_vec,
-                I,
-                I_squared,
-                dielectric_temp,
+                self._damage,
+                self.dT_dt,
+                self.conv_loss_coeff,
+                float(self._position_offset_mm),
+                float(self._position_wrap_threshold_mm),
+                float(delta_mm),
+                float(self.params.spool_T),
+                float(self.k_cond_coeff),
+                float(self.temp_update_factor),
+                float(dielectric_temp),
+                float(self.temp_ref),
+                float(self.alpha_rho),
+                int(state.spark_status[0]),
+                bool(has_spark_location),
+                float(spark_location_mm),
+                float(state.voltage if state.voltage is not None else 0.0),
+                float(I),
+                float(I_squared),
+                float(self.segment_len_mm),
+                int(self.zone_start),
+                int(self.zone_end),
+                int(self.contact_bottom_idx),
+                int(self.contact_top_idx),
+                float(self.params.plasma_efficiency),
+                float(self.joule_factor_base),
+                float(self.damage_temperature_threshold_k),
+                float(self.damage_stress_term_dt),
+                float(self.damage_activation_scale),
             )
             state.wire_max_damage = float(max_damage)
             if max_damage >= 1.0:
@@ -569,16 +867,14 @@ class WireModule(EDMModule):
         if delta_mm == 0.0:
             return
 
-        self._position_offset_mm += delta_mm
         self._positions_dirty = True
-
+        self._position_offset_mm += delta_mm
         rollover_count = 0
         while self._position_offset_mm > self._position_wrap_threshold_mm:
             self._position_offset_mm -= self._position_wrap_threshold_mm
             rollover_count += 1
-
         if rollover_count:
-            self._roll_in_fresh_segments(rollover_count)
+            self._roll_in_fresh_segments(int(rollover_count))
 
     def _apply_thermal_core(
         self,
@@ -589,74 +885,34 @@ class WireModule(EDMModule):
         dielectric_temp: float,
     ) -> float:
         """Apply conduction, Joule heating, plasma heating, dT update, and damage."""
-        plasma_idx = -1
-        plasma_heat = 0.0
-        bottom_start = 0
-        bottom_end = 0
-        bottom_joule_factor = 0.0
-        top_start = 0
-        top_end = 0
-        top_joule_factor = 0.0
-        is_active_discharge = state.spark_status[0] == 1 or state.spark_status[0] == -1
-        if is_active_discharge and state.spark_status[1] is not None:
-            y_spark = state.spark_status[1]
-            if self.params.segment_len > 0 and self.zone_end > self.zone_start:
-                rel_idx_float = y_spark / self.params.segment_len
-                zone_len = self.zone_end - self.zone_start
-                rel_idx = int(min(max(0.0, rel_idx_float), zone_len - 1))
-                plasma_idx = self.zone_start + rel_idx
+        spark_location_mm = np.nan
+        if state.spark_status[1] is not None:
+            spark_location_mm = float(state.spark_status[1])
 
-            if 0 <= plasma_idx < self.n_segments:
-                voltage = state.voltage if state.voltage is not None else 0.0
-                plasma_heat = self.params.plasma_efficiency * voltage * current
-                if not np.isfinite(plasma_heat):
-                    plasma_heat = 0.0
-
-        if (
-            is_active_discharge
-            and current_squared > 1e-6
-            and self.contact_top_idx >= self.contact_bottom_idx
-        ):
-            spark_idx = plasma_idx
-            if spark_idx < 0 and state.spark_status[1] is not None:
-                y_spark_mm = state.spark_status[1]
-                spark_idx = int(
-                    min(
-                        max(y_spark_mm / self.params.segment_len, 0.0),
-                        self.n_segments - 1,
-                    )
-                )
-
-            spark_idx = min(
-                max(int(spark_idx), self.contact_bottom_idx), self.contact_top_idx
-            )
-
-            L_bottom = max(0, spark_idx - self.contact_bottom_idx)
-            L_top = max(0, self.contact_top_idx - spark_idx)
-            total_length = L_bottom + L_top
-            if total_length > 0:
-                if L_bottom == 0:
-                    I_bottom = 0.0
-                    I_top = current
-                elif L_top == 0:
-                    I_bottom = current
-                    I_top = 0.0
-                else:
-                    I_bottom = current * (L_top / total_length)
-                    I_top = current * (L_bottom / total_length)
-            else:
-                I_bottom = current * 0.5
-                I_top = current * 0.5
-
-            if L_bottom > 0 and spark_idx > self.contact_bottom_idx:
-                bottom_start = self.contact_bottom_idx
-                bottom_end = spark_idx
-                bottom_joule_factor = self.joule_factor_base * (I_bottom * I_bottom)
-
-            if L_top > 0 and spark_idx < self.contact_top_idx:
-                top_start = spark_idx + 1
-                top_end = self.contact_top_idx + 1
-                top_joule_factor = self.joule_factor_base * (I_top * I_top)
+        (
+            plasma_idx,
+            plasma_heat,
+            bottom_start,
+            bottom_end,
+            bottom_joule_factor,
+            top_start,
+            top_end,
+            top_joule_factor,
+        ) = resolve_discharge_partition(
+            int(state.spark_status[0]),
+            spark_location_mm,
+            float(state.voltage if state.voltage is not None else 0.0),
+            float(current),
+            float(current_squared),
+            float(self.segment_len_mm),
+            int(self.zone_start),
+            int(self.zone_end),
+            int(self.n_segments),
+            int(self.contact_bottom_idx),
+            int(self.contact_top_idx),
+            float(self.params.plasma_efficiency),
+            float(self.joule_factor_base),
+        )
 
         return apply_thermal_damage_core_inplace(
             T_vec,
