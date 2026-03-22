@@ -147,6 +147,102 @@ def _resolve_partition_reference(
     )
 
 
+def _advance_wire_reference_step(
+    temperature: np.ndarray,
+    damage: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    position_offset_mm: float,
+    wrap_threshold_mm: float,
+    delta_mm: float,
+    spool_temp: float,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    spark_state: int,
+    has_spark_location: bool,
+    spark_location_mm: float,
+    voltage: float,
+    current: float,
+    current_squared: float,
+    segment_len_mm: float,
+    zone_start: int,
+    zone_end: int,
+    contact_bottom_idx: int,
+    contact_top_idx: int,
+    plasma_efficiency: float,
+    joule_factor_base: float,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    expected_temperature = temperature.copy()
+    expected_damage = damage.copy()
+    expected_position_offset = position_offset_mm + delta_mm
+    rollover_count = 0
+
+    while expected_position_offset > wrap_threshold_mm:
+        expected_position_offset -= wrap_threshold_mm
+        rollover_count += 1
+
+    if rollover_count >= expected_temperature.shape[0]:
+        expected_temperature.fill(spool_temp)
+        expected_damage.fill(0.0)
+    elif rollover_count > 0:
+        expected_temperature[rollover_count:] = expected_temperature[:-rollover_count]
+        expected_damage[rollover_count:] = expected_damage[:-rollover_count]
+        expected_temperature[:rollover_count] = spool_temp
+        expected_damage[:rollover_count] = 0.0
+
+    partition = _resolve_partition_reference(
+        spark_state=spark_state,
+        spark_location_mm=spark_location_mm if has_spark_location else np.nan,
+        voltage=voltage,
+        current=current,
+        current_squared=current_squared,
+        segment_len_mm=segment_len_mm,
+        zone_start=zone_start,
+        zone_end=zone_end,
+        n_segments=expected_temperature.shape[0],
+        contact_bottom_idx=contact_bottom_idx,
+        contact_top_idx=contact_top_idx,
+        plasma_efficiency=plasma_efficiency,
+        joule_factor_base=joule_factor_base,
+    )
+    expected_temperature = _thermal_reference(
+        expected_temperature,
+        conv_loss_coeff,
+        k_cond_coeff=k_cond_coeff,
+        temp_update_factor=temp_update_factor,
+        dielectric_temp=dielectric_temp,
+        temp_ref=temp_ref,
+        alpha_rho=alpha_rho,
+        bottom_start=partition[2],
+        bottom_end=partition[3],
+        bottom_joule_factor=partition[4],
+        top_start=partition[5],
+        top_end=partition[6],
+        top_joule_factor=partition[7],
+        plasma_idx=partition[0],
+        plasma_heat=partition[1],
+        spool_temp=spool_temp,
+    )
+    expected_max_damage = accumulate_damage(
+        expected_damage,
+        expected_temperature,
+        threshold_k,
+        stress_term_dt,
+        activation_scale,
+    )
+    return (
+        expected_temperature,
+        expected_damage,
+        expected_position_offset,
+        expected_max_damage,
+    )
+
+
 def test_apply_thermal_core_inplace_matches_reference():
     temperature = np.array(
         [293.15, 305.0, 318.5, 330.0, 341.0, 352.5], dtype=np.float32
@@ -326,24 +422,26 @@ def test_advance_wire_step_inplace_matches_reference():
     delta_mm = 0.08
     spool_temp = 293.15
 
-    expected_temperature = temperature.copy()
-    expected_damage = damage.copy()
-    expected_position_offset = position_offset_mm + delta_mm
-    rollover_count = 0
-    while expected_position_offset > wrap_threshold_mm:
-        expected_position_offset -= wrap_threshold_mm
-        rollover_count += 1
-    if rollover_count >= expected_temperature.shape[0]:
-        expected_temperature.fill(spool_temp)
-        expected_damage.fill(0.0)
-    elif rollover_count > 0:
-        expected_temperature[rollover_count:] = expected_temperature[:-rollover_count]
-        expected_damage[rollover_count:] = expected_damage[:-rollover_count]
-        expected_temperature[:rollover_count] = spool_temp
-        expected_damage[:rollover_count] = 0.0
-
-    partition = _resolve_partition_reference(
+    (
+        expected_temperature,
+        expected_damage,
+        expected_position_offset,
+        expected_max_damage,
+    ) = _advance_wire_reference_step(
+        temperature,
+        damage,
+        conv_loss_coeff,
+        position_offset_mm=position_offset_mm,
+        wrap_threshold_mm=wrap_threshold_mm,
+        delta_mm=delta_mm,
+        spool_temp=spool_temp,
+        k_cond_coeff=2.4,
+        temp_update_factor=1.5e-4,
+        dielectric_temp=298.0,
+        temp_ref=293.15,
+        alpha_rho=0.0034,
         spark_state=1,
+        has_spark_location=True,
         spark_location_mm=0.55,
         voltage=90.0,
         current=30.0,
@@ -351,36 +449,13 @@ def test_advance_wire_step_inplace_matches_reference():
         segment_len_mm=0.2,
         zone_start=1,
         zone_end=5,
-        n_segments=expected_temperature.shape[0],
         contact_bottom_idx=0,
         contact_top_idx=5,
         plasma_efficiency=0.25,
         joule_factor_base=0.015,
-    )
-    expected_temperature = _thermal_reference(
-        expected_temperature,
-        conv_loss_coeff,
-        k_cond_coeff=2.4,
-        temp_update_factor=1.5e-4,
-        dielectric_temp=298.0,
-        temp_ref=293.15,
-        alpha_rho=0.0034,
-        bottom_start=partition[2],
-        bottom_end=partition[3],
-        bottom_joule_factor=partition[4],
-        top_start=partition[5],
-        top_end=partition[6],
-        top_joule_factor=partition[7],
-        plasma_idx=partition[0],
-        plasma_heat=partition[1],
-        spool_temp=spool_temp,
-    )
-    expected_max_damage = accumulate_damage(
-        expected_damage,
-        expected_temperature,
-        320.0,
-        1.3e-4,
-        -175.0,
+        threshold_k=320.0,
+        stress_term_dt=1.3e-4,
+        activation_scale=-175.0,
     )
 
     actual_position_offset, actual_max_damage = advance_wire_step_inplace(
@@ -419,3 +494,143 @@ def test_advance_wire_step_inplace_matches_reference():
     np.testing.assert_allclose(temperature, expected_temperature, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(damage, expected_damage, rtol=1e-6, atol=1e-6)
     assert actual_max_damage == expected_max_damage
+
+
+def test_advance_wire_step_inplace_matches_reference_across_multiple_steps():
+    temperature = np.array(
+        [293.15, 305.0, 318.5, 452.0, 341.0, 470.0, 352.5, 293.15],
+        dtype=np.float32,
+    )
+    damage = np.array([0.0, 0.2, 0.0, 0.1, 0.4, 0.3, 0.0, 0.0], dtype=np.float32)
+    dT_dt = np.zeros_like(temperature)
+    conv_loss_coeff = np.array([0.0, 0.7, 0.8, 0.9, 1.0, 1.1, 1.15, 1.2], dtype=np.float32)
+
+    expected_temperature = temperature.copy()
+    expected_damage = damage.copy()
+    actual_temperature = temperature.copy()
+    actual_damage = damage.copy()
+    expected_position_offset = 0.02
+    actual_position_offset = 0.02
+
+    steps = [
+        {
+            "delta_mm": 0.0,
+            "spark_state": 1,
+            "has_spark_location": True,
+            "spark_location_mm": 0.55,
+            "voltage": 90.0,
+            "current": 30.0,
+            "current_squared": 900.0,
+        },
+        {
+            "delta_mm": 0.07,
+            "spark_state": 1,
+            "has_spark_location": True,
+            "spark_location_mm": 0.35,
+            "voltage": 90.0,
+            "current": 30.0,
+            "current_squared": 900.0,
+        },
+        {
+            "delta_mm": 0.02,
+            "spark_state": 0,
+            "has_spark_location": False,
+            "spark_location_mm": 0.0,
+            "voltage": 80.0,
+            "current": 0.0,
+            "current_squared": 0.0,
+        },
+        {
+            "delta_mm": 0.0,
+            "spark_state": -1,
+            "has_spark_location": True,
+            "spark_location_mm": 0.95,
+            "voltage": 90.0,
+            "current": 24.0,
+            "current_squared": 576.0,
+        },
+    ]
+
+    for step in steps:
+        (
+            expected_temperature,
+            expected_damage,
+            expected_position_offset,
+            expected_max_damage,
+        ) = _advance_wire_reference_step(
+            expected_temperature,
+            expected_damage,
+            conv_loss_coeff,
+            position_offset_mm=expected_position_offset,
+            wrap_threshold_mm=0.05,
+            delta_mm=step["delta_mm"],
+            spool_temp=293.15,
+            k_cond_coeff=2.4,
+            temp_update_factor=1.5e-4,
+            dielectric_temp=298.0,
+            temp_ref=293.15,
+            alpha_rho=0.0034,
+            spark_state=step["spark_state"],
+            has_spark_location=step["has_spark_location"],
+            spark_location_mm=step["spark_location_mm"],
+            voltage=step["voltage"],
+            current=step["current"],
+            current_squared=step["current_squared"],
+            segment_len_mm=0.2,
+            zone_start=1,
+            zone_end=6,
+            contact_bottom_idx=0,
+            contact_top_idx=7,
+            plasma_efficiency=0.25,
+            joule_factor_base=0.015,
+            threshold_k=320.0,
+            stress_term_dt=1.3e-4,
+            activation_scale=-175.0,
+        )
+
+        actual_position_offset, actual_max_damage = advance_wire_step_inplace(
+            actual_temperature,
+            actual_damage,
+            dT_dt,
+            conv_loss_coeff,
+            actual_position_offset,
+            0.05,
+            step["delta_mm"],
+            293.15,
+            2.4,
+            1.5e-4,
+            298.0,
+            293.15,
+            0.0034,
+            step["spark_state"],
+            step["has_spark_location"],
+            step["spark_location_mm"],
+            step["voltage"],
+            step["current"],
+            step["current_squared"],
+            0.2,
+            1,
+            6,
+            0,
+            7,
+            0.25,
+            0.015,
+            320.0,
+            1.3e-4,
+            -175.0,
+        )
+
+        np.testing.assert_allclose(
+            actual_temperature,
+            expected_temperature,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            actual_damage,
+            expected_damage,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(actual_position_offset, expected_position_offset)
+        np.testing.assert_allclose(actual_max_damage, expected_max_damage)

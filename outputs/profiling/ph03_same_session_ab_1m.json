@@ -1,0 +1,59 @@
+{
+  "task": "PH-03",
+  "benchmark": "same_session_1m_ab",
+  "workload": {
+    "steps": 1000000,
+    "warmup_steps": 5000,
+    "seed": 123,
+    "initial_gap_um": 12.0,
+    "servo_interval_us": 1,
+    "workpiece_height_mm": 20.0,
+    "servo": 0.25,
+    "target_voltage_v": 90.0,
+    "current_mode": "I1",
+    "on_time_us": 3.0,
+    "off_time_us": 20.0
+  },
+  "comparison": {
+    "old_path": "pre_PH03_env_step",
+    "current_path": "current_PH03_env_step"
+  },
+  "scenarios": [
+    {
+      "segment_len_mm": 0.2,
+      "n_segments": 400,
+      "old": {
+        "steps_run": 1000000,
+        "wall_seconds": 10.945641300000716,
+        "steps_per_second": 91360.56742512973,
+        "termination_reason": "completed",
+        "workpiece_position_um": 15.610286080750816
+      },
+      "current": {
+        "steps_run": 1000000,
+        "wall_seconds": 10.043009799992433,
+        "steps_per_second": 99571.7439209064,
+        "termination_reason": "completed",
+        "workpiece_position_um": 15.610286080750816
+      }
+    },
+    {
+      "segment_len_mm": 0.05,
+      "n_segments": 1600,
+      "old": {
+        "steps_run": 1000000,
+        "wall_seconds": 13.551944699982414,
+        "steps_per_second": 73790.14762370582,
+        "termination_reason": "completed",
+        "workpiece_position_um": 15.610286080750816
+      },
+      "current": {
+        "steps_run": 1000000,
+        "wall_seconds": 12.014690599986352,
+        "steps_per_second": 83231.44001736806,
+        "termination_reason": "completed",
+        "workpiece_position_um": 15.610286080750816
+      }
+    }
+  ]
+}

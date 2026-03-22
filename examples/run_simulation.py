@@ -28,6 +28,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.envs.wire_edm import build_scalar_action
 from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger
 
@@ -150,15 +151,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def build_generator_control(args: argparse.Namespace) -> dict[str, np.ndarray]:
-    return {
-        "target_voltage": np.array([args.generator_voltage], dtype=np.float32),
-        "current_mode": np.array([args.current_mode], dtype=np.int32),
-        "ON_time": np.array([args.on_time], dtype=np.float32),
-        "OFF_time": np.array([args.off_time], dtype=np.float32),
-    }
-
-
 def build_gap_action(
     env: WireEDMEnv,
     args: argparse.Namespace,
@@ -178,10 +170,13 @@ def build_gap_action(
             50.0 * error + 10.0 * next_integral_error, -500.0, 500.0
         )
 
-    action = {
-        "servo": np.array([servo_value], dtype=np.float32),
-        "generator_control": build_generator_control(args),
-    }
+    action = build_scalar_action(
+        servo=servo_value,
+        target_voltage=args.generator_voltage,
+        current_mode=args.current_mode,
+        ON_time=args.on_time,
+        OFF_time=args.off_time,
+    )
     return action, next_integral_error
 
 
@@ -205,18 +200,24 @@ def build_voltage_action(
     else:
         servo_value = np.clip(pi_output * 100.0, -1000.0, 1000.0)
 
-    action = {
-        "servo": np.array([servo_value], dtype=np.float32),
-        "generator_control": build_generator_control(args),
-    }
+    action = build_scalar_action(
+        servo=servo_value,
+        target_voltage=args.generator_voltage,
+        current_mode=args.current_mode,
+        ON_time=args.on_time,
+        OFF_time=args.off_time,
+    )
     return action, next_integral_error, avg_voltage
 
 
 def build_fixed_servo_action(args: argparse.Namespace) -> dict[str, object]:
-    return {
-        "servo": np.array([args.servo], dtype=np.float32),
-        "generator_control": build_generator_control(args),
-    }
+    return build_scalar_action(
+        servo=args.servo,
+        target_voltage=args.generator_voltage,
+        current_mode=args.current_mode,
+        ON_time=args.on_time,
+        OFF_time=args.off_time,
+    )
 
 
 def main() -> None:

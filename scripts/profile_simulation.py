@@ -37,6 +37,7 @@ if str(SRC_ROOT) not in sys.path:
 import numpy as np
 
 from wedm import EnvironmentConfig, WireEDMEnv, WireModuleParameters
+from wedm.envs.wire_edm import build_scalar_action
 
 
 POWERSCHEME_RE = re.compile(
@@ -852,15 +853,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_action(args: argparse.Namespace) -> Dict[str, Any]:
-    return {
-        "servo": np.array([args.servo], dtype=np.float32),
-        "generator_control": {
-            "target_voltage": np.array([args.target_voltage], dtype=np.float32),
-            "current_mode": np.array([args.current_mode], dtype=np.int32),
-            "ON_time": np.array([args.on_time], dtype=np.float32),
-            "OFF_time": np.array([args.off_time], dtype=np.float32),
-        },
-    }
+    return build_scalar_action(
+        servo=args.servo,
+        target_voltage=args.target_voltage,
+        current_mode=args.current_mode,
+        ON_time=args.on_time,
+        OFF_time=args.off_time,
+    )
 
 
 def create_env(

@@ -24,6 +24,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.envs.wire_edm import build_scalar_action
 from wedm.modules.material import MaterialModuleParameters
 from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger, LoggerConfig
@@ -50,17 +51,13 @@ def create_gap_controller(
             delta = error * 50.0  # Higher gain for velocity control
             delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
 
-        return {
-            "servo": np.array([delta], dtype=np.float32),
-            "generator_control": {
-                "target_voltage": np.array([generator_voltage], dtype=np.float32),
-                # Current mode selection (1-19 maps directly to I1-I19):
-                # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
-                "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([on_time], dtype=np.float32),
-                "OFF_time": np.array([off_time], dtype=np.float32),
-            },
-        }
+        return build_scalar_action(
+            servo=delta,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
 
     return controller
 
@@ -113,15 +110,13 @@ def create_voltage_controller(
             delta = pi_output * 100.0  # Scale for velocity control
             delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
 
-        return {
-            "servo": np.array([delta], dtype=np.float32),
-            "generator_control": {
-                "target_voltage": np.array([generator_voltage], dtype=np.float32),
-                "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([on_time], dtype=np.float32),
-                "OFF_time": np.array([off_time], dtype=np.float32),
-            },
-        }
+        return build_scalar_action(
+            servo=delta,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
 
     return controller
 
@@ -137,15 +132,13 @@ def create_fixed_servo_controller(
 
     def controller(env: WireEDMEnv) -> Dict[str, Any]:
         del env
-        return {
-            "servo": np.array([servo], dtype=np.float32),
-            "generator_control": {
-                "target_voltage": np.array([generator_voltage], dtype=np.float32),
-                "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([on_time], dtype=np.float32),
-                "OFF_time": np.array([off_time], dtype=np.float32),
-            },
-        }
+        return build_scalar_action(
+            servo=servo,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
 
     return controller
 

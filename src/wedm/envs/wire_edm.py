@@ -1,6 +1,8 @@
 # src/edm_env/envs/wire_edm.py
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -12,6 +14,44 @@ from ..modules.ignition import IgnitionModule, IgnitionModuleParameters
 from ..modules.material import MaterialRemovalModule, MaterialModuleParameters
 from ..modules.mechanics import MechanicsModule, MechanicsModuleParameters
 from ..modules.wire import WireModule, WireModuleParameters
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarGeneratorControl:
+    """Scalar generator settings for the env fast path."""
+
+    target_voltage: float
+    current_mode: int
+    ON_time: float
+    OFF_time: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarAction:
+    """Scalar action payload that avoids per-step NumPy indexing overhead."""
+
+    servo: float
+    generator_control: ScalarGeneratorControl
+
+
+def build_scalar_action(
+    *,
+    servo: float,
+    target_voltage: float,
+    current_mode: int,
+    ON_time: float,
+    OFF_time: float,
+) -> ScalarAction:
+    """Build a scalar action payload for repeated env stepping."""
+    return ScalarAction(
+        servo=float(servo),
+        generator_control=ScalarGeneratorControl(
+            target_voltage=float(target_voltage),
+            current_mode=int(current_mode),
+            ON_time=float(ON_time),
+            OFF_time=float(OFF_time),
+        ),
+    )
 
 
 class WireEDMEnv(gym.Env):
@@ -85,6 +125,24 @@ class WireEDMEnv(gym.Env):
                 f"Got {self.ignition.params.default_current_mode}, "
                 f"valid modes: {sorted(self.valid_current_modes, key=lambda m: int(m[1:]))}"
             )
+        self._valid_modes_sorted = sorted(
+            self.valid_current_modes, key=lambda m: int(m[1:])
+        )
+        self._mode_int_lut = tuple(
+            f"I{mode_int}" if f"I{mode_int}" in self.valid_current_modes else ""
+            for mode_int in range(20)
+        )
+        env_type = type(self)
+        self._uses_default_apply_action = (
+            env_type._apply_action is WireEDMEnv._apply_action
+        )
+        self._uses_default_check_termination = (
+            env_type._check_termination is WireEDMEnv._check_termination
+        )
+        self._uses_default_get_obs = env_type._get_obs is WireEDMEnv._get_obs
+        self._uses_default_calc_reward = (
+            env_type._calc_reward is WireEDMEnv._calc_reward
+        )
 
         # ── Action Space ─────────────────────────────────────────────────
         # Note: target_delta interpretation depends on control mode:
@@ -124,44 +182,87 @@ class WireEDMEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
-        is_ctrl_step = self.state.time_since_servo >= self.servo_interval
+        state = self.state
+        is_ctrl_step = state.time_since_servo >= self.servo_interval
 
         if is_ctrl_step:
-            self._apply_action(action)
-            self.state.time_since_servo = 0
+            if self._uses_default_apply_action:
+                if isinstance(action, ScalarAction):
+                    state.target_delta = action.servo
+                    gc = action.generator_control
+                    state.target_voltage = gc.target_voltage
+                    mode_int = gc.current_mode
+                    state.ON_time = gc.ON_time
+                    state.OFF_time = gc.OFF_time
+                else:
+                    state.target_delta = float(action["servo"][0])
+                    gc = action["generator_control"]
+                    state.target_voltage = float(gc["target_voltage"][0])
+                    mode_int = int(gc["current_mode"][0])
+                    state.ON_time = float(gc["ON_time"][0])
+                    state.OFF_time = float(gc["OFF_time"][0])
+                mode_str = (
+                    self._mode_int_lut[mode_int]
+                    if 0 <= mode_int < len(self._mode_int_lut)
+                    else ""
+                )
+                if not mode_str:
+                    raise ValueError(
+                        f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
+                        f"Valid modes: {self._valid_modes_sorted}"
+                    )
+                state.current_mode = mode_str
+            else:
+                self._apply_action(action)
+            state.time_since_servo = 0
 
         # physics advance 1 µs
-        self.ignition.update(self.state)
-        self.material.update(self.state)
-        self.dielectric.update(self.state)
-        self.wire.update(self.state)
+        self.ignition.update(state)
+        self.material.update(state)
+        self.dielectric.update(state)
+        self.wire.update(state)
 
-        if self.state.is_wire_broken:
+        if state.is_wire_broken:
             return None, 0.0, True, False, {"wire_broken": True}
 
-        self.mechanics.update(self.state)
+        self.mechanics.update(state)
 
         # time bookkeeping
-        self.state.time += self.dt
-        self.state.time_since_servo += self.dt
-        self.state.time_since_open_voltage += self.dt
+        dt = self.dt
+        state.time += dt
+        state.time_since_servo += dt
+        state.time_since_open_voltage += dt
 
-        if self.state.spark_status[0] == 1:
-            self.state.time_since_spark_ignition += self.dt
-            self.state.time_since_spark_end = 0
+        if state.spark_status[0] == 1:
+            state.time_since_spark_ignition += dt
+            state.time_since_spark_end = 0
         else:
-            self.state.time_since_spark_end += self.dt
-            self.state.time_since_spark_ignition = 0
+            state.time_since_spark_end += dt
+            state.time_since_spark_ignition = 0
 
-        terminated = self._check_termination()
-        obs = self._get_obs() if is_ctrl_step else None
-        reward = self._calc_reward() if is_ctrl_step else 0.0
+        if self._uses_default_check_termination:
+            terminated = False
+            if state.wire_position > state.workpiece_position + 100:
+                state.is_wire_broken = True
+                terminated = True
+            elif state.workpiece_position >= state.target_position:
+                state.is_target_distance_reached = True
+                terminated = True
+        else:
+            terminated = self._check_termination()
+
+        if is_ctrl_step:
+            obs = {} if self._uses_default_get_obs else self._get_obs()
+            reward = 0.0 if self._uses_default_calc_reward else self._calc_reward()
+        else:
+            obs = None
+            reward = 0.0
 
         info = {
-            "wire_broken": self.state.is_wire_broken,
-            "target_reached": self.state.is_target_distance_reached,
-            "spark_state": int(self.state.spark_status[0]),
-            "time": self.state.time,
+            "wire_broken": state.is_wire_broken,
+            "target_reached": state.is_target_distance_reached,
+            "spark_state": int(state.spark_status[0]),
+            "time": state.time,
             "control_step": is_ctrl_step,
         }
         return obs, reward, terminated, False, info
@@ -207,20 +308,32 @@ class WireEDMEnv(gym.Env):
         self.state.dielectric_temperature = self.dielectric.params.dielectric_temperature
 
     def _apply_action(self, action):
-        self.state.target_delta = float(action["servo"][0])
-        gc = action["generator_control"]
-        self.state.target_voltage = float(gc["target_voltage"][0])
+        if isinstance(action, ScalarAction):
+            self.state.target_delta = action.servo
+            gc = action.generator_control
+            self.state.target_voltage = gc.target_voltage
+            mode_int = gc.current_mode
+            self.state.ON_time = gc.ON_time
+            self.state.OFF_time = gc.OFF_time
+        else:
+            self.state.target_delta = float(action["servo"][0])
+            gc = action["generator_control"]
+            self.state.target_voltage = float(gc["target_voltage"][0])
+            mode_int = int(gc["current_mode"][0])
+            self.state.ON_time = float(gc["ON_time"][0])
+            self.state.OFF_time = float(gc["OFF_time"][0])
         # Convert integer mode (1-19) to I-mode string and validate
-        mode_int = int(gc["current_mode"][0])
-        mode_str = f"I{mode_int}"
-        if mode_str not in self.valid_current_modes:
+        mode_str = (
+            self._mode_int_lut[mode_int]
+            if 0 <= mode_int < len(self._mode_int_lut)
+            else ""
+        )
+        if not mode_str:
             raise ValueError(
-                f"current_mode {mode_int} ('{mode_str}') has no crater data. "
-                f"Valid modes: {sorted(self.valid_current_modes, key=lambda m: int(m[1:]))}"
+                f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
+                f"Valid modes: {self._valid_modes_sorted}"
             )
         self.state.current_mode = mode_str
-        self.state.ON_time = float(gc["ON_time"][0])
-        self.state.OFF_time = float(gc["OFF_time"][0])
 
     def _check_termination(self) -> bool:
         if self.state.wire_position > self.state.workpiece_position + 100:

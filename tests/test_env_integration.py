@@ -8,6 +8,7 @@ from wedm import (
     IgnitionModuleParameters,
     MaterialModuleParameters,
 )
+from wedm.envs.wire_edm import ScalarAction, build_scalar_action
 
 
 def _valid_action(env):
@@ -292,6 +293,81 @@ class TestWireEDMEnv:
         obs, reward, terminated, truncated, info = env.step(action)
         assert env.state.time > initial_time
 
+        assert isinstance(reward, (int, float))
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+        assert isinstance(info, dict)
+
+    def test_env_step_respects_overridden_step_hooks(self):
+        """Subclass overrides should bypass the base env fast path."""
+
+        class HookedEnv(WireEDMEnv):
+            def __init__(self):
+                super().__init__()
+                self.apply_called = False
+                self.check_called = False
+                self.obs_called = False
+                self.reward_called = False
+
+            def _apply_action(self, action):
+                self.apply_called = True
+                return super()._apply_action(action)
+
+            def _check_termination(self) -> bool:
+                self.check_called = True
+                return super()._check_termination()
+
+            def _get_obs(self):
+                self.obs_called = True
+                return {"hooked": True}
+
+            def _calc_reward(self):
+                self.reward_called = True
+                return 7.0
+
+        env = HookedEnv()
+        env.reset()
+        env.state.time_since_servo = env.servo_interval
+
+        action = _valid_action(env)
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        assert env._uses_default_apply_action is False
+        assert env._uses_default_check_termination is False
+        assert env._uses_default_get_obs is False
+        assert env._uses_default_calc_reward is False
+        assert env.apply_called is True
+        assert env.check_called is True
+        assert env.obs_called is True
+        assert env.reward_called is True
+        assert obs == {"hooked": True}
+        assert reward == 7.0
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+        assert isinstance(info, dict)
+
+    def test_env_step_accepts_scalar_action_fast_path(self):
+        """The env should accept normalized scalar actions without changing behavior."""
+        env = WireEDMEnv()
+        env.reset()
+        env.state.time_since_servo = env.servo_interval
+
+        action = build_scalar_action(
+            servo=0.25,
+            target_voltage=90.0,
+            current_mode=1,
+            ON_time=3.0,
+            OFF_time=20.0,
+        )
+        assert isinstance(action, ScalarAction)
+
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        assert env.state.target_delta == pytest.approx(0.25)
+        assert env.state.target_voltage == pytest.approx(90.0)
+        assert env.state.current_mode == "I1"
+        assert env.state.ON_time == pytest.approx(3.0)
+        assert env.state.OFF_time == pytest.approx(20.0)
         assert isinstance(reward, (int, float))
         assert isinstance(terminated, bool)
         assert isinstance(truncated, bool)
