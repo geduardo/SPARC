@@ -392,6 +392,42 @@ class TestWireEDMEnv:
         assert env.material._cached_current_mode == "I17"
         assert env.material._cached_crater_info == env.material.crater_data["I17"]
 
+    def test_ignition_generator_settings_cache_uses_mode_lut_and_refreshes(self):
+        """Ignition should resolve control settings once and reuse crater-backed current LUTs."""
+        env = WireEDMEnv(
+            ignition_params=IgnitionModuleParameters(default_current_mode="I17")
+        )
+        env.reset()
+
+        env.state.target_voltage = None
+        env.state.current_mode = None
+        env.state.ON_time = None
+        env.state.OFF_time = None
+
+        default_settings = env.ignition._resolve_generator_settings(env.state)
+        assert default_settings == (
+            env.ignition.params.default_target_voltage,
+            env.ignition.currents_data["I17"]["Current"],
+            env.ignition.params.default_on_time,
+            env.ignition.params.default_off_time,
+        )
+        assert env.ignition._cached_current_mode == "I17"
+
+        valid_mode = sorted(env.valid_current_modes, key=lambda m: int(m[1:]))[0]
+        env.state.target_voltage = 47.0
+        env.state.current_mode = valid_mode
+        env.state.ON_time = 2.5
+        env.state.OFF_time = 17.0
+
+        updated_settings = env.ignition._resolve_generator_settings(env.state)
+        assert updated_settings == (
+            47.0,
+            env.ignition.currents_data[valid_mode]["Current"],
+            2.5,
+            17.0,
+        )
+        assert env.ignition._cached_current_mode == valid_mode
+
 
 class TestCurrentModeValidation:
     """Tests that invalid current_mode values are rejected at action intake."""
