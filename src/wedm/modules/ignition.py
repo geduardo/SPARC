@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import math
-import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
 from numba import njit
@@ -34,6 +33,84 @@ def _get_debris_short_probability_scalar(
     if exponent < -500.0:
         return 1.0
     return 1.0 / (1.0 + math.exp(exponent))
+
+
+@njit(cache=False)
+def _roll_new_short_circuit_state(
+    gap: float,
+    dt: int,
+    debris_density: float,
+    debris_roll: float,
+    random_roll: float,
+    hard_short_gap: float,
+    base_critical_density: float,
+    gap_coefficient: float,
+    max_critical_density: float,
+    sigmoid_steepness: float,
+    random_short_min_gap: float,
+    random_short_max_gap: float,
+    random_short_max_probability: float,
+) -> int:
+    """Return 0 for no short, 1 for debris short, and 2 for random short."""
+    base_debris_prob = _get_debris_short_probability_scalar(
+        gap,
+        debris_density,
+        hard_short_gap,
+        base_critical_density,
+        gap_coefficient,
+        max_critical_density,
+        sigmoid_steepness,
+    )
+    if base_debris_prob >= 1.0 or dt == 1:
+        debris_short_prob = base_debris_prob
+    else:
+        debris_short_prob = 1.0 - math.pow(1.0 - base_debris_prob, dt)
+
+    if gap >= random_short_max_gap:
+        random_short_rate = 0.0
+    elif gap <= random_short_min_gap:
+        random_short_rate = random_short_max_probability
+    else:
+        gap_factor = 1.0 - (gap - random_short_min_gap) / (
+            random_short_max_gap - random_short_min_gap
+        )
+        random_short_rate = gap_factor * random_short_max_probability
+
+    random_short_prob = 1.0 - math.exp(-random_short_rate * dt)
+
+    if debris_roll < debris_short_prob:
+        return 1
+    if random_roll < random_short_prob:
+        return 2
+    return 0
+
+
+@njit(cache=False)
+def _roll_new_debris_short_state(
+    gap: float,
+    dt: int,
+    debris_density: float,
+    debris_roll: float,
+    hard_short_gap: float,
+    base_critical_density: float,
+    gap_coefficient: float,
+    max_critical_density: float,
+    sigmoid_steepness: float,
+) -> bool:
+    """Return whether a new debris-driven short should start."""
+    base_debris_prob = _get_debris_short_probability_scalar(
+        gap,
+        debris_density,
+        hard_short_gap,
+        base_critical_density,
+        gap_coefficient,
+        max_critical_density,
+        sigmoid_steepness,
+    )
+    if base_debris_prob >= 1.0 or dt == 1:
+        return debris_roll < base_debris_prob
+    debris_short_prob = 1.0 - math.pow(1.0 - base_debris_prob, dt)
+    return debris_roll < debris_short_prob
 
 
 @njit(cache=False)
@@ -260,9 +337,23 @@ class IgnitionModule(EDMModule):
         self._ignition_prob_cache: dict[tuple[float, float], float] = {}  # (rounded_gap, dt) -> probability
         self.random_short_remaining = 0  # Remaining microseconds of random short
         self.debris_short_remaining = 0  # Remaining microseconds of debris short
-        
+
         # Precompute constants
         self._log2 = math.log(2)
+        self._dt_int = int(self.env.dt)
+        self._hard_short_gap = float(self.params.hard_short_gap)
+        self._base_critical_density = float(self.params.base_critical_density)
+        self._gap_coefficient = float(self.params.gap_coefficient)
+        self._max_critical_density = float(self.params.max_critical_density)
+        self._sigmoid_steepness = float(self.params.sigmoid_steepness)
+        self._debris_short_duration = int(self.params.debris_short_duration)
+        self._random_short_duration = int(self.params.random_short_duration)
+        self._random_short_min_gap = float(self.params.random_short_min_gap)
+        self._random_short_max_gap = float(self.params.random_short_max_gap)
+        self._random_short_max_probability = float(
+            self.params.random_short_max_probability
+        )
+        self._random_short_enabled = self._random_short_max_probability > 0.0
 
         # ── Current Mapping Data ──
         self.currents_data = self._load_currents_data()
@@ -465,39 +556,74 @@ class IgnitionModule(EDMModule):
 
     def _update_short_circuit_detection(self, state: EDMState) -> None:
         """Advance short-circuit timers and roll new short events when needed."""
-        gap = max(0.0, state.workpiece_position - state.wire_position)
-        debris_density = float(getattr(state, "debris_density", 0.0))
+        random_remaining = self.random_short_remaining
+        if random_remaining > 0:
+            random_remaining -= self._dt_int
+            if random_remaining < 0:
+                random_remaining = 0
+            self.random_short_remaining = random_remaining
+            state.is_short_circuit = True
+            return
 
-        debris_roll = 1.0
-        random_roll = 1.0
-        if self.random_short_remaining <= 0 and self.debris_short_remaining <= 0:
-            debris_roll = float(self.env.np_random.random())
-            random_roll = float(self.env.np_random.random())
+        debris_remaining = self.debris_short_remaining
+        if debris_remaining > 0:
+            debris_remaining -= self._dt_int
+            if debris_remaining < 0:
+                debris_remaining = 0
+            self.debris_short_remaining = debris_remaining
+            state.is_short_circuit = True
+            return
 
-        (
-            self.random_short_remaining,
-            self.debris_short_remaining,
-            is_short_circuit,
-        ) = _advance_short_circuit_state(
-            gap,
-            int(self.env.dt),
-            debris_density,
-            int(self.random_short_remaining),
-            int(self.debris_short_remaining),
-            debris_roll,
-            random_roll,
-            self.params.hard_short_gap,
-            self.params.base_critical_density,
-            self.params.gap_coefficient,
-            self.params.max_critical_density,
-            self.params.sigmoid_steepness,
-            int(self.params.debris_short_duration),
-            int(self.params.random_short_duration),
-            self.params.random_short_min_gap,
-            self.params.random_short_max_gap,
-            self.params.random_short_max_probability,
-        )
-        state.is_short_circuit = bool(is_short_circuit)
+        gap = state.workpiece_position - state.wire_position
+        if gap < 0.0:
+            gap = 0.0
+
+        rolls = self.env.np_random.random(2)
+        debris_roll = float(rolls[0])
+        debris_density = float(state.debris_density)
+
+        if self._random_short_enabled:
+            outcome = _roll_new_short_circuit_state(
+                gap,
+                self._dt_int,
+                debris_density,
+                debris_roll,
+                float(rolls[1]),
+                self._hard_short_gap,
+                self._base_critical_density,
+                self._gap_coefficient,
+                self._max_critical_density,
+                self._sigmoid_steepness,
+                self._random_short_min_gap,
+                self._random_short_max_gap,
+                self._random_short_max_probability,
+            )
+            if outcome == 1:
+                self.debris_short_remaining = self._debris_short_duration
+                state.is_short_circuit = True
+                return
+            if outcome == 2:
+                self.random_short_remaining = self._random_short_duration
+                state.is_short_circuit = True
+                return
+        else:
+            is_short_circuit = _roll_new_debris_short_state(
+                gap,
+                self._dt_int,
+                debris_density,
+                debris_roll,
+                self._hard_short_gap,
+                self._base_critical_density,
+                self._gap_coefficient,
+                self._max_critical_density,
+                self._sigmoid_steepness,
+            )
+            if is_short_circuit:
+                self.debris_short_remaining = self._debris_short_duration
+                state.is_short_circuit = True
+                return
+
+        state.is_short_circuit = False
 
     def _get_target_voltage(self, state: EDMState) -> float:
         """Get target voltage with default."""

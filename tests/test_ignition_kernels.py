@@ -8,6 +8,8 @@ from wedm.modules.ignition import (
     _advance_discharge_state,
     _advance_short_circuit_state,
     _get_ignition_probability_scalar,
+    _roll_new_debris_short_state,
+    _roll_new_short_circuit_state,
 )
 
 
@@ -78,3 +80,60 @@ def test_get_ignition_probability_scalar_uses_rounded_gap_formula():
     denominator = 0.48 * (12.35**2) - 3.69 * 12.35 + 14.05
     expected = 1.0 - math.exp(-(math.log(2.0) / denominator))
     assert probability == pytest.approx(expected)
+
+
+def test_roll_new_debris_short_state_matches_legacy_helper_for_unit_dt():
+    is_short = _roll_new_debris_short_state(
+        gap=12.0,
+        dt=1,
+        debris_density=0.6,
+        debris_roll=0.25,
+        hard_short_gap=2.0,
+        base_critical_density=0.3,
+        gap_coefficient=0.02,
+        max_critical_density=0.95,
+        sigmoid_steepness=500.0,
+    )
+
+    _, debris_remaining, legacy_is_short = _advance_short_circuit_state(
+        gap=12.0,
+        dt=1,
+        debris_density=0.6,
+        random_short_remaining=0,
+        debris_short_remaining=0,
+        debris_roll=0.25,
+        random_roll=1.0,
+        hard_short_gap=2.0,
+        base_critical_density=0.3,
+        gap_coefficient=0.02,
+        max_critical_density=0.95,
+        sigmoid_steepness=500.0,
+        debris_short_duration=50,
+        random_short_duration=100,
+        random_short_min_gap=2.0,
+        random_short_max_gap=50.0,
+        random_short_max_probability=0.0,
+    )
+
+    assert is_short is legacy_is_short
+    assert debris_remaining == (50 if is_short else 0)
+
+
+def test_roll_new_short_circuit_state_can_trigger_random_short():
+    outcome = _roll_new_short_circuit_state(
+        gap=2.5,
+        dt=1,
+        debris_density=0.0,
+        debris_roll=1.0,
+        random_roll=0.0,
+        hard_short_gap=2.0,
+        base_critical_density=0.3,
+        gap_coefficient=0.02,
+        max_critical_density=0.95,
+        sigmoid_steepness=500.0,
+        random_short_min_gap=2.0,
+        random_short_max_gap=50.0,
+        random_short_max_probability=0.5,
+    )
+
+    assert outcome == 2
