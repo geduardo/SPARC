@@ -214,6 +214,22 @@ class TestWireEDMEnv:
             np.arange(env.wire.n_segments - 1, dtype=np.float32) / 10.0,
         )
 
+    def test_wire_state_views_alias_live_buffers(self):
+        """State wire arrays should point at the live wire buffers, not per-step copies."""
+        env = WireEDMEnv()
+        env.reset()
+
+        assert env.state.wire_temperature is env.wire._temperature
+        assert env.state.wire_damage is env.wire._damage
+        assert env.state.wire_material_positions_mm is env.wire._y_start_mm
+
+        env.state.wire_unwinding_velocity = 250.0
+        env.wire.update(env.state)
+
+        assert env.state.wire_temperature is env.wire._temperature
+        assert env.state.wire_damage is env.wire._damage
+        assert env.state.wire_material_positions_mm is env.wire._y_start_mm
+
     def test_module_reset_hooks_sync_dirty_existing_state(self):
         """Module reset hooks should clean mirrored state, not just private caches."""
         env = WireEDMEnv()

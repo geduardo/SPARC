@@ -327,8 +327,8 @@ class WireModule(EDMModule):
         self._last_flow_condition = None
         self.zone_mean_counter = 0
 
-        state.wire_temperature = self._temperature.copy()
-        state.wire_damage = self._damage.copy()
+        state.wire_temperature = self._temperature
+        state.wire_damage = self._damage
         state.wire_max_damage = 0.0
         state.is_wire_broken = False
         state.wire_average_temperature = (
@@ -336,19 +336,11 @@ class WireModule(EDMModule):
         )
         state.wire_head_idx = 0
         state.wire_offset_mm = 0.0
-        state.wire_material_positions_mm = self._base_positions_mm.copy()
+        state.wire_material_positions_mm = self._y_start_mm
 
     def update(self, state: EDMState) -> None:
         if state.is_wire_broken:
             return
-
-        # Fast path: avoid array length checks
-        T = state.wire_temperature
-        if len(T) != self.n_segments:
-            state.wire_temperature = np.full(
-                self.n_segments, self.params.spool_T, dtype=np.float32
-            )
-            T = state.wire_temperature
 
         # Cache lookups for efficiency
         I = state.current or 0.0
@@ -623,26 +615,9 @@ class WireModule(EDMModule):
         state.wire_head_idx = 0
         if self._base_positions_mm.size > 0:
             state.wire_offset_mm = float(self._position_offset_mm)
-            positions = state.wire_material_positions_mm
-            if (
-                not isinstance(positions, np.ndarray)
-                or positions.shape != self._base_positions_mm.shape
-            ):
-                state.wire_material_positions_mm = (
-                    self._base_positions_mm + self._position_offset_mm
-                )
-            else:
-                try:
-                    np.add(
-                        self._base_positions_mm,
-                        self._position_offset_mm,
-                        out=positions,
-                        casting="unsafe",
-                    )
-                except (TypeError, ValueError):
-                    state.wire_material_positions_mm = (
-                        self._base_positions_mm + self._position_offset_mm
-                    )
+            positions = self._ensure_position_buffer()
+            if state.wire_material_positions_mm is not positions:
+                state.wire_material_positions_mm = positions
         else:
             state.wire_offset_mm = 0.0
             state.wire_material_positions_mm = np.array([], dtype=np.float64)
@@ -651,38 +626,11 @@ class WireModule(EDMModule):
                 "Exporting empty wire_material_positions_mm."
             )
 
-        if not isinstance(state.wire_temperature, np.ndarray):
-            print(
-                "[WARN] state.wire_temperature is not a NumPy array during sync. "
-                "Resetting to current wire temperature field."
-            )
-            state.wire_temperature = T_vec.copy()
-        elif state.wire_temperature.shape != T_vec.shape:
-            print(
-                "[WARN] state.wire_temperature shape mismatch during sync "
-                f"({state.wire_temperature.shape} vs {T_vec.shape}). "
-                "Resetting array to match simulation field."
-            )
-            state.wire_temperature = T_vec.copy()
-        else:
-            try:
-                state.wire_temperature[:] = T_vec
-            except (TypeError, ValueError) as e:
-                print(
-                    f"[WARN] Could not sync wire temperature in-place: {e}. "
-                    "Resetting array copy instead."
-                )
-                state.wire_temperature = T_vec.copy()
+        if state.wire_temperature is not T_vec:
+            state.wire_temperature = T_vec
 
-        if not isinstance(state.wire_damage, np.ndarray):
-            state.wire_damage = self._damage.copy()
-        elif state.wire_damage.shape != self._damage.shape:
-            state.wire_damage = self._damage.copy()
-        else:
-            try:
-                state.wire_damage[:] = self._damage
-            except (TypeError, ValueError):
-                state.wire_damage = self._damage.copy()
+        if state.wire_damage is not self._damage:
+            state.wire_damage = self._damage
 
     def _update_convection_coefficients(
         self, wire_unwind_vel: float, flow_condition: float
