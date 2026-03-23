@@ -34,8 +34,24 @@ def test_verify_candidate_command_uses_frozen_preset_and_baseline(tmp_path: Path
     assert command[command.index("--compare-to") + 1] == str(baseline_path)
     assert "--current-mode" in command
     assert command[command.index("--current-mode") + 1] == "1"
+    assert "--engine" in command
+    assert command[command.index("--engine") + 1] == "modular"
     assert "--json-out" in command
     assert command[-1] == str(output_path)
+
+
+def test_verify_candidate_command_threads_compiled_engine(tmp_path: Path) -> None:
+    module = load_module(
+        REPO_ROOT / "scripts" / "verify_realtime_candidate.py",
+        "verify_realtime_candidate_compiled",
+    )
+    output_path = tmp_path / "candidate_compiled.json"
+    baseline_path = tmp_path / "baseline.json"
+
+    command = module.build_profile_command(output_path, baseline_path, engine="compiled")
+
+    assert "--engine" in command
+    assert command[command.index("--engine") + 1] == "compiled"
 
 
 def test_build_verification_summary_reports_throughput_deltas() -> None:

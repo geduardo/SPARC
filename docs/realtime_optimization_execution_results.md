@@ -106,3 +106,56 @@ Remaining work on the board is still purple/proposed, including:
 ## Recommended Next Step
 
 The next meaningful optimization step is `PBC-02`, using the new hot-state bundle as the boundary for a compiled scheduler. Without that, the remaining path to `1,000,000 steps/s` is not available.
+
+## Addendum — `2026-03-23` `PBC-02` Dashboard Candidate
+
+The compiled scheduler is now wired into the standard profiling and verification flow:
+
+- `scripts/profile_simulation.py` accepts `--engine modular|compiled`
+- `scripts/verify_realtime_candidate.py` forwards that engine into a dashboard-compatible `perf_candidate_*.json`
+- `scripts/build_perf_dashboard.py` now shows the engine in the latest snapshot and history table
+
+### Verified Candidate
+
+Command:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled
+```
+
+Output report:
+
+- `outputs/profiling/perf_candidate_compiled_20260323_015424.json`
+
+Frozen-baseline comparison (`outputs/profiling/realtime_baseline_20260322_i1.json`):
+
+| Scenario | Baseline steps/s | Compiled candidate steps/s | Delta | Fidelity |
+| --- | ---: | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `38284.48` | `115924.26` | `+202.80%` | PASS |
+| `0.05 mm / 1600 seg` | `34476.81` | `90135.24` | `+161.44%` | PASS |
+
+The rebuilt dashboard now tracks this report as the latest snapshot:
+
+- `outputs/profiling/performance_dashboard.html`
+- Latest report path: `outputs/profiling/perf_candidate_compiled_20260323_015424.json`
+
+### 1M-Step Sanity Check
+
+Command:
+
+```bash
+python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1
+```
+
+Results:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `93337.18` | `117876.09` | `1.263x` |
+| `0.05 mm / 1600 seg` | `69107.99` | `84588.56` | `1.224x` |
+
+Readout:
+
+- The dashboard candidate gain is real and survives a longer `1M`-step A/B run.
+- The compiled path is still well short of realtime and remains behind the strongest modular coarse-mesh snapshot.
+- The next practical target is not another small modular cleanup; it is further reduction of Python wrapper overhead around the compiled scheduler (`PBC-04`), then wire-side algorithmic reduction.

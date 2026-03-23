@@ -53,6 +53,63 @@ def test_run_step_loop_counts_craters_without_analysis_tracking() -> None:
     assert sample.workpiece_position_um == 4.5
 
 
+def test_reset_for_run_initializes_compiled_scheduler_after_servo_mark() -> None:
+    module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_reset_compiled")
+    calls = []
+
+    class FakeEnv:
+        def __init__(self) -> None:
+            self.servo_interval = 7
+            self.state = SimpleNamespace(time_since_servo=0)
+
+        def reset(self, *, seed: int) -> None:
+            calls.append(("reset", seed))
+            self.state.time_since_servo = 0
+
+        def init_compiled_scheduler(self) -> None:
+            calls.append(("init", self.state.time_since_servo))
+
+    env = FakeEnv()
+    module.reset_for_run(env, seed=123, engine="compiled")
+
+    assert calls == [("reset", 123), ("init", 7)]
+    assert env.state.time_since_servo == 7
+
+
+def test_run_step_loop_uses_compiled_hot_state_for_crater_tracking() -> None:
+    module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_compiled")
+
+    class FakeEnv:
+        def __init__(self) -> None:
+            self._index = 0
+            self._crater_volumes = [0.0, 0.002, 0.0, 0.003]
+            self._hot_state = SimpleNamespace(last_crater_volume=0.0)
+            self.state = SimpleNamespace(
+                time=0,
+                last_crater_volume=99.0,
+                wire_temperature=np.array([300.0, 320.0], dtype=np.float32),
+                wire_max_damage=0.125,
+                workpiece_position=7.5,
+            )
+
+        def step_compiled(self, _action):
+            self._hot_state.last_crater_volume = self._crater_volumes[self._index]
+            self._index += 1
+            terminated = self._index >= len(self._crater_volumes)
+            return None, 0.0, terminated, False, {"wire_broken": False, "target_reached": False}
+
+        def sync_compiled_to_state(self) -> None:
+            self.state.time = self._index
+            self.state.last_crater_volume = self._hot_state.last_crater_volume
+
+    sample = module.run_step_loop(FakeEnv(), action={}, steps=10, engine="compiled")
+
+    assert sample.crater_count == 2
+    assert abs(sample.crater_volume_mm3 - 0.005) < 1e-9
+    assert sample.termination_reason == "terminated"
+    assert sample.workpiece_position_um == 7.5
+
+
 def test_build_dashboard_signal_status_marks_thermal_panel_ready() -> None:
     module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_status")
     env = SimpleNamespace(

@@ -539,13 +539,14 @@ def render_latest_table(report: Dict[str, Any]) -> str:
         )
 
     metadata = report["metadata"]
+    engine = str(metadata.get("engine", "modular"))
     return f"""
     <section class="panel">
         <h2>{escape(report['name'])}</h2>
         <p class="section-note">
             Collected {escape(report['collected_at_label'])}. Steps={fmt_int(int(metadata.get('steps', 0)))},
             warmup={fmt_int(int(metadata.get('warmup', 0)))}, repeats={fmt_int(int(metadata.get('repeats', 0)))},
-            gap={escape(str(metadata.get('initial_gap_um', 'n/a')))} um.
+            gap={escape(str(metadata.get('initial_gap_um', 'n/a')))} um, engine={escape(engine)}.
         </p>
         <div class="table-wrap">
             <table>
@@ -685,11 +686,13 @@ def render_cprofile_tables(report: Dict[str, Any]) -> str:
 def render_history_table(reports: List[Dict[str, Any]]) -> str:
     rows = []
     for report in sorted(reports, key=lambda item: item["collected_at"], reverse=True):
+        engine = str(report.get("metadata", {}).get("engine", "modular"))
         for scenario in sorted(report["scenarios"], key=lambda item: item["segment_len_mm"]):
             rows.append(
                 "<tr>"
                 f"<td>{escape(report['name'])}</td>"
                 f"<td>{escape(report['collected_at_label'])}</td>"
+                f"<td>{escape(engine)}</td>"
                 f"<td>{escape(scenario['label'])}</td>"
                 f"<td>{fmt_float(scenario['steps_per_second'])}</td>"
                 f"<td>{escape(fmt_delta(scenario.get('delta_vs_previous')))}</td>"
@@ -709,6 +712,7 @@ def render_history_table(reports: List[Dict[str, Any]]) -> str:
                     <tr>
                         <th>Report</th>
                         <th>Collected</th>
+                        <th>Engine</th>
                         <th>Scenario</th>
                         <th>Median steps/s</th>
                         <th>Vs previous</th>

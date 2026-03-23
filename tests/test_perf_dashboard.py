@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def make_report(path: Path, name_suffix: str, steps_per_second: float) -> None:
     report = {
         "metadata": {
+            "engine": "compiled" if name_suffix == "b" else "modular",
             "steps": 50000,
             "warmup": 2000,
             "repeats": 1,
@@ -109,6 +110,8 @@ def test_build_perf_dashboard_generates_html(tmp_path: Path) -> None:
     assert "Module Drilldown" in html
     assert "module_subhotspots" in html
     assert "thermal_core" in html
+    assert "engine=compiled" in html
+    assert "<th>Engine</th>" in html
     assert "Y min" in html
     assert "Vs baseline" in html
     assert "2 profiling report(s)" in result.stdout

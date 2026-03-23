@@ -25,9 +25,10 @@ DASHBOARD_SCRIPT = baseline_preset.DASHBOARD_SCRIPT
 DEFAULT_BASELINE = baseline_preset.CANONICAL_BASELINE_PATH
 
 
-def default_output_path() -> pathlib.Path:
+def default_output_path(engine: str = "modular") -> pathlib.Path:
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    return REPO_ROOT / "outputs" / "profiling" / f"perf_candidate_{timestamp}.json"
+    suffix = "" if engine == "modular" else f"_{engine}"
+    return REPO_ROOT / "outputs" / "profiling" / f"perf_candidate{suffix}_{timestamp}.json"
 
 
 def format_path(path: pathlib.Path) -> str:
@@ -56,6 +57,12 @@ def parse_args() -> argparse.Namespace:
         description="Run the frozen conservative preset and compare it to the canonical baseline."
     )
     parser.add_argument(
+        "--engine",
+        choices=["modular", "compiled"],
+        default="modular",
+        help="Execution engine to verify against the baseline (default: modular).",
+    )
+    parser.add_argument(
         "--baseline",
         type=str,
         default=str(DEFAULT_BASELINE),
@@ -79,11 +86,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_profile_command(output_path: pathlib.Path, baseline_path: pathlib.Path) -> List[str]:
+def build_profile_command(
+    output_path: pathlib.Path, baseline_path: pathlib.Path, engine: str = "modular"
+) -> List[str]:
     return [
         sys.executable,
         str(PROFILE_SCRIPT),
         *baseline_preset.BASELINE_ARGS,
+        "--engine",
+        engine,
         "--compare-to",
         str(baseline_path),
         "--json-out",
@@ -178,14 +189,14 @@ def main() -> None:
     if not baseline_path.exists():
         raise SystemExit(f"Baseline report not found: {baseline_path}")
 
-    output_path = pathlib.Path(args.output) if args.output else default_output_path()
+    output_path = pathlib.Path(args.output) if args.output else default_output_path(args.engine)
     if not output_path.is_absolute():
         output_path = REPO_ROOT / output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Verifying candidate against {format_path(baseline_path)}")
     subprocess.run(
-        build_profile_command(output_path, baseline_path),
+        build_profile_command(output_path, baseline_path, args.engine),
         cwd=REPO_ROOT,
         check=True,
     )
@@ -195,6 +206,7 @@ def main() -> None:
     summary = build_verification_summary(baseline_report, candidate_report, baseline_path)
     candidate_report["verification_summary"] = summary
     candidate_report.setdefault("metadata", {})["workflow"] = "candidate_verification"
+    candidate_report.setdefault("metadata", {})["engine"] = args.engine
     write_candidate_report(output_path, candidate_report)
     print_summary(summary)
 

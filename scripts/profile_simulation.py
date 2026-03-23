@@ -703,6 +703,12 @@ def parse_args() -> argparse.Namespace:
         description="Benchmark and profile representative active-cutting workloads."
     )
     parser.add_argument(
+        "--engine",
+        choices=["modular", "compiled"],
+        default="modular",
+        help="Execution engine to benchmark/profile (default: modular).",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=100_000,
@@ -884,16 +890,24 @@ def prime_scenario(
     if args.warmup <= 0:
         return
     env = create_env(args, segment_len_mm)
-    reset_for_run(env, seed=args.seed)
-    run_step_loop(env, action, args.warmup)
+    reset_for_run(env, seed=args.seed, engine=args.engine)
+    run_step_loop(env, action, args.warmup, engine=args.engine)
 
 
-def reset_for_run(env: WireEDMEnv, *, seed: int) -> None:
+def reset_for_run(env: WireEDMEnv, *, seed: int, engine: str = "modular") -> None:
     env.reset(seed=seed)
     env.state.time_since_servo = env.servo_interval
+    if engine == "compiled":
+        env.init_compiled_scheduler()
 
 
-def run_step_loop(env: WireEDMEnv, action: Dict[str, Any], steps: int) -> RunSample:
+def run_step_loop(
+    env: WireEDMEnv,
+    action: Dict[str, Any],
+    steps: int,
+    *,
+    engine: str = "modular",
+) -> RunSample:
 
     termination_reason = "completed"
     steps_run = 0
@@ -901,9 +915,13 @@ def run_step_loop(env: WireEDMEnv, action: Dict[str, Any], steps: int) -> RunSam
     crater_volume_mm3 = 0.0
     start = time.perf_counter()
     for _ in range(steps):
-        _, _, terminated, truncated, info = env.step(action)
+        if engine == "compiled":
+            _, _, terminated, truncated, info = env.step_compiled(action)
+            crater_volume = float(env._hot_state.last_crater_volume)
+        else:
+            _, _, terminated, truncated, info = env.step(action)
+            crater_volume = float(env.state.last_crater_volume)
         steps_run += 1
-        crater_volume = float(env.state.last_crater_volume)
         if crater_volume > 0.0:
             crater_count += 1
             crater_volume_mm3 += crater_volume
@@ -917,6 +935,9 @@ def run_step_loop(env: WireEDMEnv, action: Dict[str, Any], steps: int) -> RunSam
             else:
                 termination_reason = "terminated"
             break
+
+    if engine == "compiled":
+        env.sync_compiled_to_state()
 
     wall_seconds = time.perf_counter() - start
     return RunSample(
@@ -942,8 +963,8 @@ def benchmark_scenario(
     env = None
     for _ in range(args.repeats):
         env = create_env(args, segment_len_mm)
-        reset_for_run(env, seed=args.seed)
-        samples.append(run_step_loop(env, action, args.steps))
+        reset_for_run(env, seed=args.seed, engine=args.engine)
+        samples.append(run_step_loop(env, action, args.steps, engine=args.engine))
 
     if env is None:
         raise RuntimeError("Benchmark scenario did not create an environment.")
@@ -997,29 +1018,32 @@ def module_hotspots(
     wire_times_ns = defaultdict(int)
     wire_calls = defaultdict(int)
 
-    wrap_timed_call(env, "_apply_action", "env._apply_action", times_ns, calls)
-    wrap_timed_call(
-        env, "_check_termination", "env._check_termination", times_ns, calls
-    )
-    wrap_timed_call(env, "_get_obs", "env._get_obs", times_ns, calls)
-    wrap_timed_call(env, "_calc_reward", "env._calc_reward", times_ns, calls)
+    if args.engine == "compiled":
+        wrap_timed_call(env, "step_compiled", "compiled.step_compiled", times_ns, calls)
+    else:
+        wrap_timed_call(env, "_apply_action", "env._apply_action", times_ns, calls)
+        wrap_timed_call(
+            env, "_check_termination", "env._check_termination", times_ns, calls
+        )
+        wrap_timed_call(env, "_get_obs", "env._get_obs", times_ns, calls)
+        wrap_timed_call(env, "_calc_reward", "env._calc_reward", times_ns, calls)
 
-    for module_name in ["ignition", "material", "dielectric", "wire", "mechanics"]:
-        module = getattr(env, module_name)
-        wrap_timed_call(module, "update", module_name, times_ns, calls)
+        for module_name in ["ignition", "material", "dielectric", "wire", "mechanics"]:
+            module = getattr(env, module_name)
+            wrap_timed_call(module, "update", module_name, times_ns, calls)
 
-    env.wire._profile_update_subhotspots = True
-    wire_method_labels = [
-        ("_advance_transport", "transport"),
-        ("_apply_thermal_core", "thermal_core"),
-        ("_accumulate_damage", "damage"),
-        ("_sync_state_views", "state_sync"),
-    ]
-    for method_name, label in wire_method_labels:
-        wrap_timed_call(env.wire, method_name, label, wire_times_ns, wire_calls)
+        env.wire._profile_update_subhotspots = True
+        wire_method_labels = [
+            ("_advance_transport", "transport"),
+            ("_apply_thermal_core", "thermal_core"),
+            ("_accumulate_damage", "damage"),
+            ("_sync_state_views", "state_sync"),
+        ]
+        for method_name, label in wire_method_labels:
+            wrap_timed_call(env.wire, method_name, label, wire_times_ns, wire_calls)
 
-    reset_for_run(env, seed=args.seed)
-    sample = run_step_loop(env, action, args.steps)
+    reset_for_run(env, seed=args.seed, engine=args.engine)
+    sample = run_step_loop(env, action, args.steps, engine=args.engine)
     rows = []
     for name, total_ns in sorted(
         times_ns.items(), key=lambda item: item[1], reverse=True
@@ -1080,10 +1104,10 @@ def cprofile_hotspots(
     prime_scenario(args, segment_len_mm, action)
 
     env = create_env(args, segment_len_mm)
-    reset_for_run(env, seed=args.seed)
+    reset_for_run(env, seed=args.seed, engine=args.engine)
     profiler = cProfile.Profile()
     profiler.enable()
-    run_step_loop(env, action, args.steps)
+    run_step_loop(env, action, args.steps, engine=args.engine)
     profiler.disable()
 
     stats = pstats.Stats(profiler)
@@ -1118,6 +1142,7 @@ def print_header(args: argparse.Namespace, system_context: Optional[Dict[str, An
     print("=== Simulation Profiling Harness ===")
     print(f"repo_root: {REPO_ROOT}")
     print(f"import_root: {SRC_ROOT}")
+    print(f"engine: {args.engine}")
     print(
         "workload: "
         f"steps={args.steps} warmup={args.warmup} repeats={args.repeats} seed={args.seed} "
@@ -1277,6 +1302,7 @@ def main() -> None:
         "metadata": {
             "repo_root": str(REPO_ROOT),
             "import_root": str(SRC_ROOT),
+            "engine": args.engine,
             "steps": int(args.steps),
             "warmup": int(args.warmup),
             "repeats": int(args.repeats),
