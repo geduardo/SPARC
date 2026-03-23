@@ -771,7 +771,7 @@ class WireModule(EDMModule):
             return
 
         # Cache lookups for efficiency
-        I = state.current or 0.0
+        I = state.current
         I_squared = I * I
         dielectric_temp = state.dielectric_temperature
         wire_unwind_vel = state.wire_unwinding_velocity
@@ -801,46 +801,46 @@ class WireModule(EDMModule):
         else:
             delta_mm = 0.0
             if self.params.moving_segments:
-                dt_us = float(self.env.config.dt)
-                delta_mm = float(wire_unwind_vel) * 1e-3 * dt_us
+                dt_us = self.env.config.dt
+                delta_mm = wire_unwind_vel * 1e-3 * dt_us
                 if delta_mm != 0.0:
                     self._positions_dirty = True
 
             has_spark_location = state.spark_status[1] is not None
-            spark_location_mm = float(state.spark_status[1]) if has_spark_location else 0.0
+            spark_location_mm = state.spark_status[1] if has_spark_location else 0.0
 
             self._position_offset_mm, max_damage = advance_wire_step_inplace(
                 T_vec,
                 self._damage,
                 self.dT_dt,
                 self.conv_loss_coeff,
-                float(self._position_offset_mm),
-                float(self._position_wrap_threshold_mm),
-                float(delta_mm),
-                float(self.params.spool_T),
-                float(self.k_cond_coeff),
-                float(self.temp_update_factor),
-                float(dielectric_temp),
-                float(self.temp_ref),
-                float(self.alpha_rho),
+                self._position_offset_mm,
+                self._position_wrap_threshold_mm,
+                delta_mm,
+                self.params.spool_T,
+                self.k_cond_coeff,
+                self.temp_update_factor,
+                dielectric_temp,
+                self.temp_ref,
+                self.alpha_rho,
                 int(state.spark_status[0]),
                 bool(has_spark_location),
-                float(spark_location_mm),
-                float(state.voltage if state.voltage is not None else 0.0),
-                float(I),
-                float(I_squared),
-                float(self.segment_len_mm),
+                spark_location_mm,
+                state.voltage,
+                I,
+                I_squared,
+                self.segment_len_mm,
                 int(self.zone_start),
                 int(self.zone_end),
                 int(self.contact_bottom_idx),
                 int(self.contact_top_idx),
-                float(self.params.plasma_efficiency),
-                float(self.joule_factor_base),
-                float(self.damage_temperature_threshold_k),
-                float(self.damage_stress_term_dt),
-                float(self.damage_activation_scale),
+                self.params.plasma_efficiency,
+                self.joule_factor_base,
+                self.damage_temperature_threshold_k,
+                self.damage_stress_term_dt,
+                self.damage_activation_scale,
             )
-            state.wire_max_damage = float(max_damage)
+            state.wire_max_damage = max_damage
             if max_damage >= 1.0:
                 state.is_wire_broken = True
             self._sync_state_views(state, T_vec)
@@ -861,8 +861,8 @@ class WireModule(EDMModule):
         if not self.params.moving_segments:
             return
 
-        dt_us = float(self.env.config.dt)
-        v_mm_per_us = float(wire_unwind_vel) * 1e-3
+        dt_us = self.env.config.dt
+        v_mm_per_us = wire_unwind_vel * 1e-3
         delta_mm = v_mm_per_us * dt_us
         if delta_mm == 0.0:
             return
@@ -887,7 +887,7 @@ class WireModule(EDMModule):
         """Apply conduction, Joule heating, plasma heating, dT update, and damage."""
         spark_location_mm = np.nan
         if state.spark_status[1] is not None:
-            spark_location_mm = float(state.spark_status[1])
+            spark_location_mm = state.spark_status[1]
 
         (
             plasma_idx,
@@ -901,17 +901,17 @@ class WireModule(EDMModule):
         ) = resolve_discharge_partition(
             int(state.spark_status[0]),
             spark_location_mm,
-            float(state.voltage if state.voltage is not None else 0.0),
-            float(current),
-            float(current_squared),
-            float(self.segment_len_mm),
+            state.voltage,
+            current,
+            current_squared,
+            self.segment_len_mm,
             int(self.zone_start),
             int(self.zone_end),
             int(self.n_segments),
             int(self.contact_bottom_idx),
             int(self.contact_top_idx),
-            float(self.params.plasma_efficiency),
-            float(self.joule_factor_base),
+            self.params.plasma_efficiency,
+            self.joule_factor_base,
         )
 
         return apply_thermal_damage_core_inplace(
@@ -932,7 +932,7 @@ class WireModule(EDMModule):
             top_joule_factor,
             plasma_idx,
             plasma_heat,
-            float(self.params.spool_T),
+            self.params.spool_T,
             self.damage_temperature_threshold_k,
             self.damage_stress_term_dt,
             self.damage_activation_scale,

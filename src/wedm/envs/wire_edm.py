@@ -7,6 +7,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from ..core.hot_state import HotStateBundle
+from ..core.compiled_step import SchedulerConstants, compiled_microstep
 from ..core.state import EDMState
 from ..core.env_config import EnvironmentConfig
 from ..modules.dielectric import DielectricModule, DielectricModuleParameters
@@ -351,6 +353,171 @@ class WireEDMEnv(gym.Env):
     def _calc_reward(self):
         # TODO: implement proper reward
         return 0.0
+
+    def build_hot_state_bundle(self) -> HotStateBundle:
+        """Capture the numeric hot state required by a compiled scheduler."""
+        return HotStateBundle.from_env(self)
+
+    def apply_hot_state_bundle(self, hot_state: HotStateBundle) -> None:
+        """Restore env/module state from a previously captured hot-state bundle."""
+        hot_state.apply_to_env(self)
+
+    # ------------------------------------------------------------------ #
+    # Compiled scheduler path (PBC-02)
+    # ------------------------------------------------------------------ #
+    def init_compiled_scheduler(self) -> None:
+        """Prepare the compiled scheduler for fast stepping.
+
+        Must be called after reset() and before step_compiled().
+        Captures all module constants into a frozen snapshot.
+        """
+        self._scheduler_constants = SchedulerConstants.from_env(self)
+        self._hot_state = self.build_hot_state_bundle()
+        self._resolve_compiled_generator_settings()
+        self._resolve_compiled_crater_params()
+
+    def _resolve_compiled_generator_settings(self) -> None:
+        """Cache resolved generator settings for the compiled path."""
+        state = self.state
+        ign = self.ignition
+        tv = state.target_voltage
+        self._compiled_target_voltage = (
+            tv if tv is not None else ign.params.default_target_voltage
+        )
+        self._compiled_peak_current = ign._get_current_from_mode(state.current_mode)
+        on = state.ON_time
+        self._compiled_on_time = (
+            on if on is not None else ign.params.default_on_time
+        )
+        off = state.OFF_time
+        self._compiled_off_time = (
+            off if off is not None else ign.params.default_off_time
+        )
+
+    def _resolve_compiled_crater_params(self) -> None:
+        """Cache crater sampling parameters for the compiled path."""
+        mode = self.resolve_current_mode(self.state.current_mode)
+        info = self.material.crater_data[mode]
+        self._compiled_crater_mean = info["volume_um3"]
+        self._compiled_crater_std = info["volume_std_um3"]
+        crater_depth_mm = info["depth_um"] / 1000.0
+        self._compiled_kerf_width_mm = (
+            self.material.params.base_overcut
+            + self.config.wire_diameter
+            + crater_depth_mm
+        )
+
+    def step_compiled(self, action) -> tuple:
+        """Fast step using the compiled scheduler.
+
+        Eliminates per-microstep Python module dispatch.  RNG stays in
+        Python for branch-consumption parity with the modular path.
+
+        Returns the same (obs, reward, terminated, truncated, info) as step().
+        """
+        hs = self._hot_state
+        sc = self._scheduler_constants
+        is_ctrl_step = hs.time_since_servo >= sc.servo_interval
+
+        if is_ctrl_step:
+            # Apply action (same logic as modular path)
+            if isinstance(action, ScalarAction):
+                hs.target_delta = action.servo
+                gc = action.generator_control
+                tv = gc.target_voltage
+                mode_int = gc.current_mode
+                on_t = gc.ON_time
+                off_t = gc.OFF_time
+            else:
+                hs.target_delta = float(action["servo"][0])
+                gc = action["generator_control"]
+                tv = float(gc["target_voltage"][0])
+                mode_int = int(gc["current_mode"][0])
+                on_t = float(gc["ON_time"][0])
+                off_t = float(gc["OFF_time"][0])
+
+            mode_str = (
+                self._mode_int_lut[mode_int]
+                if 0 <= mode_int < len(self._mode_int_lut)
+                else ""
+            )
+            if not mode_str:
+                raise ValueError(
+                    f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
+                    f"Valid modes: {self._valid_modes_sorted}"
+                )
+
+            # Resolve generator settings for this control step
+            hs.target_voltage = tv
+            hs.current_mode_code = mode_int
+            hs.on_time_us = on_t
+            hs.off_time_us = off_t
+            self._compiled_target_voltage = tv
+            self._compiled_peak_current = self.ignition._get_current_from_mode(mode_str)
+            self._compiled_on_time = on_t
+            self._compiled_off_time = off_t
+
+            # Resolve crater params if mode changed
+            info = self.material.crater_data.get(mode_str)
+            if info is not None:
+                self._compiled_crater_mean = info["volume_um3"]
+                self._compiled_crater_std = info["volume_std_um3"]
+                crater_depth_mm = info["depth_um"] / 1000.0
+                self._compiled_kerf_width_mm = (
+                    self.material.params.base_overcut
+                    + self.config.wire_diameter
+                    + crater_depth_mm
+                )
+
+            hs.time_since_servo = 0
+
+        # Execute one compiled microstep
+        wire_broke = compiled_microstep(
+            hs, self.np_random, sc,
+            self._compiled_target_voltage,
+            self._compiled_peak_current,
+            self._compiled_on_time,
+            self._compiled_off_time,
+            self._compiled_crater_mean,
+            self._compiled_crater_std,
+            self._compiled_kerf_width_mm,
+        )
+
+        if wire_broke:
+            return None, 0.0, True, False, {"wire_broken": True}
+
+        # Termination check (inlined)
+        terminated = False
+        if hs.wire_position_um > hs.workpiece_position_um + 100:
+            hs.is_wire_broken = 1
+            terminated = True
+        elif hs.workpiece_position_um >= hs.target_position:
+            hs.is_target_distance_reached = 1
+            terminated = True
+
+        if is_ctrl_step:
+            obs = {}
+            reward = 0.0
+        else:
+            obs = None
+            reward = 0.0
+
+        info = {
+            "wire_broken": bool(hs.is_wire_broken),
+            "target_reached": bool(hs.is_target_distance_reached),
+            "spark_state": hs.spark_state,
+            "time": hs.time,
+            "control_step": is_ctrl_step,
+        }
+        return obs, reward, terminated, False, info
+
+    def sync_compiled_to_state(self) -> None:
+        """Write the hot-state bundle back into EDMState and module internals.
+
+        Call this when you need the modular state to reflect compiled-path
+        progress (e.g., for logging, dashboards, or episode end).
+        """
+        self._hot_state.apply_to_env(self)
 
     # ------------------------------------------------------------------ #
     # Configuration and Material Access

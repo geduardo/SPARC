@@ -370,10 +370,10 @@ class IgnitionModule(EDMModule):
         self._cached_current_value: float = self._default_peak_current
         self._cached_generator_signature: tuple[object, ...] | None = None
         self._cached_generator_settings = (
-            float(self.params.default_target_voltage),
-            float(self._default_peak_current),
-            float(self.params.default_on_time),
-            float(self.params.default_off_time),
+            self.params.default_target_voltage,
+            self._default_peak_current,
+            self.params.default_on_time,
+            self.params.default_off_time,
         )
 
     def reset(self, state: EDMState) -> None:
@@ -386,10 +386,10 @@ class IgnitionModule(EDMModule):
         self._cached_current_value = self._default_peak_current
         self._cached_generator_signature = None
         self._cached_generator_settings = (
-            float(self.params.default_target_voltage),
-            float(self._default_peak_current),
-            float(self.params.default_on_time),
-            float(self.params.default_off_time),
+            self.params.default_target_voltage,
+            self._default_peak_current,
+            self.params.default_on_time,
+            self.params.default_off_time,
         )
         state.current = 0.0
         state.is_short_circuit = False
@@ -452,10 +452,10 @@ class IgnitionModule(EDMModule):
 
             self._cached_generator_signature = signature
             self._cached_generator_settings = (
-                float(target_voltage),
-                float(peak_current),
-                float(on_time),
-                float(off_time),
+                target_voltage,
+                peak_current,
+                on_time,
+                off_time,
             )
 
         return self._cached_generator_settings
@@ -490,7 +490,7 @@ class IgnitionModule(EDMModule):
     def update(self, state: EDMState) -> None:
         """Advance the ignition state machine with compiled scalar helpers."""
         self._update_short_circuit_detection(state)
-        current_voltage = 0.0 if state.voltage is None else float(state.voltage)
+        current_voltage = state.voltage
         if state.is_short_circuit:
             current_voltage = 0.0
 
@@ -500,7 +500,7 @@ class IgnitionModule(EDMModule):
 
         spark_state = int(state.spark_status[0])
         spark_location = (
-            math.nan if state.spark_status[1] is None else float(state.spark_status[1])
+            math.nan if state.spark_status[1] is None else state.spark_status[1]
         )
         spark_duration = int(state.spark_status[2])
 
@@ -519,9 +519,9 @@ class IgnitionModule(EDMModule):
                 self.params.ignition_b_coeff,
                 self.params.ignition_c_coeff,
             )
-            ignition_roll = float(self.env.np_random.random())
+            ignition_roll = self.env.np_random.random()
             if ignition_roll < ignition_probability:
-                spark_location_roll = float(self.env.np_random.random())
+                spark_location_roll = self.env.np_random.random()
 
         (
             next_spark_state,
@@ -548,11 +548,11 @@ class IgnitionModule(EDMModule):
 
         state.spark_status = [
             int(next_spark_state),
-            None if math.isnan(next_spark_location) else float(next_spark_location),
+            None if math.isnan(next_spark_location) else next_spark_location,
             int(next_spark_duration),
         ]
-        state.voltage = float(next_voltage)
-        state.current = float(next_current)
+        state.voltage = next_voltage
+        state.current = next_current
 
     def _update_short_circuit_detection(self, state: EDMState) -> None:
         """Advance short-circuit timers and roll new short events when needed."""
@@ -578,9 +578,9 @@ class IgnitionModule(EDMModule):
         if gap < 0.0:
             gap = 0.0
 
-        rolls = self.env.np_random.random(2)
-        debris_roll = float(rolls[0])
-        debris_density = float(state.debris_density)
+        debris_roll = self.env.np_random.random()
+        random_roll = self.env.np_random.random()
+        debris_density = state.debris_density
 
         if self._random_short_enabled:
             outcome = _roll_new_short_circuit_state(
@@ -588,7 +588,7 @@ class IgnitionModule(EDMModule):
                 self._dt_int,
                 debris_density,
                 debris_roll,
-                float(rolls[1]),
+                random_roll,
                 self._hard_short_gap,
                 self._base_critical_density,
                 self._gap_coefficient,

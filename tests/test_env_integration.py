@@ -8,6 +8,7 @@ from wedm import (
     IgnitionModuleParameters,
     MaterialModuleParameters,
 )
+from wedm.core.state import EDMState
 from wedm.envs.wire_edm import ScalarAction, build_scalar_action
 
 
@@ -37,6 +38,13 @@ class TestWireEDMEnv:
         assert isinstance(info, dict)
         assert env.state.time == 0
         assert env.state.workpiece_position == env.config.initial_gap
+
+    def test_edm_state_defaults_use_scalar_electrical_values(self):
+        """Fresh state objects should start with non-optional electrical scalars."""
+        state = EDMState()
+
+        assert state.voltage == 0.0
+        assert state.current == 0.0
 
     def test_env_reset_applies_explicit_episode_defaults(self):
         """Reset should populate generator, electrical, and thermal defaults."""

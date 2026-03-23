@@ -4,6 +4,7 @@ from importlib.metadata import version, PackageNotFoundError
 from .core import (
     EDMState,
     EnvironmentConfig,
+    HotStateBundle,
     MaterialDatabase,
     WireMaterial,
     get_material_db,
@@ -23,6 +24,7 @@ __all__ = [
     # Core classes
     "EDMState",
     "EnvironmentConfig",
+    "HotStateBundle",
     "MaterialDatabase",
     "WireMaterial",
     "get_material_db",
