@@ -916,22 +916,36 @@ def run_step_loop(
     start = time.perf_counter()
     for _ in range(steps):
         if engine == "compiled":
-            _, _, terminated, truncated, info = env.step_compiled(action)
+            if hasattr(env, "step_compiled_fast"):
+                terminated, truncated = env.step_compiled_fast(action)
+                info = None
+            else:
+                _, _, terminated, truncated, info = env.step_compiled(action)
+            live_state = env._hot_state
             crater_volume = float(env._hot_state.last_crater_volume)
         else:
-            _, _, terminated, truncated, info = env.step(action)
+            if hasattr(env, "step_fast"):
+                terminated, truncated = env.step_fast(action)
+                info = None
+            else:
+                _, _, terminated, truncated, info = env.step(action)
+            live_state = env.state
             crater_volume = float(env.state.last_crater_volume)
         steps_run += 1
         if crater_volume > 0.0:
             crater_count += 1
             crater_volume_mm3 += crater_volume
         if terminated or truncated:
-            if info.get("wire_broken", False):
+            if info and info.get("wire_broken", False):
                 termination_reason = "wire_broken"
-            elif info.get("target_reached", False):
+            elif info and info.get("target_reached", False):
                 termination_reason = "target_reached"
             elif truncated:
                 termination_reason = "truncated"
+            elif bool(getattr(live_state, "is_wire_broken", False)):
+                termination_reason = "wire_broken"
+            elif bool(getattr(live_state, "is_target_distance_reached", False)):
+                termination_reason = "target_reached"
             else:
                 termination_reason = "terminated"
             break
@@ -1019,7 +1033,10 @@ def module_hotspots(
     wire_calls = defaultdict(int)
 
     if args.engine == "compiled":
-        wrap_timed_call(env, "step_compiled", "compiled.step_compiled", times_ns, calls)
+        step_name = (
+            "step_compiled_fast" if hasattr(env, "step_compiled_fast") else "step_compiled"
+        )
+        wrap_timed_call(env, step_name, "compiled.step_compiled", times_ns, calls)
     else:
         wrap_timed_call(env, "_apply_action", "env._apply_action", times_ns, calls)
         wrap_timed_call(

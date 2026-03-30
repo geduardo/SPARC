@@ -159,3 +159,66 @@ Readout:
 - The dashboard candidate gain is real and survives a longer `1M`-step A/B run.
 - The compiled path is still well short of realtime and remains behind the strongest modular coarse-mesh snapshot.
 - The next practical target is not another small modular cleanup; it is further reduction of Python wrapper overhead around the compiled scheduler (`PBC-04`), then wire-side algorithmic reduction.
+
+## Addendum — `2026-03-30` `PBC-04` Fast-Step Path
+
+`PBC-04` tightened the env fast path without changing the public Gym API:
+
+- Added `step_fast()` and `step_compiled_fast()` in `src/wedm/envs/wire_edm.py`
+- `scripts/profile_simulation.py` now prefers the fast-step path when available
+- `scripts/bench_compiled.py` now uses the same fast-step path for long A/B runs
+- Compiled control-mode resolution now caches unchanged modes instead of recomputing peak current and crater geometry on every control step
+
+### Verified Candidate
+
+Command:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled
+```
+
+Output report:
+
+- `outputs/profiling/perf_candidate_compiled_20260330_014515.json`
+
+Frozen-baseline comparison (`outputs/profiling/realtime_baseline_20260322_i1.json`):
+
+| Scenario | Baseline steps/s | `PBC-02` compiled candidate | `PBC-04` compiled candidate | Delta vs `PBC-02` | Fidelity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `38284.48` | `115924.26` | `205800.12` | `+77.53%` | PASS |
+| `0.05 mm / 1600 seg` | `34476.81` | `90135.24` | `154805.23` | `+71.75%` | PASS |
+
+The dashboard now tracks this report as the latest snapshot:
+
+- `outputs/profiling/performance_dashboard.html`
+- Latest report path: `outputs/profiling/perf_candidate_compiled_20260330_014515.json`
+
+### 1M-Step Sanity Check
+
+Command:
+
+```bash
+python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1
+```
+
+Results:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `159335.15` | `217061.46` | `1.362x` |
+| `0.05 mm / 1600 seg` | `131774.00` | `153622.34` | `1.166x` |
+
+### Validation
+
+- `python -m pytest -q` -> `120 passed`
+- Targeted parity/profiler tests added for:
+  - `step_fast()` parity vs `step()`
+  - `step_compiled_fast()` parity vs `step_compiled()`
+  - profiler preference for fast-step methods
+  - compiled mode-cache reuse across repeated control steps
+
+Readout:
+
+- `PBC-04` is a real measured win.
+- The coarse mesh benefited more than the fine mesh, which is consistent with cutting Python overhead while leaving the wire thermal kernel untouched.
+- The next likely step is still `PBC-03`, then wire algorithmic reduction (`PCW-01`).

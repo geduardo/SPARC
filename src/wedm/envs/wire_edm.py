@@ -145,6 +145,7 @@ class WireEDMEnv(gym.Env):
         self._uses_default_calc_reward = (
             env_type._calc_reward is WireEDMEnv._calc_reward
         )
+        self._compiled_cached_mode_int = None
 
         # ── Action Space ─────────────────────────────────────────────────
         # Note: target_delta interpretation depends on control mode:
@@ -183,37 +184,71 @@ class WireEDMEnv(gym.Env):
 
         return self._get_obs(), {}
 
-    def step(self, action):
+    def _decode_action(self, action) -> tuple[float, float, int, float, float]:
+        if isinstance(action, ScalarAction):
+            gc = action.generator_control
+            return (
+                action.servo,
+                gc.target_voltage,
+                gc.current_mode,
+                gc.ON_time,
+                gc.OFF_time,
+            )
+
+        gc = action["generator_control"]
+        return (
+            float(action["servo"][0]),
+            float(gc["target_voltage"][0]),
+            int(gc["current_mode"][0]),
+            float(gc["ON_time"][0]),
+            float(gc["OFF_time"][0]),
+        )
+
+    def _resolve_mode_str(self, mode_int: int) -> str:
+        mode_str = (
+            self._mode_int_lut[mode_int]
+            if 0 <= mode_int < len(self._mode_int_lut)
+            else ""
+        )
+        if not mode_str:
+            raise ValueError(
+                f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
+                f"Valid modes: {self._valid_modes_sorted}"
+            )
+        return mode_str
+
+    def _update_compiled_mode_cache(self, mode_int: int) -> None:
+        if mode_int == self._compiled_cached_mode_int:
+            return
+
+        mode_str = self._resolve_mode_str(mode_int)
+        crater_info = self.material.crater_data[mode_str]
+        crater_depth_mm = crater_info["depth_um"] / 1000.0
+
+        self._compiled_peak_current = self.ignition._get_current_from_mode(mode_str)
+        self._compiled_crater_mean = crater_info["volume_um3"]
+        self._compiled_crater_std = crater_info["volume_std_um3"]
+        self._compiled_kerf_width_mm = (
+            self.material.params.base_overcut
+            + self.config.wire_diameter
+            + crater_depth_mm
+        )
+        self._compiled_cached_mode_int = mode_int
+
+    def _step_impl(self, action, *, fast: bool):
         state = self.state
         is_ctrl_step = state.time_since_servo >= self.servo_interval
 
         if is_ctrl_step:
             if self._uses_default_apply_action:
-                if isinstance(action, ScalarAction):
-                    state.target_delta = action.servo
-                    gc = action.generator_control
-                    state.target_voltage = gc.target_voltage
-                    mode_int = gc.current_mode
-                    state.ON_time = gc.ON_time
-                    state.OFF_time = gc.OFF_time
-                else:
-                    state.target_delta = float(action["servo"][0])
-                    gc = action["generator_control"]
-                    state.target_voltage = float(gc["target_voltage"][0])
-                    mode_int = int(gc["current_mode"][0])
-                    state.ON_time = float(gc["ON_time"][0])
-                    state.OFF_time = float(gc["OFF_time"][0])
-                mode_str = (
-                    self._mode_int_lut[mode_int]
-                    if 0 <= mode_int < len(self._mode_int_lut)
-                    else ""
+                target_delta, target_voltage, mode_int, on_time, off_time = (
+                    self._decode_action(action)
                 )
-                if not mode_str:
-                    raise ValueError(
-                        f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
-                        f"Valid modes: {self._valid_modes_sorted}"
-                    )
-                state.current_mode = mode_str
+                state.target_delta = target_delta
+                state.target_voltage = target_voltage
+                state.ON_time = on_time
+                state.OFF_time = off_time
+                state.current_mode = self._resolve_mode_str(mode_int)
             else:
                 self._apply_action(action)
             state.time_since_servo = 0
@@ -225,6 +260,8 @@ class WireEDMEnv(gym.Env):
         self.wire.update(state)
 
         if state.is_wire_broken:
+            if fast:
+                return True, False
             return None, 0.0, True, False, {"wire_broken": True}
 
         self.mechanics.update(state)
@@ -253,6 +290,9 @@ class WireEDMEnv(gym.Env):
         else:
             terminated = self._check_termination()
 
+        if fast:
+            return terminated, False
+
         if is_ctrl_step:
             obs = {} if self._uses_default_get_obs else self._get_obs()
             reward = 0.0 if self._uses_default_calc_reward else self._calc_reward()
@@ -268,6 +308,12 @@ class WireEDMEnv(gym.Env):
             "control_step": is_ctrl_step,
         }
         return obs, reward, terminated, False, info
+
+    def step(self, action):
+        return self._step_impl(action, fast=False)
+
+    def step_fast(self, action) -> tuple[bool, bool]:
+        return self._step_impl(action, fast=True)
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -310,32 +356,14 @@ class WireEDMEnv(gym.Env):
         self.state.dielectric_temperature = self.dielectric.params.dielectric_temperature
 
     def _apply_action(self, action):
-        if isinstance(action, ScalarAction):
-            self.state.target_delta = action.servo
-            gc = action.generator_control
-            self.state.target_voltage = gc.target_voltage
-            mode_int = gc.current_mode
-            self.state.ON_time = gc.ON_time
-            self.state.OFF_time = gc.OFF_time
-        else:
-            self.state.target_delta = float(action["servo"][0])
-            gc = action["generator_control"]
-            self.state.target_voltage = float(gc["target_voltage"][0])
-            mode_int = int(gc["current_mode"][0])
-            self.state.ON_time = float(gc["ON_time"][0])
-            self.state.OFF_time = float(gc["OFF_time"][0])
-        # Convert integer mode (1-19) to I-mode string and validate
-        mode_str = (
-            self._mode_int_lut[mode_int]
-            if 0 <= mode_int < len(self._mode_int_lut)
-            else ""
+        target_delta, target_voltage, mode_int, on_time, off_time = self._decode_action(
+            action
         )
-        if not mode_str:
-            raise ValueError(
-                f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
-                f"Valid modes: {self._valid_modes_sorted}"
-            )
-        self.state.current_mode = mode_str
+        self.state.target_delta = target_delta
+        self.state.target_voltage = target_voltage
+        self.state.ON_time = on_time
+        self.state.OFF_time = off_time
+        self.state.current_mode = self._resolve_mode_str(mode_int)
 
     def _check_termination(self) -> bool:
         if self.state.wire_position > self.state.workpiece_position + 100:
@@ -373,6 +401,7 @@ class WireEDMEnv(gym.Env):
         """
         self._scheduler_constants = SchedulerConstants.from_env(self)
         self._hot_state = self.build_hot_state_bundle()
+        self._compiled_cached_mode_int = None
         self._resolve_compiled_generator_settings()
         self._resolve_compiled_crater_params()
 
@@ -384,7 +413,6 @@ class WireEDMEnv(gym.Env):
         self._compiled_target_voltage = (
             tv if tv is not None else ign.params.default_target_voltage
         )
-        self._compiled_peak_current = ign._get_current_from_mode(state.current_mode)
         on = state.ON_time
         self._compiled_on_time = (
             on if on is not None else ign.params.default_on_time
@@ -393,59 +421,30 @@ class WireEDMEnv(gym.Env):
         self._compiled_off_time = (
             off if off is not None else ign.params.default_off_time
         )
+        mode = self.resolve_current_mode(state.current_mode)
+        self._update_compiled_mode_cache(int(mode[1:]))
 
     def _resolve_compiled_crater_params(self) -> None:
         """Cache crater sampling parameters for the compiled path."""
         mode = self.resolve_current_mode(self.state.current_mode)
-        info = self.material.crater_data[mode]
-        self._compiled_crater_mean = info["volume_um3"]
-        self._compiled_crater_std = info["volume_std_um3"]
-        crater_depth_mm = info["depth_um"] / 1000.0
-        self._compiled_kerf_width_mm = (
-            self.material.params.base_overcut
-            + self.config.wire_diameter
-            + crater_depth_mm
-        )
+        self._update_compiled_mode_cache(int(mode[1:]))
 
-    def step_compiled(self, action) -> tuple:
+    def _step_compiled_impl(self, action, *, fast: bool):
         """Fast step using the compiled scheduler.
 
         Eliminates per-microstep Python module dispatch.  RNG stays in
         Python for branch-consumption parity with the modular path.
 
-        Returns the same (obs, reward, terminated, truncated, info) as step().
+        Public `step_compiled()` preserves the Gym-style return tuple.
+        `step_compiled_fast()` returns only termination flags for the
+        benchmark/profiling path.
         """
         hs = self._hot_state
         sc = self._scheduler_constants
         is_ctrl_step = hs.time_since_servo >= sc.servo_interval
 
         if is_ctrl_step:
-            # Apply action (same logic as modular path)
-            if isinstance(action, ScalarAction):
-                hs.target_delta = action.servo
-                gc = action.generator_control
-                tv = gc.target_voltage
-                mode_int = gc.current_mode
-                on_t = gc.ON_time
-                off_t = gc.OFF_time
-            else:
-                hs.target_delta = float(action["servo"][0])
-                gc = action["generator_control"]
-                tv = float(gc["target_voltage"][0])
-                mode_int = int(gc["current_mode"][0])
-                on_t = float(gc["ON_time"][0])
-                off_t = float(gc["OFF_time"][0])
-
-            mode_str = (
-                self._mode_int_lut[mode_int]
-                if 0 <= mode_int < len(self._mode_int_lut)
-                else ""
-            )
-            if not mode_str:
-                raise ValueError(
-                    f"current_mode {mode_int} ('I{mode_int}') has no crater data. "
-                    f"Valid modes: {self._valid_modes_sorted}"
-                )
+            hs.target_delta, tv, mode_int, on_t, off_t = self._decode_action(action)
 
             # Resolve generator settings for this control step
             hs.target_voltage = tv
@@ -453,21 +452,9 @@ class WireEDMEnv(gym.Env):
             hs.on_time_us = on_t
             hs.off_time_us = off_t
             self._compiled_target_voltage = tv
-            self._compiled_peak_current = self.ignition._get_current_from_mode(mode_str)
             self._compiled_on_time = on_t
             self._compiled_off_time = off_t
-
-            # Resolve crater params if mode changed
-            info = self.material.crater_data.get(mode_str)
-            if info is not None:
-                self._compiled_crater_mean = info["volume_um3"]
-                self._compiled_crater_std = info["volume_std_um3"]
-                crater_depth_mm = info["depth_um"] / 1000.0
-                self._compiled_kerf_width_mm = (
-                    self.material.params.base_overcut
-                    + self.config.wire_diameter
-                    + crater_depth_mm
-                )
+            self._update_compiled_mode_cache(mode_int)
 
             hs.time_since_servo = 0
 
@@ -484,6 +471,8 @@ class WireEDMEnv(gym.Env):
         )
 
         if wire_broke:
+            if fast:
+                return True, False
             return None, 0.0, True, False, {"wire_broken": True}
 
         # Termination check (inlined)
@@ -494,6 +483,9 @@ class WireEDMEnv(gym.Env):
         elif hs.workpiece_position_um >= hs.target_position:
             hs.is_target_distance_reached = 1
             terminated = True
+
+        if fast:
+            return terminated, False
 
         if is_ctrl_step:
             obs = {}
@@ -510,6 +502,12 @@ class WireEDMEnv(gym.Env):
             "control_step": is_ctrl_step,
         }
         return obs, reward, terminated, False, info
+
+    def step_compiled(self, action) -> tuple:
+        return self._step_compiled_impl(action, fast=False)
+
+    def step_compiled_fast(self, action) -> tuple[bool, bool]:
+        return self._step_compiled_impl(action, fast=True)
 
     def sync_compiled_to_state(self) -> None:
         """Write the hot-state bundle back into EDMState and module internals.

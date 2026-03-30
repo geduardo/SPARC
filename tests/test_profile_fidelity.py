@@ -110,6 +110,84 @@ def test_run_step_loop_uses_compiled_hot_state_for_crater_tracking() -> None:
     assert sample.workpiece_position_um == 7.5
 
 
+def test_run_step_loop_prefers_fast_step_when_available() -> None:
+    module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_fast")
+
+    class FakeEnv:
+        def __init__(self) -> None:
+            self.fast_calls = 0
+            self.step_calls = 0
+            self.state = SimpleNamespace(
+                time=0,
+                last_crater_volume=0.0,
+                wire_temperature=np.array([300.0, 320.0], dtype=np.float32),
+                wire_max_damage=0.125,
+                workpiece_position=4.5,
+                is_wire_broken=False,
+                is_target_distance_reached=False,
+            )
+
+        def step_fast(self, _action):
+            self.fast_calls += 1
+            self.state.time += 1
+            self.state.last_crater_volume = 0.001
+            return (self.fast_calls >= 3), False
+
+        def step(self, _action):
+            self.step_calls += 1
+            raise AssertionError("run_step_loop should prefer step_fast when available")
+
+    env = FakeEnv()
+    sample = module.run_step_loop(env, action={}, steps=10)
+
+    assert sample.crater_count == 3
+    assert env.fast_calls == 3
+    assert env.step_calls == 0
+
+
+def test_run_step_loop_prefers_compiled_fast_step_when_available() -> None:
+    module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_compiled_fast")
+
+    class FakeEnv:
+        def __init__(self) -> None:
+            self.fast_calls = 0
+            self.step_calls = 0
+            self._hot_state = SimpleNamespace(
+                last_crater_volume=0.0,
+                is_wire_broken=False,
+                is_target_distance_reached=False,
+            )
+            self.state = SimpleNamespace(
+                time=0,
+                last_crater_volume=0.0,
+                wire_temperature=np.array([300.0, 320.0], dtype=np.float32),
+                wire_max_damage=0.125,
+                workpiece_position=7.5,
+            )
+
+        def step_compiled_fast(self, _action):
+            self.fast_calls += 1
+            self._hot_state.last_crater_volume = 0.001
+            return (self.fast_calls >= 4), False
+
+        def step_compiled(self, _action):
+            self.step_calls += 1
+            raise AssertionError(
+                "run_step_loop should prefer step_compiled_fast when available"
+            )
+
+        def sync_compiled_to_state(self) -> None:
+            self.state.time = self.fast_calls
+            self.state.last_crater_volume = self._hot_state.last_crater_volume
+
+    env = FakeEnv()
+    sample = module.run_step_loop(env, action={}, steps=10, engine="compiled")
+
+    assert sample.crater_count == 4
+    assert env.fast_calls == 4
+    assert env.step_calls == 0
+
+
 def test_build_dashboard_signal_status_marks_thermal_panel_ready() -> None:
     module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_status")
     env = SimpleNamespace(

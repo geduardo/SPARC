@@ -45,6 +45,21 @@ def _run_modular(n_steps: int, seed: int, action=None):
     return env
 
 
+def _run_modular_fast(n_steps: int, seed: int, action=None):
+    """Run the modular fast path, return final state snapshot."""
+    env = WireEDMEnv()
+    env.reset(seed=seed)
+    env.state.time_since_servo = env.servo_interval
+    action = action or _make_action()
+
+    for _ in range(n_steps):
+        terminated, truncated = env.step_fast(action)
+        if terminated or truncated:
+            break
+
+    return env
+
+
 def _run_compiled(n_steps: int, seed: int, action=None):
     """Run the compiled scheduler path, return final state snapshot."""
     env = WireEDMEnv()
@@ -60,6 +75,24 @@ def _run_compiled(n_steps: int, seed: int, action=None):
             break
 
     # Sync back to modular state for comparison
+    env.sync_compiled_to_state()
+    return env
+
+
+def _run_compiled_fast(n_steps: int, seed: int, action=None):
+    """Run the compiled fast path, return final state snapshot."""
+    env = WireEDMEnv()
+    env.reset(seed=seed)
+    env.state.time_since_servo = env.servo_interval
+    action = action or _make_action()
+
+    env.init_compiled_scheduler()
+
+    for _ in range(n_steps):
+        terminated, truncated = env.step_compiled_fast(action)
+        if terminated or truncated:
+            break
+
     env.sync_compiled_to_state()
     return env
 
@@ -247,6 +280,81 @@ class TestCompiledStepSingleStep:
         assert mod.state.workpiece_position == pytest.approx(
             comp.state.workpiece_position, abs=0.1
         )
+
+
+class TestFastPathParity:
+    """Fast-step helpers must preserve the public-step semantics."""
+
+    def test_step_fast_matches_public_api(self):
+        action = _make_action()
+
+        full = _run_modular(250, 77, action)
+        fast = _run_modular_fast(250, 77, action)
+
+        assert full.state.time == fast.state.time
+        assert full.state.current_mode == fast.state.current_mode
+        assert full.state.workpiece_position == pytest.approx(
+            fast.state.workpiece_position, abs=0.1
+        )
+        assert full.state.wire_position == pytest.approx(
+            fast.state.wire_position, abs=0.01
+        )
+        assert full.state.wire_max_damage == pytest.approx(
+            fast.state.wire_max_damage, abs=1e-4
+        )
+
+    def test_step_compiled_fast_matches_public_api(self):
+        action = _make_action()
+
+        full = _run_compiled(250, 77, action)
+        fast = _run_compiled_fast(250, 77, action)
+
+        assert full.state.time == fast.state.time
+        assert full.state.current_mode == fast.state.current_mode
+        assert full.state.workpiece_position == pytest.approx(
+            fast.state.workpiece_position, abs=0.1
+        )
+        assert full.state.wire_position == pytest.approx(
+            fast.state.wire_position, abs=0.01
+        )
+        assert full.state.wire_max_damage == pytest.approx(
+            fast.state.wire_max_damage, abs=1e-4
+        )
+
+    def test_compiled_mode_cache_skips_redundant_peak_current_resolution(self):
+        env = WireEDMEnv()
+        env.reset(seed=123)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+
+        calls = {"count": 0}
+        original = env._update_compiled_mode_cache
+
+        def counted(mode_int):
+            if mode_int != env._compiled_cached_mode_int:
+                calls["count"] += 1
+            return original(mode_int)
+
+        env._update_compiled_mode_cache = counted
+
+        same_mode = _make_action()
+        for _ in range(5):
+            env._hot_state.time_since_servo = env._scheduler_constants.servo_interval
+            env.step_compiled_fast(same_mode)
+
+        changed_mode = build_scalar_action(
+            servo=0.0,
+            target_voltage=80.0,
+            current_mode=17,
+            ON_time=3.0,
+            OFF_time=20.0,
+        )
+        env._hot_state.time_since_servo = env._scheduler_constants.servo_interval
+        env.step_compiled_fast(changed_mode)
+        env._hot_state.time_since_servo = env._scheduler_constants.servo_interval
+        env.step_compiled_fast(changed_mode)
+
+        assert calls["count"] == 1
 
 
 class TestSchedulerConstants:
