@@ -222,3 +222,193 @@ Readout:
 - `PBC-04` is a real measured win.
 - The coarse mesh benefited more than the fine mesh, which is consistent with cutting Python overhead while leaving the wire thermal kernel untouched.
 - The next likely step is still `PBC-03`, then wire algorithmic reduction (`PCW-01`).
+
+## Addendum - `2026-03-30` `PBC-03` Staged RNG Architecture
+
+`PBC-03` was implemented and validated, but it was not kept as the active compiled path.
+
+What was attempted:
+
+- Split the compiled orchestrator into staged helpers for:
+  - short-circuit plus ignition-branch preparation
+  - discharge-state advance
+  - deterministic finalize work after RNG draws
+- Added explicit RNG-consumption parity coverage in `tests/test_compiled_step.py`
+
+What happened:
+
+- The first staged version failed fidelity because `fastmath=True` on the staged finalize kernel interacted badly with the NaN flow-condition sentinel and caused early wire breakage.
+- Removing `fastmath` fixed fidelity, but the staged public path still regressed against the shipped `PBC-04` path on long runs.
+
+### Same-Session `1M` A/B: staged vs legacy `PBC-04`
+
+Command basis:
+
+```bash
+python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1
+```
+
+Measured on a direct same-session compiled-only comparison:
+
+| Scenario | Staged `PBC-03` | Legacy `PBC-04` | Winner |
+| --- | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `150481.66` | `172676.77` | legacy `+14.7%` |
+| `0.05 mm / 1600 seg` | `114377.84` | `121188.45` | legacy `+6.0%` |
+
+### Verification Outcome
+
+- Staged candidate (before rollback): fidelity `PASS`, but only `107965.16` steps/s (`0.20 mm`) and `66752.04` steps/s (`0.05 mm`)
+- Decision: restore the simpler `PBC-04` public path and record `PBC-03` as a non-win
+
+### Final State After Rollback
+
+- Public compiled scheduler path restored to the legacy `PBC-04` orchestration
+- Dashboard rebuilt after removing the failed temporary candidate artifacts
+- Validation:
+  - `python -m pytest -q` -> `121 passed`
+  - `python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1`
+
+Final `1M` bench on the restored path:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `108544.86` | `148699.97` | `1.370x` |
+| `0.05 mm / 1600 seg` | `88475.76` | `121287.48` | `1.371x` |
+
+## Addendum - `2026-03-30` `PCW-02` SIMD-Friendly Wire-Loop Restructuring
+
+`PCW-02` was attempted on the conservative path and then rolled back.
+
+What was attempted:
+
+- Split the interleaved wire thermal kernel into clearer passes for:
+  - thermal derivative computation
+  - temperature update
+  - damage accumulation
+- Routed the compiled wire step through those helpers to try to expose cleaner vectorizable loops inside `src/wedm/modules/wire.py`
+
+What happened:
+
+- The split-pass version did not preserve the accepted thermal behavior.
+- The first candidate failed fidelity on mean wire temperature in both benchmark meshes while leaving crater count and workpiece position effectively unchanged.
+- It also underperformed the already-shipped `PBC-04` compiled path, so there was no reason to keep carrying the extra kernel complexity.
+
+### Failed Candidate Verification
+
+Command:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled --skip-dashboard --output outputs/profiling/pcw02_verify_tmp.json
+```
+
+Result before rollback:
+
+| Scenario | Verified steps/s | Fidelity | Key failure |
+| --- | ---: | --- | --- |
+| `0.20 mm / 400 seg` | `81346.49` | FAIL | wire temperature mean `312.30 K -> 296.82 K` |
+| `0.05 mm / 1600 seg` | `52975.43` | FAIL | wire temperature mean `312.30 K -> 296.86 K` |
+
+Other fidelity signals on that failed candidate remained aligned:
+
+- `termination_reason`: matched
+- `crater_count`: matched
+- `workpiece_position_um`: matched
+
+### Restored-Path Validation
+
+After restoring the original wire kernel path:
+
+- `python -m pytest tests/test_wire_kernels.py tests/test_compiled_step.py tests/test_profile_fidelity.py -q` -> `38 passed`
+- `python scripts/verify_realtime_candidate.py --engine compiled --skip-dashboard --output outputs/profiling/pcw02_restore_check.json`
+
+Restored-path check:
+
+| Scenario | Baseline steps/s | Restored compiled steps/s | Fidelity |
+| --- | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `38284.48` | `104877.66` | PASS |
+| `0.05 mm / 1600 seg` | `34476.81` | `76622.92` | PASS |
+
+Quick same-session `200k` A/B after the rollback:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `64057.49` | `92053.93` | `1.437x` |
+| `0.05 mm / 1600 seg` | `54977.49` | `83074.70` | `1.511x` |
+
+Decision:
+
+- Revert `PCW-02` and record it as a conservative-track non-win.
+- Do not keep the split-pass thermal kernel without a stronger physics argument and dedicated thermal-validation work.
+
+## Addendum - `2026-04-01` `PBC-05` Numeric Action Packet + Compiled Env Bookkeeping
+
+`PBC-05` tightened the compiled fast path without changing the physics kernels.
+
+What changed:
+
+- Added a pre-resolved `CompiledActionPacket` in `src/wedm/envs/wire_edm.py`
+- Cached immutable `ScalarAction` inputs as resolved compiled packets, so repeated compiled stepping no longer re-decodes generator control or re-resolves crater/current settings every microstep
+- Exposed `compile_action()` for callers that want to pre-resolve a compiled action explicitly
+- Folded compiled-path termination status into `compiled_microstep()` in `src/wedm/core/compiled_step.py`, removing the extra Python-side termination comparisons from the hot path
+- Updated `scripts/profile_simulation.py` and `scripts/bench_compiled.py` to precompile the action once per env run when the compiled engine is selected
+
+### Verified Candidate
+
+Official uncontended command:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled
+```
+
+Output report:
+
+- `outputs/profiling/perf_candidate_compiled_20260401_152709.json`
+
+Frozen-baseline comparison (`outputs/profiling/realtime_baseline_20260322_i1.json`):
+
+| Scenario | Baseline steps/s | `PBC-05` compiled candidate | Fidelity |
+| --- | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `38284.48` | `213389.81` | PASS |
+| `0.05 mm / 1600 seg` | `34476.81` | `158583.94` | PASS |
+
+Relative to the best verified `PBC-04` candidate (`perf_candidate_compiled_20260330_014515.json`):
+
+| Scenario | `PBC-04` best verified | `PBC-05` verified | Delta |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `205800.12` | `213389.81` | `+3.69%` |
+| `0.05 mm / 1600 seg` | `154805.23` | `158583.94` | `+2.44%` |
+
+The dashboard now tracks this report as the latest snapshot:
+
+- `outputs/profiling/performance_dashboard.html`
+- Latest report path: `outputs/profiling/perf_candidate_compiled_20260401_152709.json`
+
+### 1M-Step Sanity Check
+
+Command:
+
+```bash
+python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1
+```
+
+Results:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `180709.05` | `226510.81` | `1.253x` |
+| `0.05 mm / 1600 seg` | `136429.79` | `168103.65` | `1.232x` |
+
+### Validation
+
+- `python -m pytest -q` -> `124 passed`
+- `python -m pytest tests/test_compiled_step.py tests/test_profile_fidelity.py tests/test_wire_kernels.py -q` -> `41 passed`
+- Added regression coverage for:
+  - precompiled action-packet parity vs scalar compiled stepping
+  - packet stepping without `_decode_action()` calls
+  - profiler precompiling compiled actions once per env run
+
+Readout:
+
+- `PBC-05` is a real but modest conservative win.
+- The gain came from removing control-path overhead around the compiled scheduler, not from changing the thermal or discharge physics.
+- We are still well short of realtime, but this cut keeps the conservative path moving without touching the solver contract.

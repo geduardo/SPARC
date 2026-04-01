@@ -103,3 +103,66 @@ Applied here:
 
 - `PAM-02`: kept
 - `PAM-06`: reverted
+
+### `PBC-03` Staged RNG/discharge/finalize split
+
+Files involved during the experiment:
+
+- [`src/wedm/core/compiled_step.py`](../src/wedm/core/compiled_step.py)
+- [`tests/test_compiled_step.py`](../tests/test_compiled_step.py)
+
+Measured result:
+
+- The staged split initially failed fidelity because `fastmath=True` on the staged finalize kernel interacted badly with the NaN-based flow-condition sentinel and drove early wire breakage.
+- After removing that unsafe `fastmath` flag, fidelity returned to `PASS`, but the staged public path still did not beat the simpler `PBC-04` orchestrator on the long same-session benchmark.
+
+Same-session `1M` compiled-only A/B (`staged` vs `legacy PBC-04`):
+
+- `0.20 mm`: `150481.66 -> 172676.77 steps/s` (`legacy +14.7%`)
+- `0.05 mm`: `114377.84 -> 121188.45 steps/s` (`legacy +6.0%`)
+
+Additional verification on the staged path before rollback:
+
+- `python scripts/verify_realtime_candidate.py --engine compiled --output outputs/profiling/pbc03_verify_tmp.json --skip-dashboard`
+- Result before rollback: fidelity `PASS`, but verified throughput only `107965.16` steps/s (`0.20 mm`) and `66752.04` steps/s (`0.05 mm`), both below the existing `PBC-04` source-of-truth candidate.
+
+Disposition:
+
+- Reverted on `2026-03-30` by restoring the public `compiled_microstep()` path to the simpler `PBC-04` implementation.
+
+Reason:
+
+- The staged split added maintenance cost, required special handling around NaN sentinels, and still lost to the legacy path on the `1M` benchmark.
+- The only part worth keeping was the explicit RNG-consumption parity test coverage.
+
+### `PCW-02` SIMD-friendly wire-loop restructuring
+
+Files involved during the experiment:
+
+- [`src/wedm/modules/wire.py`](../src/wedm/modules/wire.py)
+- [`tests/test_wire_kernels.py`](../tests/test_wire_kernels.py)
+- [`tests/test_profile_fidelity.py`](../tests/test_profile_fidelity.py)
+
+Measured result:
+
+- The attempted split of the thermal wire kernel into derivative, temperature-update, and damage passes did not preserve the accepted thermal behavior.
+- Candidate verification failed on mean wire temperature while leaving crater count and workpiece position effectively unchanged.
+
+Failed verification snapshot:
+
+- `0.20 mm`: `81346.49` steps/s, wire temperature mean `312.30 K -> 296.82 K`, fidelity `FAIL`
+- `0.05 mm`: `52975.43` steps/s, wire temperature mean `312.30 K -> 296.86 K`, fidelity `FAIL`
+
+Validation after rollback:
+
+- `python -m pytest tests/test_wire_kernels.py tests/test_compiled_step.py tests/test_profile_fidelity.py -q` -> `38 passed`
+- Restored-path verification returned to fidelity `PASS` at `104877.66` steps/s (`0.20 mm`) and `76622.92` steps/s (`0.05 mm`)
+
+Disposition:
+
+- Reverted on `2026-03-30` by restoring the original interleaved thermal kernel path.
+
+Reason:
+
+- This is exactly the kind of optimization that risks changing effective physics while only offering modest theoretical upside.
+- The split-pass form was more complex, failed fidelity immediately, and did not beat the accepted `PBC-04` source-of-truth path.

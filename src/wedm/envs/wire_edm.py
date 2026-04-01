@@ -36,6 +36,21 @@ class ScalarAction:
     generator_control: ScalarGeneratorControl
 
 
+@dataclass(frozen=True, slots=True)
+class CompiledActionPacket:
+    """Pre-resolved compiled-path control packet."""
+
+    target_delta: float
+    target_voltage: float
+    current_mode: int
+    on_time: float
+    off_time: float
+    peak_current: float
+    crater_mean_um3: float
+    crater_std_um3: float
+    kerf_width_mm: float
+
+
 def build_scalar_action(
     *,
     servo: float,
@@ -146,6 +161,8 @@ class WireEDMEnv(gym.Env):
             env_type._calc_reward is WireEDMEnv._calc_reward
         )
         self._compiled_cached_mode_int = None
+        self._compiled_action_source = None
+        self._compiled_action_packet = None
 
         # ── Action Space ─────────────────────────────────────────────────
         # Note: target_delta interpretation depends on control mode:
@@ -234,6 +251,47 @@ class WireEDMEnv(gym.Env):
             + crater_depth_mm
         )
         self._compiled_cached_mode_int = mode_int
+
+    def _build_compiled_action_packet(
+        self,
+        target_delta: float,
+        target_voltage: float,
+        mode_int: int,
+        on_time: float,
+        off_time: float,
+    ) -> CompiledActionPacket:
+        self._update_compiled_mode_cache(mode_int)
+        return CompiledActionPacket(
+            target_delta=target_delta,
+            target_voltage=target_voltage,
+            current_mode=mode_int,
+            on_time=on_time,
+            off_time=off_time,
+            peak_current=self._compiled_peak_current,
+            crater_mean_um3=self._compiled_crater_mean,
+            crater_std_um3=self._compiled_crater_std,
+            kerf_width_mm=self._compiled_kerf_width_mm,
+        )
+
+    def _resolve_compiled_action_packet(self, action) -> CompiledActionPacket:
+        if isinstance(action, CompiledActionPacket):
+            return action
+
+        if isinstance(action, ScalarAction) and action is self._compiled_action_source:
+            return self._compiled_action_packet
+
+        target_delta, target_voltage, mode_int, on_time, off_time = self._decode_action(
+            action
+        )
+        packet = self._build_compiled_action_packet(
+            target_delta, target_voltage, mode_int, on_time, off_time
+        )
+
+        if isinstance(action, ScalarAction):
+            self._compiled_action_source = action
+            self._compiled_action_packet = packet
+
+        return packet
 
     def _step_impl(self, action, *, fast: bool):
         state = self.state
@@ -402,8 +460,14 @@ class WireEDMEnv(gym.Env):
         self._scheduler_constants = SchedulerConstants.from_env(self)
         self._hot_state = self.build_hot_state_bundle()
         self._compiled_cached_mode_int = None
+        self._compiled_action_source = None
+        self._compiled_action_packet = None
         self._resolve_compiled_generator_settings()
         self._resolve_compiled_crater_params()
+
+    def compile_action(self, action) -> CompiledActionPacket:
+        """Resolve an action into a compiled-path control packet."""
+        return self._resolve_compiled_action_packet(action)
 
     def _resolve_compiled_generator_settings(self) -> None:
         """Cache resolved generator settings for the compiled path."""
@@ -444,22 +508,26 @@ class WireEDMEnv(gym.Env):
         is_ctrl_step = hs.time_since_servo >= sc.servo_interval
 
         if is_ctrl_step:
-            hs.target_delta, tv, mode_int, on_t, off_t = self._decode_action(action)
+            packet = self._resolve_compiled_action_packet(action)
 
-            # Resolve generator settings for this control step
-            hs.target_voltage = tv
-            hs.current_mode_code = mode_int
-            hs.on_time_us = on_t
-            hs.off_time_us = off_t
-            self._compiled_target_voltage = tv
-            self._compiled_on_time = on_t
-            self._compiled_off_time = off_t
-            self._update_compiled_mode_cache(mode_int)
+            hs.target_delta = packet.target_delta
+            hs.target_voltage = packet.target_voltage
+            hs.current_mode_code = packet.current_mode
+            hs.on_time_us = packet.on_time
+            hs.off_time_us = packet.off_time
+            self._compiled_target_voltage = packet.target_voltage
+            self._compiled_on_time = packet.on_time
+            self._compiled_off_time = packet.off_time
+            self._compiled_peak_current = packet.peak_current
+            self._compiled_crater_mean = packet.crater_mean_um3
+            self._compiled_crater_std = packet.crater_std_um3
+            self._compiled_kerf_width_mm = packet.kerf_width_mm
+            self._compiled_cached_mode_int = packet.current_mode
 
             hs.time_since_servo = 0
 
         # Execute one compiled microstep
-        wire_broke = compiled_microstep(
+        termination_code = compiled_microstep(
             hs, self.np_random, sc,
             self._compiled_target_voltage,
             self._compiled_peak_current,
@@ -470,22 +538,16 @@ class WireEDMEnv(gym.Env):
             self._compiled_kerf_width_mm,
         )
 
-        if wire_broke:
+        if termination_code != 0:
             if fast:
                 return True, False
-            return None, 0.0, True, False, {"wire_broken": True}
-
-        # Termination check (inlined)
-        terminated = False
-        if hs.wire_position_um > hs.workpiece_position_um + 100:
-            hs.is_wire_broken = 1
-            terminated = True
-        elif hs.workpiece_position_um >= hs.target_position:
-            hs.is_target_distance_reached = 1
-            terminated = True
+            return None, 0.0, True, False, {
+                "wire_broken": bool(hs.is_wire_broken),
+                "target_reached": bool(hs.is_target_distance_reached),
+            }
 
         if fast:
-            return terminated, False
+            return False, False
 
         if is_ctrl_step:
             obs = {}
@@ -501,7 +563,7 @@ class WireEDMEnv(gym.Env):
             "time": hs.time,
             "control_step": is_ctrl_step,
         }
-        return obs, reward, terminated, False, info
+        return obs, reward, False, False, info
 
     def step_compiled(self, action) -> tuple:
         return self._step_compiled_impl(action, fast=False)

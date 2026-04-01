@@ -188,6 +188,48 @@ def test_run_step_loop_prefers_compiled_fast_step_when_available() -> None:
     assert env.step_calls == 0
 
 
+def test_run_step_loop_precompiles_compiled_actions_when_supported() -> None:
+    module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_compiled_packet")
+
+    class FakeEnv:
+        def __init__(self) -> None:
+            self.compile_calls = 0
+            self.fast_calls = 0
+            self._hot_state = SimpleNamespace(
+                last_crater_volume=0.0,
+                is_wire_broken=False,
+                is_target_distance_reached=False,
+            )
+            self.state = SimpleNamespace(
+                time=0,
+                last_crater_volume=0.0,
+                wire_temperature=np.array([300.0, 320.0], dtype=np.float32),
+                wire_max_damage=0.125,
+                workpiece_position=7.5,
+            )
+
+        def compile_action(self, action):
+            self.compile_calls += 1
+            return ("compiled-packet", action)
+
+        def step_compiled_fast(self, action):
+            assert action[0] == "compiled-packet"
+            self.fast_calls += 1
+            self._hot_state.last_crater_volume = 0.001
+            return (self.fast_calls >= 3), False
+
+        def sync_compiled_to_state(self) -> None:
+            self.state.time = self.fast_calls
+            self.state.last_crater_volume = self._hot_state.last_crater_volume
+
+    env = FakeEnv()
+    sample = module.run_step_loop(env, action={"servo": 0.0}, steps=10, engine="compiled")
+
+    assert sample.crater_count == 3
+    assert env.compile_calls == 1
+    assert env.fast_calls == 3
+
+
 def test_build_dashboard_signal_status_marks_thermal_panel_ready() -> None:
     module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_status")
     env = SimpleNamespace(

@@ -371,7 +371,7 @@ def render_plot_panel() -> str:
             </div>
         </div>
         <p class="section-note subtle" id="chart-description"></p>
-        <svg id="performance-plot" viewBox="0 0 1040 380" class="trend-svg" role="img" aria-label="Performance trend chart"></svg>
+        <svg id="performance-plot" viewBox="0 0 1040 440" class="trend-svg" role="img" aria-label="Performance trend chart"></svg>
         <div class="trend-legend" id="plot-legend"></div>
     </section>
     """
@@ -924,14 +924,6 @@ def render_html(reports: List[Dict[str, Any]], target_steps_per_second: float) -
                 return;
             }
 
-            const width = 1040;
-            const height = 380;
-            const marginLeft = 92;
-            const marginRight = 36;
-            const marginTop = 28;
-            const marginBottom = 82;
-            const plotWidth = width - marginLeft - marginRight;
-            const plotHeight = height - marginTop - marginBottom;
             const metric = metricMeta(state.metric);
             let minValue = Number.isFinite(state.yMin) ? state.yMin : Math.min(...values);
             let maxValue = Number.isFinite(state.yMax) ? state.yMax : Math.max(...values);
@@ -949,6 +941,26 @@ def render_html(reports: List[Dict[str, Any]], target_steps_per_second: float) -
                 }
             }
 
+            const yTickValues = Array.from({ length: 5 }, (_, index) =>
+                minValue + ((maxValue - minValue) * index) / 4
+            );
+            const longestYLabel = yTickValues.reduce((maxLength, value) => {
+                return Math.max(maxLength, formatMetric(value, state.metric).length);
+            }, 0);
+            const longestReportName = reports.reduce((maxLength, report) => {
+                return Math.max(maxLength, String(report.name || "").length);
+            }, 0);
+
+            const width = 1040;
+            const marginLeft = Math.max(92, 24 + longestYLabel * 7);
+            const marginRight = 36;
+            const marginTop = 28;
+            const marginBottom = Math.max(96, 38 + longestReportName * 3.6);
+            const plotHeight = 270;
+            const height = marginTop + plotHeight + marginBottom;
+            const plotWidth = width - marginLeft - marginRight;
+            plotNode.setAttribute("viewBox", "0 0 " + width + " " + height);
+
             function xPos(index) {
                 if (reports.length === 1) {
                     return marginLeft + plotWidth / 2;
@@ -961,8 +973,7 @@ def render_html(reports: List[Dict[str, Any]], target_steps_per_second: float) -
             }
 
             const gridLines = [];
-            for (let index = 0; index < 5; index += 1) {
-                const value = minValue + ((maxValue - minValue) * index) / 4;
+            yTickValues.forEach((value) => {
                 const y = yPos(value);
                 gridLines.push(
                     '<line x1="' + marginLeft + '" y1="' + y.toFixed(2) + '" x2="' + (width - marginRight) + '" y2="' + y.toFixed(2) + '" class="grid-line" />'
@@ -972,7 +983,7 @@ def render_html(reports: List[Dict[str, Any]], target_steps_per_second: float) -
                         escapeHtml(formatMetric(value, state.metric)) +
                         "</text>"
                 );
-            }
+            });
 
             const xLabels = [];
             reports.forEach((report, reportIndex) => {
@@ -1372,7 +1383,7 @@ def render_html(reports: List[Dict[str, Any]], target_steps_per_second: float) -
         .hotspot-value {{ font-family: "Consolas", monospace; font-size: 13px; }}
         .compact table {{ min-width: 0; }}
         .trend-panel {{ padding-bottom: 18px; }}
-        .trend-svg {{ width: 100%; height: auto; border-radius: 14px; background: var(--panel-alt); }}
+        .trend-svg {{ width: 100%; height: auto; display: block; overflow: visible; border-radius: 14px; background: var(--panel-alt); }}
         .plot-bg {{ fill: var(--panel-alt); }}
         .grid-line {{ stroke: #ddd4c7; stroke-dasharray: 2 6; }}
         .grid-vertical {{ stroke: #eee6da; stroke-dasharray: 2 8; }}

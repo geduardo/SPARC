@@ -909,6 +909,10 @@ def run_step_loop(
     engine: str = "modular",
 ) -> RunSample:
 
+    step_action = action
+    if engine == "compiled" and hasattr(env, "compile_action"):
+        step_action = env.compile_action(action)
+
     termination_reason = "completed"
     steps_run = 0
     crater_count = 0
@@ -917,18 +921,18 @@ def run_step_loop(
     for _ in range(steps):
         if engine == "compiled":
             if hasattr(env, "step_compiled_fast"):
-                terminated, truncated = env.step_compiled_fast(action)
+                terminated, truncated = env.step_compiled_fast(step_action)
                 info = None
             else:
-                _, _, terminated, truncated, info = env.step_compiled(action)
+                _, _, terminated, truncated, info = env.step_compiled(step_action)
             live_state = env._hot_state
             crater_volume = float(env._hot_state.last_crater_volume)
         else:
             if hasattr(env, "step_fast"):
-                terminated, truncated = env.step_fast(action)
+                terminated, truncated = env.step_fast(step_action)
                 info = None
             else:
-                _, _, terminated, truncated, info = env.step(action)
+                _, _, terminated, truncated, info = env.step(step_action)
             live_state = env.state
             crater_volume = float(env.state.last_crater_volume)
         steps_run += 1

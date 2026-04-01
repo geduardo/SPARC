@@ -321,6 +321,57 @@ class TestFastPathParity:
             fast.state.wire_max_damage, abs=1e-4
         )
 
+    def test_precompiled_action_packet_matches_scalar_action_path(self):
+        action = _make_action()
+
+        scalar = WireEDMEnv()
+        scalar.reset(seed=77)
+        scalar.state.time_since_servo = scalar.servo_interval
+        scalar.init_compiled_scheduler()
+
+        packet_env = WireEDMEnv()
+        packet_env.reset(seed=77)
+        packet_env.state.time_since_servo = packet_env.servo_interval
+        packet_env.init_compiled_scheduler()
+        packet = packet_env.compile_action(action)
+
+        for _ in range(250):
+            scalar.step_compiled_fast(action)
+            packet_env.step_compiled_fast(packet)
+
+        scalar.sync_compiled_to_state()
+        packet_env.sync_compiled_to_state()
+
+        assert scalar.state.time == packet_env.state.time
+        assert scalar.state.current_mode == packet_env.state.current_mode
+        assert scalar.state.workpiece_position == pytest.approx(
+            packet_env.state.workpiece_position, abs=0.1
+        )
+        assert scalar.state.wire_position == pytest.approx(
+            packet_env.state.wire_position, abs=0.01
+        )
+        assert scalar.state.wire_max_damage == pytest.approx(
+            packet_env.state.wire_max_damage, abs=1e-4
+        )
+
+    def test_precompiled_action_packet_skips_decode(self):
+        env = WireEDMEnv()
+        env.reset(seed=123)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+
+        packet = env.compile_action(_make_action())
+
+        def fail_decode(_action):
+            raise AssertionError("decode should not run for a compiled action packet")
+
+        env._decode_action = fail_decode
+
+        for _ in range(5):
+            env._hot_state.time_since_servo = env._scheduler_constants.servo_interval
+            terminated, truncated = env.step_compiled_fast(packet)
+            assert (terminated, truncated) == (False, False)
+
     def test_compiled_mode_cache_skips_redundant_peak_current_resolution(self):
         env = WireEDMEnv()
         env.reset(seed=123)
@@ -355,6 +406,72 @@ class TestFastPathParity:
         env.step_compiled_fast(changed_mode)
 
         assert calls["count"] == 1
+
+
+class TrackingRNG:
+    """Count scalar RNG draws while delegating to a deterministic Generator."""
+
+    def __init__(self, seed: int):
+        self._rng = np.random.default_rng(seed)
+        self.random_calls = 0
+        self.normal_calls = 0
+
+    def random(self, size=None):
+        if size is None:
+            self.random_calls += 1
+        else:
+            self.random_calls += int(np.prod(size))
+        return self._rng.random(size)
+
+    def normal(self, loc=0.0, scale=1.0, size=None):
+        if size is None:
+            self.normal_calls += 1
+        else:
+            self.normal_calls += int(np.prod(size))
+        return self._rng.normal(loc, scale, size)
+
+
+class TestCompiledStepRNGParity:
+    """Compiled staging must preserve the modular RNG branch pattern."""
+
+    def test_compiled_path_consumes_same_rng_draw_pattern(self):
+        action = build_scalar_action(
+            servo=0.25,
+            target_voltage=90.0,
+            current_mode=17,
+            ON_time=2.5,
+            OFF_time=17.0,
+        )
+
+        modular = WireEDMEnv()
+        modular.reset(seed=321)
+        modular.state.time_since_servo = modular.servo_interval
+        modular_rng = TrackingRNG(999)
+        modular.np_random = modular_rng
+
+        compiled = WireEDMEnv()
+        compiled.reset(seed=321)
+        compiled.state.time_since_servo = compiled.servo_interval
+        compiled_rng = TrackingRNG(999)
+        compiled.np_random = compiled_rng
+        compiled.init_compiled_scheduler()
+
+        for _ in range(1000):
+            _, _, mod_terminated, mod_truncated, _ = modular.step(action)
+            _, _, comp_terminated, comp_truncated, _ = compiled.step_compiled(action)
+            if mod_terminated or mod_truncated or comp_terminated or comp_truncated:
+                break
+
+        compiled.sync_compiled_to_state()
+
+        assert modular_rng.random_calls == compiled_rng.random_calls
+        assert modular_rng.normal_calls == compiled_rng.normal_calls
+        assert modular.state.workpiece_position == pytest.approx(
+            compiled.state.workpiece_position, abs=0.1
+        )
+        assert modular.state.wire_max_damage == pytest.approx(
+            compiled.state.wire_max_damage, abs=1e-4
+        )
 
 
 class TestSchedulerConstants:

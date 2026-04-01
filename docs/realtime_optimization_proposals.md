@@ -64,6 +64,33 @@ The lesson: the next attempt must be a **compiled loop**, not a Python orchestra
 
 ---
 
+## Optimization Tracks
+
+The repo should treat the remaining work as **two separate tracks**:
+
+### Conservative track (physics-preserving)
+
+This track keeps the same governing equations, the same per-segment update pattern, and the same fidelity contract. It focuses on:
+
+- Python overhead reduction
+- compiled scheduling
+- loop restructuring / SIMD-friendly kernels
+- profiling and verification guardrails
+
+This is the default path for production optimization work.
+
+### Exploratory track (physics-risking)
+
+This track changes *where* or *how often* some physics is evaluated, even if the intent is "equivalent enough." Examples:
+
+- active thermal windows
+- multi-rate thermal tails
+- sparse cold-region updates
+
+These ideas may be necessary for the `1,000,000 steps/s` goal, but they should be treated as explicit physics-risking experiments, not routine optimization work.
+
+---
+
 ## Phase 1: Python Overhead Reduction
 
 Low-risk, incremental wins that reduce per-step overhead while preserving the current modular architecture. Each is independently shippable and testable.
@@ -214,13 +241,20 @@ Remaining overhead on the common benchmark path:
 
 ---
 
-## Phase 3: Wire Thermal Algorithmic Reduction
+## Phase 3: Wire Thermal Work Reduction
 
 If Phase 2 lands at ~250–420k steps/s, the remaining ~2.5–4x gap is almost entirely the wire thermal kernel. The O(N) conduction solve runs for **all N segments every microstep** — this is the hard barrier to realtime.
 
-**Combined target: ~2–6x on top of Phase 2** (→ 500k–1M+ steps/s).
+This phase now splits into two different classes of work:
+
+- **Physics-preserving:** keep the same equations and update cadence, but make the existing thermal kernel cheaper.
+- **Physics-risking:** reduce *how much* of the thermal field is updated each microstep.
+
+Only the first class belongs on the conservative path.
 
 ### P3-01: Active Thermal Window
+
+**Status:** Exploratory only. Not part of the conservative path.
 
 The thermal diffusion timescale at 0.2mm segment length is:
 
@@ -240,6 +274,8 @@ Outside this window, temperature changes negligibly per step. Update cold tails 
 
 **Expected gain:** Cost drops from O(N) to O(W) where W ≈ 30–60 segments vs N = 400–1600. That's a **7–50x reduction** in wire thermal work per step. **Risk:** High — requires careful fidelity validation. Boundary conditions between active and inactive regions must be handled correctly.
 
+**Important:** This is the first proposal in the plan that can plausibly change the effective physics contract. It should only be pursued as an explicit experiment when the team is willing to trade conservatism for throughput.
+
 ### P3-02: SIMD-Friendly Loop Restructuring
 
 **File:** [`modules/wire.py:462–498`](../src/wedm/modules/wire.py#L462-L498)
@@ -251,6 +287,8 @@ The wire thermal core loop currently interleaves: conduction computation, dT_dt 
 Verify SIMD is actually achieved with `numba --annotate-html` or `NUMBA_DUMP_OPTIMIZED=1`.
 
 **Expected gain:** 0.1–0.5 µs/step (small absolute, but helps at the margin). **Risk:** Low.
+
+**Conservative-path status:** This is the preferred next wire task when physics preservation matters more than headline speedup.
 
 ### P3-03: Enable Numba `cache=True` + AOT Compilation
 
@@ -323,10 +361,30 @@ These are not optional post-hoc checks — they gate promotion.
 
 ### Phase C: Wire thermal reduction (P3-01, P3-02)
 
-- Expected result: ~8–30x total vs frontier (→ ~500k–1M+ steps/s)
-- Only pursue if the realtime target is a hard requirement
-- P3-01 (active window) is the highest-impact item in the entire plan
-- **Without Phase C, reaching 1,000,000 steps/s is unlikely**
+- Expected result:
+  - conservative path (`P3-02` only): modest gain
+  - exploratory path (`P3-01`): potentially large gain
+- `P3-02` is the conservative next step
+- `P3-01` is optional and exploratory
+- **Without exploratory Phase C work, reaching 1,000,000 steps/s is unlikely**
+
+### Conservative execution path
+
+This is the recommended default path when preserving physics behavior is the priority:
+
+1. Phase A modular cleanup
+2. Phase B compiled scheduler
+3. Phase C `P3-02` SIMD-friendly loop restructuring
+4. Guardrails on every candidate
+
+### Exploratory execution path
+
+Only use this path when the realtime target outweighs physics conservatism:
+
+1. Complete the conservative path first
+2. Treat `P3-01` as an isolated experiment with separate verification notes
+3. Compare against the conservative candidate, not just the frozen baseline
+4. Do not promote it by default if fidelity or interpretation becomes ambiguous
 
 ### Non-critical (land anytime)
 
@@ -334,10 +392,11 @@ These are not optional post-hoc checks — they gate promotion.
 
 ### Summary
 
-| Phase | Target range | Key risk | Prerequisite |
+| Track / Phase | Target range | Physics risk | Prerequisite |
 | :--- | :--- | :--- | :--- |
 | Guardrails | — | Low | None (runs throughout) |
 | A (modular cleanup) | 110–135k steps/s | Low | None |
-| B (compiled scheduler) | 250–420k steps/s | Medium-high | Phase A recommended |
-| C (wire algorithmic) | 500k–1M+ steps/s | High | Phase B required |
+| B (compiled scheduler) | 250–420k steps/s | Low-medium | Phase A recommended |
+| C-conservative (`P3-02`) | Incremental | Low | Phase B required |
+| C-exploratory (`P3-01`) | 500k–1M+ steps/s potential | High | Phase B required |
 | Non-critical | Startup time | Low | None |

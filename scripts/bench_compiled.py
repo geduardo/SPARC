@@ -67,11 +67,12 @@ def warmup_modular(env: WireEDMEnv, action, warmup: int) -> None:
 
 def warmup_compiled(env: WireEDMEnv, action, warmup: int) -> None:
     env.init_compiled_scheduler()
+    step_action = env.compile_action(action) if hasattr(env, "compile_action") else action
     for _ in range(warmup):
         if hasattr(env, "step_compiled_fast"):
-            env.step_compiled_fast(action)
+            env.step_compiled_fast(step_action)
         else:
-            env.step_compiled(action)
+            env.step_compiled(step_action)
 
 
 def run_modular(segment_len_mm: float, action, args: argparse.Namespace) -> list[float]:
@@ -108,13 +109,14 @@ def run_compiled(segment_len_mm: float, action, args: argparse.Namespace) -> lis
         warmup_compiled(env, action, args.warmup)
         reset_for_run(env, seed=args.seed)
         env.init_compiled_scheduler()
+        step_action = env.compile_action(action) if hasattr(env, "compile_action") else action
 
         t0 = time.perf_counter()
         for _ in range(args.steps):
             if hasattr(env, "step_compiled_fast"):
-                terminated, truncated = env.step_compiled_fast(action)
+                terminated, truncated = env.step_compiled_fast(step_action)
             else:
-                _, _, terminated, truncated, _ = env.step_compiled(action)
+                _, _, terminated, truncated, _ = env.step_compiled(step_action)
             if terminated or truncated:
                 break
         wall = time.perf_counter() - t0
