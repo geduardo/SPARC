@@ -387,6 +387,7 @@ def test_resolve_discharge_partition_matches_reference():
 
     actual = resolve_discharge_partition(
         spark_state=1,
+        has_spark_location=True,
         spark_location_mm=4.6,
         voltage=90.0,
         current=30.0,
@@ -494,6 +495,117 @@ def test_advance_wire_step_inplace_matches_reference():
     np.testing.assert_allclose(temperature, expected_temperature, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(damage, expected_damage, rtol=1e-6, atol=1e-6)
     assert actual_max_damage == expected_max_damage
+
+
+def test_advance_wire_step_inplace_matches_resolved_partition_composition():
+    temperature = np.array(
+        [293.15, 305.0, 318.5, 330.0, 341.0, 352.5], dtype=np.float32
+    )
+    damage = np.array([0.0, 0.2, 0.0, 0.1, 0.4, 0.0], dtype=np.float32)
+    dT_dt = np.zeros_like(temperature)
+    conv_loss_coeff = np.array([0.0, 0.7, 0.8, 0.9, 1.0, 1.1], dtype=np.float32)
+
+    expected_temperature = temperature.copy()
+    expected_damage = damage.copy()
+    expected_dT_dt = np.zeros_like(dT_dt)
+    expected_position_offset = 0.03
+    wrap_threshold_mm = 0.05
+    delta_mm = 0.08
+    spool_temp = 293.15
+
+    expected_position_offset += delta_mm
+    rollover_count = 0
+    while expected_position_offset > wrap_threshold_mm:
+        expected_position_offset -= wrap_threshold_mm
+        rollover_count += 1
+
+    if rollover_count >= expected_temperature.shape[0]:
+        expected_temperature.fill(spool_temp)
+        expected_damage.fill(0.0)
+    elif rollover_count > 0:
+        expected_temperature[rollover_count:] = expected_temperature[:-rollover_count]
+        expected_damage[rollover_count:] = expected_damage[:-rollover_count]
+        expected_temperature[:rollover_count] = spool_temp
+        expected_damage[:rollover_count] = 0.0
+
+    partition = resolve_discharge_partition(
+        spark_state=1,
+        has_spark_location=True,
+        spark_location_mm=0.55,
+        voltage=90.0,
+        current=30.0,
+        current_squared=900.0,
+        segment_len_mm=0.2,
+        zone_start=1,
+        zone_end=5,
+        n_segments=expected_temperature.shape[0],
+        contact_bottom_idx=0,
+        contact_top_idx=5,
+        plasma_efficiency=0.25,
+        joule_factor_base=0.015,
+    )
+    expected_max_damage = apply_thermal_damage_core_inplace(
+        expected_temperature,
+        expected_damage,
+        expected_dT_dt,
+        conv_loss_coeff,
+        2.4,
+        1.5e-4,
+        298.0,
+        293.15,
+        0.0034,
+        partition[2],
+        partition[3],
+        partition[4],
+        partition[5],
+        partition[6],
+        partition[7],
+        partition[0],
+        partition[1],
+        spool_temp,
+        320.0,
+        1.3e-4,
+        -175.0,
+    )
+
+    actual_temperature = temperature.copy()
+    actual_damage = damage.copy()
+    actual_position_offset, actual_max_damage = advance_wire_step_inplace(
+        actual_temperature,
+        actual_damage,
+        dT_dt,
+        conv_loss_coeff,
+        0.03,
+        wrap_threshold_mm,
+        delta_mm,
+        spool_temp,
+        2.4,
+        1.5e-4,
+        298.0,
+        293.15,
+        0.0034,
+        1,
+        True,
+        0.55,
+        90.0,
+        30.0,
+        900.0,
+        0.2,
+        1,
+        5,
+        0,
+        5,
+        0.25,
+        0.015,
+        320.0,
+        1.3e-4,
+        -175.0,
+    )
+
+    np.testing.assert_allclose(actual_temperature, expected_temperature, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(actual_damage, expected_damage, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(actual_position_offset, expected_position_offset)
+    np.testing.assert_allclose(actual_max_damage, expected_max_damage)
 
 
 def test_advance_wire_step_inplace_matches_reference_across_multiple_steps():

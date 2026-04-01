@@ -1,7 +1,7 @@
-"""Compiled scheduler over module-owned Numba kernels (PBC-02).
+"""Compiled scheduler over module-owned Numba kernels.
 
-Eliminates per-microstep Python dispatch by keeping physics in compiled
-code and only returning to Python for branch-dependent RNG draws.
+Keeps the microstep physics in compiled code and returns to Python only
+for branch-dependent RNG draws and env-level orchestration.
 """
 from __future__ import annotations
 
@@ -929,7 +929,7 @@ def _compiled_finalize_step(
 
 # ── Python orchestrator ──────────────────────────────────────────────────────
 
-def _compiled_microstep_legacy(
+def _run_compiled_microstep(
     hs,  # HotStateBundle
     np_random,
     sc: SchedulerConstants,
@@ -949,9 +949,9 @@ def _compiled_microstep_legacy(
         0: continue
         1: terminated due to wire break
         2: terminated due to target reached
-    RNG draws stay in Python to preserve exact branch-consumption parity
-    with the modular reference path.  This is the safe parity scaffold
-    (P2-03) — not the final architecture.
+
+    RNG draws stay in Python so branch-dependent consumption remains
+    aligned with the modular reference path.
     """
     dt_int = sc.dt_int
 
@@ -1151,6 +1151,168 @@ def _compiled_microstep_legacy(
     return 0
 
 
+def _run_profiled_compiled_microstep(
+    hs,  # HotStateBundle
+    np_random,
+    sc: SchedulerConstants,
+    target_voltage: float,
+    peak_current: float,
+    on_time: float,
+    off_time: float,
+    crater_mean_um3: float,
+    crater_std_um3: float,
+    kerf_width_mm: float,
+    profile_wire_step,
+) -> int:
+    """Execute one compiled microstep with profiling-only wire sub-buckets."""
+    dt_int = sc.dt_int
+
+    gap = hs.workpiece_position_um - hs.wire_position_um
+    if gap < 0.0:
+        gap = 0.0
+
+    debris_roll = np_random.random()
+    random_roll = np_random.random()
+
+    rand_rem, debris_rem, is_short = _compiled_short_circuit(
+        gap, dt_int, hs.debris_density,
+        hs.ignition_random_short_remaining,
+        hs.ignition_debris_short_remaining,
+        debris_roll, random_roll,
+        sc.hard_short_gap, sc.base_critical_density, sc.gap_coefficient,
+        sc.max_critical_density, sc.sigmoid_steepness,
+        sc.debris_short_duration, sc.random_short_duration,
+        sc.random_short_min_gap, sc.random_short_max_gap,
+        sc.random_short_max_probability, sc.random_short_enabled,
+    )
+    hs.ignition_random_short_remaining = rand_rem
+    hs.ignition_debris_short_remaining = debris_rem
+    hs.is_short_circuit = int(is_short)
+
+    current_voltage = hs.voltage
+    if is_short:
+        current_voltage = 0.0
+
+    spark_state = hs.spark_state
+    spark_location = hs.spark_location_mm
+    spark_duration = hs.spark_duration
+
+    ignition_probability = 0.0
+    ignition_roll = 1.0
+    spark_location_roll = 0.0
+
+    if spark_state == 0 and not is_short:
+        rounded_gap = round(gap, 2)
+        ignition_probability = _get_ignition_probability_scalar(
+            gap, rounded_gap, dt_int,
+            sc.log2_value, sc.ignition_a_coeff,
+            sc.ignition_b_coeff, sc.ignition_c_coeff,
+        )
+        ignition_roll = np_random.random()
+        if ignition_roll < ignition_probability:
+            spark_location_roll = np_random.random()
+
+    (
+        next_spark_state, next_spark_location, next_spark_duration,
+        next_voltage, next_current,
+    ) = _advance_discharge_state(
+        spark_state, spark_location, spark_duration,
+        is_short, current_voltage,
+        target_voltage, peak_current, on_time, off_time,
+        sc.spark_voltage_factor, sc.workpiece_height,
+        ignition_probability, ignition_roll, spark_location_roll,
+    )
+
+    hs.spark_state = next_spark_state
+    hs.spark_location_mm = next_spark_location
+    hs.spark_duration = next_spark_duration
+    hs.voltage = next_voltage
+    hs.current = next_current
+
+    is_fresh_discharge = (
+        (next_spark_state == 1 or next_spark_state == -1)
+        and next_spark_duration == 0
+    )
+    if is_fresh_discharge:
+        sampled_um3 = np_random.normal(crater_mean_um3, crater_std_um3)
+        if sampled_um3 < 0.0:
+            sampled_um3 = 0.0
+        crater_volume_mm3 = sampled_um3 / 1e9
+
+        hs.last_crater_volume = crater_volume_mm3
+        if crater_volume_mm3 > 0.0 and kerf_width_mm > 0.0 and sc.workpiece_height_for_material > 0.0:
+            delta_x_mm = crater_volume_mm3 / (kerf_width_mm * sc.workpiece_height_for_material)
+            hs.workpiece_position_um += delta_x_mm * 1000.0
+    else:
+        hs.last_crater_volume = 0.0
+
+    (
+        hs.debris_volume, hs.debris_density, hs.cavity_volume, flow_condition,
+        hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
+        hs.dielectric_cached_flow_condition,
+        hs.ionized_channel_location_mm, hs.ionized_channel_duration,
+    ) = _compiled_dielectric(
+        hs.workpiece_position_um, hs.wire_position_um,
+        next_spark_state, next_spark_duration, next_spark_location,
+        hs.last_crater_volume,
+        hs.debris_volume,
+        hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
+        hs.dielectric_cached_flow_condition,
+        hs.ionized_channel_location_mm, hs.ionized_channel_duration,
+        sc.cavity_volume_coeff, sc.reference_gap,
+        sc.debris_obstruction_coeff, sc.debris_removal_per_us,
+        sc.ion_channel_duration,
+    )
+    hs.flow_rate = flow_condition
+
+    I = next_current
+    I_squared = I * I
+    max_damage = profile_wire_step(
+        hs,
+        flow_condition,
+        next_spark_state,
+        next_spark_location,
+        next_voltage,
+        I,
+        I_squared,
+    )
+    if max_damage >= 1.0:
+        hs.is_wire_broken = 1
+        return 1
+
+    hs.wire_position_um, hs.wire_velocity_um_s, hs.mechanics_prev_accel = (
+        _compiled_mechanics(
+            hs.wire_position_um, hs.wire_velocity_um_s,
+            hs.target_delta, hs.mechanics_prev_accel,
+            sc.mechanics_mode_is_position,
+            sc.damping_coeff, sc.stiffness_coeff, sc.omega_n,
+            sc.max_acceleration, sc.max_jerk_dt,
+            sc.max_speed, sc.mechanics_dt,
+        )
+    )
+
+    hs.time += dt_int
+    hs.time_since_servo += dt_int
+    hs.time_since_open_voltage += dt_int
+
+    if next_spark_state == 1:
+        hs.time_since_spark_ignition += dt_int
+        hs.time_since_spark_end = 0
+    else:
+        hs.time_since_spark_end += dt_int
+        hs.time_since_spark_ignition = 0
+
+    if hs.wire_position_um > hs.workpiece_position_um + 100.0:
+        hs.is_wire_broken = 1
+        return 1
+
+    if hs.workpiece_position_um >= hs.target_position:
+        hs.is_target_distance_reached = 1
+        return 2
+
+    return 0
+
+
 def compiled_microstep(
     hs,  # HotStateBundle
     np_random,
@@ -1165,13 +1327,8 @@ def compiled_microstep(
     crater_std_um3: float,
     kerf_width_mm: float,
 ) -> int:
-    """Execute one compiled microstep.
-
-    The staged PBC-03 split preserved parity but regressed the 1M-step
-    throughput benchmark, so the public path stays on the simpler PBC-04
-    orchestration until a faster variant is proven.
-    """
-    return _compiled_microstep_legacy(
+    """Execute one compiled microstep."""
+    return _run_compiled_microstep(
         hs,
         np_random,
         sc,
@@ -1182,4 +1339,33 @@ def compiled_microstep(
         crater_mean_um3,
         crater_std_um3,
         kerf_width_mm,
+    )
+
+
+def compiled_microstep_profiled(
+    hs,  # HotStateBundle
+    np_random,
+    sc: SchedulerConstants,
+    target_voltage: float,
+    peak_current: float,
+    on_time: float,
+    off_time: float,
+    crater_mean_um3: float,
+    crater_std_um3: float,
+    kerf_width_mm: float,
+    profile_wire_step,
+) -> int:
+    """Execute one compiled microstep with profiling-only wire sub-buckets."""
+    return _run_profiled_compiled_microstep(
+        hs,
+        np_random,
+        sc,
+        target_voltage,
+        peak_current,
+        on_time,
+        off_time,
+        crater_mean_um3,
+        crater_std_um3,
+        kerf_width_mm,
+        profile_wire_step,
     )

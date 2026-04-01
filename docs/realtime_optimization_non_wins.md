@@ -166,3 +166,42 @@ Reason:
 
 - This is exactly the kind of optimization that risks changing effective physics while only offering modest theoretical upside.
 - The split-pass form was more complex, failed fidelity immediately, and did not beat the accepted `PBC-04` source-of-truth path.
+
+### `PCW-03` Pre-resolve discharge partition in production wire kernel
+
+Files involved during the experiment:
+
+- [`src/wedm/modules/wire.py`](../src/wedm/modules/wire.py)
+- [`tests/test_wire_kernels.py`](../tests/test_wire_kernels.py)
+
+Measured result:
+
+- The first `PCW-03` variant moved production `advance_wire_step_inplace()` to call `resolve_discharge_partition()` before the fused thermal/damage core.
+- The initial version used a `NaN` sentinel for missing spark location and failed fidelity immediately:
+  - `0.20 mm`: `202748.12` steps/s, wire temperature mean `312.30 K -> 296.82 K`, fidelity `FAIL`
+  - `0.05 mm`: `135364.71` steps/s, wire temperature mean `312.30 K -> 296.86 K`, fidelity `FAIL`
+- Replacing that sentinel with an explicit `has_spark_location` flag restored fidelity, but the fidelity-safe variants still regressed the official `200k` compiled candidate:
+  - `0.20 mm`: `120608.02` steps/s then `104713.75` steps/s
+  - `0.05 mm`: `91709.08` steps/s then `105658.80` steps/s
+- After restoring the accepted inline production kernel, the same-session official candidate returned to:
+  - `0.20 mm`: `134021.84` steps/s, fidelity `PASS`
+  - `0.05 mm`: `101326.67` steps/s, fidelity `PASS`
+
+1M-step sanity runs:
+
+- Pre-resolved variant:
+  - `0.20 mm`: `68919.65 -> 108622.90 steps/s` (`1.576x`)
+  - `0.05 mm`: `71387.66 -> 95629.03 steps/s` (`1.340x`)
+- Restored accepted path later in the same session:
+  - `0.20 mm`: `80107.72 -> 100970.94 steps/s` (`1.260x`)
+  - `0.05 mm`: `69020.75 -> 91511.90 steps/s` (`1.326x`)
+
+Disposition:
+
+- Reverted on `2026-04-01` by restoring the inline production wire kernel.
+
+Reason:
+
+- The direct pre-resolution cut either broke fidelity (`NaN` sentinel variant) or lost the official compiled candidate benchmark once made fidelity-safe.
+- The `1M` sanity runs were too noisy to justify keeping a regression against the standard verification path.
+- The only part worth keeping was the clearer explicit `has_spark_location` handling inside the helper partition routine used by the profiling/helper paths.

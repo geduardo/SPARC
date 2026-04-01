@@ -230,6 +230,39 @@ def test_run_step_loop_precompiles_compiled_actions_when_supported() -> None:
     assert env.fast_calls == 3
 
 
+def test_module_hotspots_emits_compiled_wire_subhotspots() -> None:
+    module = load_module(
+        REPO_ROOT / "scripts" / "profile_simulation.py",
+        "profile_fidelity_compiled_wire_subhotspots",
+    )
+
+    args = SimpleNamespace(
+        engine="compiled",
+        steps=25,
+        warmup=0,
+        seed=123,
+        initial_gap=12.0,
+        servo_interval=1,
+        workpiece_height=20.0,
+        show_init_output=False,
+        servo=0.25,
+        target_voltage=90.0,
+        current_mode=1,
+        on_time=3.0,
+        off_time=20.0,
+    )
+
+    action = module.build_action(args)
+    module_rows, wire_rows = module.module_hotspots(args, 0.2, action)
+
+    assert any(row.name == "compiled.step_compiled" for row in module_rows)
+    labels = {row.name for row in wire_rows}
+    assert "transport" in labels
+    assert "discharge_partition" in labels
+    assert "thermal_core" in labels
+    assert "damage" in labels
+
+
 def test_build_dashboard_signal_status_marks_thermal_panel_ready() -> None:
     module = load_module(REPO_ROOT / "scripts" / "profile_simulation.py", "profile_fidelity_status")
     env = SimpleNamespace(

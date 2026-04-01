@@ -8,7 +8,11 @@ import numpy as np
 from gymnasium import spaces
 
 from ..core.hot_state import HotStateBundle
-from ..core.compiled_step import SchedulerConstants, compiled_microstep
+from ..core.compiled_step import (
+    SchedulerConstants,
+    compiled_microstep,
+    compiled_microstep_profiled,
+)
 from ..core.state import EDMState
 from ..core.env_config import EnvironmentConfig
 from ..modules.dielectric import DielectricModule, DielectricModuleParameters
@@ -449,7 +453,7 @@ class WireEDMEnv(gym.Env):
         hot_state.apply_to_env(self)
 
     # ------------------------------------------------------------------ #
-    # Compiled scheduler path (PBC-02)
+    # Compiled scheduler path
     # ------------------------------------------------------------------ #
     def init_compiled_scheduler(self) -> None:
         """Prepare the compiled scheduler for fast stepping.
@@ -496,12 +500,12 @@ class WireEDMEnv(gym.Env):
     def _step_compiled_impl(self, action, *, fast: bool):
         """Fast step using the compiled scheduler.
 
-        Eliminates per-microstep Python module dispatch.  RNG stays in
+        Eliminates per-microstep Python module dispatch. RNG stays in
         Python for branch-consumption parity with the modular path.
 
         Public `step_compiled()` preserves the Gym-style return tuple.
-        `step_compiled_fast()` returns only termination flags for the
-        benchmark/profiling path.
+        `step_compiled_fast()` returns only termination flags for
+        headless stepping paths.
         """
         hs = self._hot_state
         sc = self._scheduler_constants
@@ -527,16 +531,30 @@ class WireEDMEnv(gym.Env):
             hs.time_since_servo = 0
 
         # Execute one compiled microstep
-        termination_code = compiled_microstep(
-            hs, self.np_random, sc,
-            self._compiled_target_voltage,
-            self._compiled_peak_current,
-            self._compiled_on_time,
-            self._compiled_off_time,
-            self._compiled_crater_mean,
-            self._compiled_crater_std,
-            self._compiled_kerf_width_mm,
-        )
+        profile_wire_step = self.wire.get_compiled_wire_profiler()
+        if profile_wire_step is None:
+            termination_code = compiled_microstep(
+                hs, self.np_random, sc,
+                self._compiled_target_voltage,
+                self._compiled_peak_current,
+                self._compiled_on_time,
+                self._compiled_off_time,
+                self._compiled_crater_mean,
+                self._compiled_crater_std,
+                self._compiled_kerf_width_mm,
+            )
+        else:
+            termination_code = compiled_microstep_profiled(
+                hs, self.np_random, sc,
+                self._compiled_target_voltage,
+                self._compiled_peak_current,
+                self._compiled_on_time,
+                self._compiled_off_time,
+                self._compiled_crater_mean,
+                self._compiled_crater_std,
+                self._compiled_kerf_width_mm,
+                profile_wire_step,
+            )
 
         if termination_code != 0:
             if fast:
@@ -566,9 +584,11 @@ class WireEDMEnv(gym.Env):
         return obs, reward, False, False, info
 
     def step_compiled(self, action) -> tuple:
+        """Advance one compiled microstep and return the Gym-style tuple."""
         return self._step_compiled_impl(action, fast=False)
 
     def step_compiled_fast(self, action) -> tuple[bool, bool]:
+        """Advance one compiled microstep and return termination flags only."""
         return self._step_compiled_impl(action, fast=True)
 
     def sync_compiled_to_state(self) -> None:

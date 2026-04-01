@@ -1041,6 +1041,7 @@ def module_hotspots(
             "step_compiled_fast" if hasattr(env, "step_compiled_fast") else "step_compiled"
         )
         wrap_timed_call(env, step_name, "compiled.step_compiled", times_ns, calls)
+        env.wire.enable_compiled_subhotspot_profiling(wire_times_ns, wire_calls)
     else:
         wrap_timed_call(env, "_apply_action", "env._apply_action", times_ns, calls)
         wrap_timed_call(
@@ -1053,7 +1054,7 @@ def module_hotspots(
             module = getattr(env, module_name)
             wrap_timed_call(module, "update", module_name, times_ns, calls)
 
-        env.wire._profile_update_subhotspots = True
+        env.wire.enable_update_subhotspot_profiling()
         wire_method_labels = [
             ("_advance_transport", "transport"),
             ("_apply_thermal_core", "thermal_core"),

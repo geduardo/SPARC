@@ -412,3 +412,139 @@ Readout:
 - `PBC-05` is a real but modest conservative win.
 - The gain came from removing control-path overhead around the compiled scheduler, not from changing the thermal or discharge physics.
 - We are still well short of realtime, but this cut keeps the conservative path moving without touching the solver contract.
+
+## Addendum - `2026-04-01` `GU-04` Compiled Wire Sub-Bucket Visibility
+
+`GU-04` restored compiled-wire internal hotspot visibility in the profiling reports and dashboard.
+
+What changed:
+
+- Added a profiling-only compiled wire path that emits timed sub-buckets without changing the production physics path
+- Wired compiled hotspot collection in `scripts/profile_simulation.py` so `module_subhotspots.wire` is populated for compiled reports
+- Left the normal compiled fast path separate, so the extra sub-bucket timing is only used during hotspot collection
+
+Validation:
+
+- `python -m pytest -q` -> `125 passed`
+- `python -m pytest tests/test_profile_fidelity.py tests/test_compiled_step.py tests/test_perf_dashboard.py -q` -> `38 passed`
+
+Latest dashboard-backed compiled report with sub-buckets:
+
+- `outputs/profiling/perf_candidate_compiled_20260401_170508.json`
+- `outputs/profiling/performance_dashboard.html`
+
+Observed compiled wire sub-buckets in that snapshot:
+
+| Scenario | Largest wire sub-buckets |
+| --- | --- |
+| `0.20 mm / 400 seg` | `thermal_core 18.96%`, `discharge_partition 13.39%`, `damage 12.41%`, `transport 3.50%` |
+| `0.05 mm / 1600 seg` | `damage 18.84%`, `thermal_core 14.21%`, `discharge_partition 6.26%`, `transport 3.87%` |
+
+Readout:
+
+- This was an observability task, not a speed optimization.
+- The important outcome is that compiled-wire work is no longer a black box in the dashboard.
+- The latest snapshot suggests the next conservative wire work, if any, should focus on `thermal_core` and `damage`, not transport.
+
+## Addendum - `2026-04-01` `PCW-03` Pre-resolve Discharge Partition In Production Wire Kernel
+
+`PCW-03` was tested and reverted. The measured result did not justify keeping it in the accepted production path.
+
+What changed during the experiment:
+
+- Attempted to move the production wire kernel toward the same logical split already visible in the profiling path: resolve discharge partition once, then feed the resolved plasma/Joule terms into the fused thermal-damage update
+- Added regression coverage in `tests/test_wire_kernels.py` to lock the composed partition-plus-thermal behavior against the production kernel
+- Replaced the helper's NaN-based missing-location sentinel with an explicit `has_spark_location` flag to restore fidelity after the first failed attempt
+
+### Attempt 1: direct helper composition with NaN sentinel
+
+Official verification command:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled
+```
+
+Output report:
+
+- `outputs/profiling/perf_candidate_compiled_20260401_230542.json`
+
+Result:
+
+| Scenario | Compiled steps/s | Fidelity | Notes |
+| --- | ---: | --- | --- |
+| `0.20 mm / 400 seg` | `202748.12` | FAIL | wire temperature mean `312.30 K -> 296.82 K` |
+| `0.05 mm / 1600 seg` | `135364.71` | FAIL | wire temperature mean `312.30 K -> 296.86 K` |
+
+Readout:
+
+- The direct pre-resolution cut looked fast, but the NaN sentinel interacted badly with the production `fastmath` path and changed effective heating.
+
+### Attempt 2: fidelity-safe explicit `has_spark_location` helper
+
+Verification snapshots:
+
+- `outputs/profiling/perf_candidate_compiled_20260401_230849.json`
+- `outputs/profiling/perf_candidate_compiled_20260401_231008.json`
+
+Result:
+
+| Scenario | First fidelity-safe variant | `fastmath` helper variant | Fidelity |
+| --- | ---: | ---: | --- |
+| `0.20 mm / 400 seg` | `120608.02` | `104713.75` | PASS |
+| `0.05 mm / 1600 seg` | `91709.08` | `105658.80` | PASS |
+
+Readout:
+
+- Fidelity returned to `PASS`, but the accepted compiled path was no longer competitive on the official `200k` candidate run.
+- Moving partition resolution out of the inline wire kernel added overhead that the candidate benchmark did not recover.
+
+### Restored Accepted Path
+
+After restoring the accepted inline production kernel:
+
+```bash
+python scripts/verify_realtime_candidate.py --engine compiled
+```
+
+Restored-path report:
+
+- `outputs/profiling/perf_candidate_compiled_20260401_231250.json`
+
+Result:
+
+| Scenario | Restored compiled steps/s | Fidelity |
+| --- | ---: | --- |
+| `0.20 mm / 400 seg` | `134021.84` | PASS |
+| `0.05 mm / 1600 seg` | `101326.67` | PASS |
+
+Relative to the better fidelity-safe `PCW-03` variant (`230849`):
+
+| Scenario | `PCW-03` fidelity-safe | Restored accepted path | Delta |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `120608.02` | `134021.84` | `+11.1%` |
+| `0.05 mm / 1600 seg` | `91709.08` | `101326.67` | `+10.5%` |
+
+### 1M-Step Sanity Checks
+
+Pre-resolved variant:
+
+```bash
+python scripts/bench_compiled.py --steps 1000000 --warmup 5000 --repeats 1
+```
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `68919.65` | `108622.90` | `1.576x` |
+| `0.05 mm / 1600 seg` | `71387.66` | `95629.03` | `1.340x` |
+
+Restored accepted path later in the same session:
+
+| Scenario | Modular steps/s | Compiled steps/s | Speedup |
+| --- | ---: | ---: | ---: |
+| `0.20 mm / 400 seg` | `80107.72` | `100970.94` | `1.260x` |
+| `0.05 mm / 1600 seg` | `69020.75` | `91511.90` | `1.326x` |
+
+Readout:
+
+- The `1M` runs stayed directionally favorable to compiled over modular, but they were too noisy to justify keeping a production-kernel change that already regressed the source-of-truth verification candidate.
+- `PCW-03` is recorded as a conservative-track non-win. The repo stays on the faster accepted inline wire kernel.
