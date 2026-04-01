@@ -9,19 +9,14 @@ SRC_ROOT = REPO_ROOT / "src"
 
 
 def _prepend_local_src() -> None:
-    """Force pytest to import the package under this checkout's src tree."""
+    """Prefer the package under this checkout's src tree."""
     src_str = str(SRC_ROOT)
-
-    for index, entry in enumerate(sys.path):
+    if sys.path:
         try:
-            if Path(entry or ".").resolve() == SRC_ROOT:
-                if index != 0:
-                    sys.path.pop(index)
-                    sys.path.insert(0, src_str)
+            if Path(sys.path[0] or ".").resolve() == SRC_ROOT:
                 return
         except OSError:
-            continue
-
+            pass
     sys.path.insert(0, src_str)
 
 

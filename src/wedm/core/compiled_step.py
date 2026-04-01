@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit
 
+from ..modules.dielectric import advance_dielectric_state
 from ..modules.ignition import (
     _advance_discharge_state,
-    _get_debris_short_probability_scalar,
+    _advance_short_circuit_state_enabled,
     _get_ignition_probability_scalar,
 )
 from ..modules.wire import advance_wire_step_inplace
+
 if TYPE_CHECKING:
     from ..envs.wire_edm import WireEDMEnv
 
@@ -246,177 +248,9 @@ class SchedulerConstants:
 
 
 # ── Compiled kernels ─────────────────────────────────────────────────────────
-# Short-circuit stage.
-
-@njit(cache=False)
-def _compiled_short_circuit(
-    gap: float,
-    dt_int: int,
-    debris_density: float,
-    random_short_remaining: int,
-    debris_short_remaining: int,
-    debris_roll: float,
-    random_roll: float,
-    # ignition params
-    hard_short_gap: float,
-    base_critical_density: float,
-    gap_coefficient: float,
-    max_critical_density: float,
-    sigmoid_steepness: float,
-    debris_short_duration: int,
-    random_short_duration: int,
-    random_short_min_gap: float,
-    random_short_max_gap: float,
-    random_short_max_probability: float,
-    random_short_enabled: bool,
-) -> tuple:
-    """Advance short-circuit timers. Returns (rand_rem, debris_rem, is_short)."""
-    # Active random short?
-    if random_short_remaining > 0:
-        next_random = random_short_remaining - dt_int
-        if next_random < 0:
-            next_random = 0
-        return next_random, debris_short_remaining, True
-
-    # Active debris short?
-    if debris_short_remaining > 0:
-        next_debris = debris_short_remaining - dt_int
-        if next_debris < 0:
-            next_debris = 0
-        return random_short_remaining, next_debris, True
-
-    # Roll new short events
-    base_debris_prob = _get_debris_short_probability_scalar(
-        gap, debris_density,
-        hard_short_gap, base_critical_density, gap_coefficient,
-        max_critical_density, sigmoid_steepness,
-    )
-    if base_debris_prob >= 1.0 or dt_int == 1:
-        debris_short_prob = base_debris_prob
-    else:
-        debris_short_prob = 1.0 - math.pow(1.0 - base_debris_prob, dt_int)
-
-    if debris_roll < debris_short_prob:
-        return random_short_remaining, debris_short_duration, True
-
-    if random_short_enabled:
-        if gap >= random_short_max_gap:
-            random_short_rate = 0.0
-        elif gap <= random_short_min_gap:
-            random_short_rate = random_short_max_probability
-        else:
-            gap_factor = 1.0 - (gap - random_short_min_gap) / (
-                random_short_max_gap - random_short_min_gap
-            )
-            random_short_rate = gap_factor * random_short_max_probability
-
-        random_short_prob = 1.0 - math.exp(-random_short_rate * dt_int)
-        if random_roll < random_short_prob:
-            return random_short_duration, debris_short_remaining, True
-
-    return random_short_remaining, debris_short_remaining, False
-
-
-# Dielectric stage.
-
-@njit(cache=False, fastmath=True)
-def _compiled_dielectric(
-    workpiece_position_um: float,
-    wire_position_um: float,
-    spark_state: int,
-    spark_duration: int,
-    spark_location_mm: float,
-    last_crater_volume: float,
-    # mutable state
-    debris_volume: float,
-    cached_gap_um: float,
-    cached_debris_density: float,
-    cached_flow_condition: float,
-    ionized_channel_location_mm: float,
-    ionized_channel_duration: int,
-    # constants
-    cavity_volume_coeff: float,
-    reference_gap: float,
-    debris_obstruction_coeff: float,
-    debris_removal_per_us: float,
-    ion_channel_duration_param: int,
-) -> tuple:
-    """Returns (debris_volume, debris_density, cavity_volume, flow_condition,
-               cached_gap_um, cached_debris_density, cached_flow_condition,
-               ion_loc_mm, ion_dur)."""
-    gap_um = workpiece_position_um - wire_position_um
-    if gap_um < 0.001:
-        gap_um = 0.001
-
-    gap_mm = gap_um * 0.001
-    cavity_volume = cavity_volume_coeff * gap_mm
-
-    # Fresh discharge?
-    is_fresh = (spark_state == 1 or spark_state == -1) and spark_duration == 0
-    if is_fresh:
-        if last_crater_volume > 0.0:
-            debris_volume += last_crater_volume
-            ionized_channel_location_mm = spark_location_mm
-            ionized_channel_duration = ion_channel_duration_param
-
-    # Debris density
-    if cavity_volume > 0.0:
-        debris_density = debris_volume / cavity_volume
-        if debris_density > 1.0:
-            debris_density = 1.0
-    else:
-        debris_density = 0.0
-
-    # Flow condition (with caching)
-    if (
-        abs(gap_um - cached_gap_um) > 0.01
-        or abs(debris_density - cached_debris_density) > 0.001
-    ):
-        # Gap factor (Poiseuille)
-        ratio = gap_um / reference_gap
-        gap_factor = ratio * ratio * ratio
-        if gap_factor > 1.0:
-            gap_factor = 1.0
-
-        # Debris obstruction
-        arg = debris_obstruction_coeff * debris_density
-        if arg < 2.0:
-            # Padé approximation for small exponents.
-            if arg < 0.5:
-                debris_factor = (1.0 - 0.5 * arg) / (1.0 + 0.5 * arg)
-            else:
-                debris_factor = math.exp(-arg)
-        else:
-            debris_factor = math.exp(-arg)
-
-        flow_condition = gap_factor * debris_factor
-        cached_gap_um = gap_um
-        cached_debris_density = debris_density
-        cached_flow_condition = flow_condition
-    else:
-        flow_condition = cached_flow_condition
-
-    # Debris removal
-    if flow_condition > 0.001 and debris_volume > 0.001:
-        debris_removed = debris_removal_per_us * flow_condition
-        debris_volume -= debris_removed
-        if debris_volume < 0.0:
-            debris_volume = 0.0
-
-    # Ionized channel decay
-    if ionized_channel_duration > 0:
-        ionized_channel_duration -= 1
-
-    return (
-        debris_volume, debris_density, cavity_volume, flow_condition,
-        cached_gap_um, cached_debris_density, cached_flow_condition,
-        ionized_channel_location_mm, ionized_channel_duration,
-    )
-
-
 # Mechanics stage.
 
-@njit(cache=False, fastmath=True)
+@njit(cache=True, fastmath=True)
 def _compiled_mechanics(
     wire_position: float,
     wire_velocity: float,
@@ -467,7 +301,7 @@ def _compiled_mechanics(
 
 # Wire convection update.
 
-@njit(cache=False, fastmath=True)
+@njit(cache=True, fastmath=True)
 def _compiled_update_convection(
     conv_loss_coeff: np.ndarray,
     wire_unwind_vel: float,
@@ -504,7 +338,7 @@ def _compiled_update_convection(
 
 # Zone mean sampling.
 
-@njit(cache=False, fastmath=True)
+@njit(cache=True, fastmath=True)
 def _compiled_zone_mean(
     temperature: np.ndarray,
     zone_start: int,
@@ -547,15 +381,17 @@ def _run_compiled_microstep(
     """
     dt_int = sc.dt_int
 
-    # Short-circuit detection always consumes two RNG draws.
+    # Match the modular RNG consumption order exactly.
     gap = hs.workpiece_position_um - hs.wire_position_um
     if gap < 0.0:
         gap = 0.0
 
     debris_roll = np_random.random()
-    random_roll = np_random.random()
+    random_roll = 1.0
+    if sc.random_short_enabled:
+        random_roll = np_random.random()
 
-    rand_rem, debris_rem, is_short = _compiled_short_circuit(
+    rand_rem, debris_rem, is_short = _advance_short_circuit_state_enabled(
         gap, dt_int, hs.debris_density,
         hs.ignition_random_short_remaining,
         hs.ignition_debris_short_remaining,
@@ -635,7 +471,7 @@ def _run_compiled_microstep(
         hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
         hs.dielectric_cached_flow_condition,
         hs.ionized_channel_location_mm, hs.ionized_channel_duration,
-    ) = _compiled_dielectric(
+    ) = advance_dielectric_state(
         hs.workpiece_position_um, hs.wire_position_um,
         next_spark_state, next_spark_duration, next_spark_location,
         hs.last_crater_volume,

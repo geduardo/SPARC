@@ -3,7 +3,9 @@
 import math
 
 import pytest
+import numpy as np
 
+from wedm import IgnitionModuleParameters, WireEDMEnv
 from wedm.modules.ignition import (
     _advance_discharge_state,
     _advance_short_circuit_state,
@@ -11,6 +13,18 @@ from wedm.modules.ignition import (
     _roll_new_debris_short_state,
     _roll_new_short_circuit_state,
 )
+
+
+class CountingRNG:
+    def __init__(self, seed: int):
+        self._rng = np.random.default_rng(seed)
+        self.random_calls = 0
+
+    def random(self, size=None):
+        if size is not None:
+            raise AssertionError("CountingRNG only supports scalar draws")
+        self.random_calls += 1
+        return self._rng.random()
 
 
 def test_advance_short_circuit_state_counts_down_active_random_short():
@@ -137,3 +151,19 @@ def test_roll_new_short_circuit_state_can_trigger_random_short():
     )
 
     assert outcome == 2
+
+
+def test_random_short_disabled_consumes_only_debris_draw():
+    env = WireEDMEnv(
+        ignition_params=IgnitionModuleParameters(random_short_max_probability=0.0)
+    )
+    env.reset(seed=123)
+    env.np_random = CountingRNG(999)
+
+    env.state.workpiece_position = 30.0
+    env.state.wire_position = 0.0
+    env.state.debris_density = 0.0
+
+    env.ignition._update_short_circuit_detection(env.state)
+
+    assert env.np_random.random_calls == 1

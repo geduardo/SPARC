@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
+
 from numba import njit
 
 from ..core.module import EDMModule
 from ..core.state import EDMState
-@njit(cache=False)
+
+
+@njit(cache=True)
 def _get_debris_short_probability_scalar(
     gap: float,
     debris_density: float,
@@ -35,7 +38,7 @@ def _get_debris_short_probability_scalar(
     return 1.0 / (1.0 + math.exp(exponent))
 
 
-@njit(cache=False)
+@njit(cache=True)
 def _roll_new_short_circuit_state(
     gap: float,
     dt: int,
@@ -85,7 +88,7 @@ def _roll_new_short_circuit_state(
     return 0
 
 
-@njit(cache=False)
+@njit(cache=True)
 def _roll_new_debris_short_state(
     gap: float,
     dt: int,
@@ -113,8 +116,8 @@ def _roll_new_debris_short_state(
     return debris_roll < debris_short_prob
 
 
-@njit(cache=False)
-def _advance_short_circuit_state(
+@njit(cache=True)
+def _advance_short_circuit_state_enabled(
     gap: float,
     dt: int,
     debris_density: float,
@@ -132,6 +135,7 @@ def _advance_short_circuit_state(
     random_short_min_gap: float,
     random_short_max_gap: float,
     random_short_max_probability: float,
+    random_short_enabled: bool,
 ) -> tuple[int, int, bool]:
     """Advance short-circuit timers and evaluate new short events."""
     if random_short_remaining > 0:
@@ -160,28 +164,71 @@ def _advance_short_circuit_state(
     else:
         debris_short_prob = 1.0 - math.pow(1.0 - base_debris_prob, dt)
 
-    if gap >= random_short_max_gap:
-        random_short_rate = 0.0
-    elif gap <= random_short_min_gap:
-        random_short_rate = random_short_max_probability
-    else:
-        gap_factor = 1.0 - (gap - random_short_min_gap) / (
-            random_short_max_gap - random_short_min_gap
-        )
-        random_short_rate = gap_factor * random_short_max_probability
-
-    random_short_prob = 1.0 - math.exp(-random_short_rate * dt)
-
     if debris_roll < debris_short_prob:
         return random_short_remaining, debris_short_duration, True
 
-    if random_roll < random_short_prob:
-        return random_short_duration, debris_short_remaining, True
+    if random_short_enabled:
+        if gap >= random_short_max_gap:
+            random_short_rate = 0.0
+        elif gap <= random_short_min_gap:
+            random_short_rate = random_short_max_probability
+        else:
+            gap_factor = 1.0 - (gap - random_short_min_gap) / (
+                random_short_max_gap - random_short_min_gap
+            )
+            random_short_rate = gap_factor * random_short_max_probability
+
+        random_short_prob = 1.0 - math.exp(-random_short_rate * dt)
+        if random_roll < random_short_prob:
+            return random_short_duration, debris_short_remaining, True
 
     return random_short_remaining, debris_short_remaining, False
 
 
-@njit(cache=False)
+@njit(cache=True)
+def _advance_short_circuit_state(
+    gap: float,
+    dt: int,
+    debris_density: float,
+    random_short_remaining: int,
+    debris_short_remaining: int,
+    debris_roll: float,
+    random_roll: float,
+    hard_short_gap: float,
+    base_critical_density: float,
+    gap_coefficient: float,
+    max_critical_density: float,
+    sigmoid_steepness: float,
+    debris_short_duration: int,
+    random_short_duration: int,
+    random_short_min_gap: float,
+    random_short_max_gap: float,
+    random_short_max_probability: float,
+) -> tuple[int, int, bool]:
+    """Backward-compatible wrapper for the full short-circuit state helper."""
+    return _advance_short_circuit_state_enabled(
+        gap,
+        dt,
+        debris_density,
+        random_short_remaining,
+        debris_short_remaining,
+        debris_roll,
+        random_roll,
+        hard_short_gap,
+        base_critical_density,
+        gap_coefficient,
+        max_critical_density,
+        sigmoid_steepness,
+        debris_short_duration,
+        random_short_duration,
+        random_short_min_gap,
+        random_short_max_gap,
+        random_short_max_probability,
+        True,
+    )
+
+
+@njit(cache=True)
 def _get_ignition_probability_scalar(
     gap: float,
     rounded_gap: float,
@@ -207,7 +254,7 @@ def _get_ignition_probability_scalar(
     return 1.0 - math.exp(-hazard_rate * dt)
 
 
-@njit(cache=False)
+@njit(cache=True)
 def _advance_discharge_state(
     spark_state: int,
     spark_location_mm: float,
@@ -579,51 +626,35 @@ class IgnitionModule(EDMModule):
             gap = 0.0
 
         debris_roll = self.env.np_random.random()
-        random_roll = self.env.np_random.random()
-        debris_density = state.debris_density
-
+        random_roll = 1.0
         if self._random_short_enabled:
-            outcome = _roll_new_short_circuit_state(
-                gap,
-                self._dt_int,
-                debris_density,
-                debris_roll,
-                random_roll,
-                self._hard_short_gap,
-                self._base_critical_density,
-                self._gap_coefficient,
-                self._max_critical_density,
-                self._sigmoid_steepness,
-                self._random_short_min_gap,
-                self._random_short_max_gap,
-                self._random_short_max_probability,
-            )
-            if outcome == 1:
-                self.debris_short_remaining = self._debris_short_duration
-                state.is_short_circuit = True
-                return
-            if outcome == 2:
-                self.random_short_remaining = self._random_short_duration
-                state.is_short_circuit = True
-                return
-        else:
-            is_short_circuit = _roll_new_debris_short_state(
-                gap,
-                self._dt_int,
-                debris_density,
-                debris_roll,
-                self._hard_short_gap,
-                self._base_critical_density,
-                self._gap_coefficient,
-                self._max_critical_density,
-                self._sigmoid_steepness,
-            )
-            if is_short_circuit:
-                self.debris_short_remaining = self._debris_short_duration
-                state.is_short_circuit = True
-                return
+            random_roll = self.env.np_random.random()
 
-        state.is_short_circuit = False
+        (
+            self.random_short_remaining,
+            self.debris_short_remaining,
+            is_short_circuit,
+        ) = _advance_short_circuit_state_enabled(
+            gap,
+            self._dt_int,
+            state.debris_density,
+            self.random_short_remaining,
+            self.debris_short_remaining,
+            debris_roll,
+            random_roll,
+            self._hard_short_gap,
+            self._base_critical_density,
+            self._gap_coefficient,
+            self._max_critical_density,
+            self._sigmoid_steepness,
+            self._debris_short_duration,
+            self._random_short_duration,
+            self._random_short_min_gap,
+            self._random_short_max_gap,
+            self._random_short_max_probability,
+            self._random_short_enabled,
+        )
+        state.is_short_circuit = is_short_circuit
 
     def _get_target_voltage(self, state: EDMState) -> float:
         """Get target voltage with default."""

@@ -307,7 +307,7 @@ class TestWireEDMEnv:
         assert isinstance(info, dict)
 
     def test_env_step_respects_overridden_step_hooks(self):
-        """Subclass overrides should bypass the base env fast path."""
+        """Subclass overrides should be honored by the public step API."""
 
         class HookedEnv(WireEDMEnv):
             def __init__(self):
@@ -340,10 +340,6 @@ class TestWireEDMEnv:
         action = _valid_action(env)
         obs, reward, terminated, truncated, info = env.step(action)
 
-        assert env._uses_default_apply_action is False
-        assert env._uses_default_check_termination is False
-        assert env._uses_default_get_obs is False
-        assert env._uses_default_calc_reward is False
         assert env.apply_called is True
         assert env.check_called is True
         assert env.obs_called is True

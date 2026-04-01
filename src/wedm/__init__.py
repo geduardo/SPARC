@@ -1,5 +1,5 @@
 # src/wedm/__init__.py
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 from .core import (
     EDMState,
@@ -18,7 +18,8 @@ from .modules.material import MaterialRemovalModule, MaterialModuleParameters
 from .modules.dielectric import DielectricModule, DielectricModuleParameters
 from .modules.mechanics import MechanicsModule, MechanicsModuleParameters
 
-__version__ = "0.2.0"
+_FALLBACK_VERSION = "0.2.0"
+__version__ = _FALLBACK_VERSION
 
 __all__ = [
     # Core classes
@@ -49,3 +50,5 @@ for dist_name in ("wedm-learning-environment", "wedm"):
         break
     except PackageNotFoundError:
         continue
+else:
+    __version__ = _FALLBACK_VERSION

@@ -151,17 +151,6 @@ class WireEDMEnv(gym.Env):
             f"I{mode_int}" if f"I{mode_int}" in self.valid_current_modes else ""
             for mode_int in range(20)
         )
-        env_type = type(self)
-        self._uses_default_apply_action = (
-            env_type._apply_action is WireEDMEnv._apply_action
-        )
-        self._uses_default_check_termination = (
-            env_type._check_termination is WireEDMEnv._check_termination
-        )
-        self._uses_default_get_obs = env_type._get_obs is WireEDMEnv._get_obs
-        self._uses_default_calc_reward = (
-            env_type._calc_reward is WireEDMEnv._calc_reward
-        )
         self._compiled_cached_mode_int = None
         self._compiled_action_source = None
         self._compiled_action_packet = None
@@ -300,17 +289,7 @@ class WireEDMEnv(gym.Env):
         is_ctrl_step = state.time_since_servo >= self.servo_interval
 
         if is_ctrl_step:
-            if self._uses_default_apply_action:
-                target_delta, target_voltage, mode_int, on_time, off_time = (
-                    self._decode_action(action)
-                )
-                state.target_delta = target_delta
-                state.target_voltage = target_voltage
-                state.ON_time = on_time
-                state.OFF_time = off_time
-                state.current_mode = self._resolve_mode_str(mode_int)
-            else:
-                self._apply_action(action)
+            self._apply_action(action)
             state.time_since_servo = 0
 
         # physics advance 1 µs
@@ -339,23 +318,14 @@ class WireEDMEnv(gym.Env):
             state.time_since_spark_end += dt
             state.time_since_spark_ignition = 0
 
-        if self._uses_default_check_termination:
-            terminated = False
-            if state.wire_position > state.workpiece_position + 100:
-                state.is_wire_broken = True
-                terminated = True
-            elif state.workpiece_position >= state.target_position:
-                state.is_target_distance_reached = True
-                terminated = True
-        else:
-            terminated = self._check_termination()
+        terminated = self._check_termination()
 
         if fast:
             return terminated, False
 
         if is_ctrl_step:
-            obs = {} if self._uses_default_get_obs else self._get_obs()
-            reward = 0.0 if self._uses_default_calc_reward else self._calc_reward()
+            obs = self._get_obs()
+            reward = self._calc_reward()
         else:
             obs = None
             reward = 0.0
@@ -539,32 +509,27 @@ class WireEDMEnv(gym.Env):
             self._compiled_kerf_width_mm,
         )
 
-        if termination_code != 0:
-            if fast:
-                return True, False
-            return None, 0.0, True, False, {
-                "wire_broken": bool(hs.is_wire_broken),
-                "target_reached": bool(hs.is_target_distance_reached),
-            }
-
         if fast:
-            return False, False
+            return termination_code != 0, False
+
+        self.sync_compiled_to_state()
+        terminated = bool(termination_code != 0 or self._check_termination())
 
         if is_ctrl_step:
-            obs = {}
-            reward = 0.0
+            obs = self._get_obs()
+            reward = self._calc_reward()
         else:
             obs = None
             reward = 0.0
 
         info = {
-            "wire_broken": bool(hs.is_wire_broken),
-            "target_reached": bool(hs.is_target_distance_reached),
-            "spark_state": hs.spark_state,
-            "time": hs.time,
+            "wire_broken": self.state.is_wire_broken,
+            "target_reached": self.state.is_target_distance_reached,
+            "spark_state": int(self.state.spark_status[0]),
+            "time": self.state.time,
             "control_step": is_ctrl_step,
         }
-        return obs, reward, False, False, info
+        return obs, reward, terminated, False, info
 
     def step_compiled(self, action) -> tuple:
         """Advance one compiled microstep and return the Gym-style tuple."""

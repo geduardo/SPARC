@@ -4,15 +4,20 @@ Runs both the modular reference implementation and the compiled scheduler
 with the same seed and action sequence, then asserts exact or near-exact
 parity on all fidelity-critical state fields.
 """
+from dataclasses import replace
 import math
 
 import numpy as np
 import pytest
 
-from wedm import WireEDMEnv
+from wedm import IgnitionModuleParameters, WireEDMEnv
 from wedm.envs.wire_edm import build_scalar_action
 from wedm.core.hot_state import HotStateBundle
-from wedm.core.compiled_step import SchedulerConstants, compiled_microstep
+from wedm.core.compiled_step import (
+    SchedulerConstants,
+    _compiled_update_convection,
+    compiled_microstep,
+)
 
 
 SEED = 42
@@ -321,6 +326,60 @@ class TestFastPathParity:
             fast.state.wire_max_damage, abs=1e-4
         )
 
+    def test_step_fast_reports_wire_break_contract(self):
+        env = WireEDMEnv()
+        env.reset(seed=11)
+        env.state.is_wire_broken = True
+
+        assert env.step_fast(_make_action()) == (True, False)
+
+    def test_step_fast_reports_target_reached_contract(self):
+        env = WireEDMEnv()
+        env.reset(seed=11)
+        env.state.time_since_servo = env.servo_interval
+        env.state.workpiece_position = env.state.target_position
+
+        assert env.step_fast(_make_action()) == (True, False)
+
+    def test_step_compiled_fast_reports_wire_break_contract(self):
+        env = WireEDMEnv()
+        env.reset(seed=11)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+        env._hot_state.wire_damage[0] = 1.0
+
+        assert env.step_compiled_fast(_make_action()) == (True, False)
+
+    def test_step_compiled_fast_reports_target_reached_contract(self):
+        env = WireEDMEnv()
+        env.reset(seed=11)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+        env._hot_state.workpiece_position_um = env._hot_state.target_position
+
+        assert env.step_compiled_fast(_make_action()) == (True, False)
+
+    def test_step_compiled_uses_overridden_public_hooks(self):
+        class HookedEnv(WireEDMEnv):
+            def _get_obs(self):
+                return {"hooked": True}
+
+            def _calc_reward(self):
+                return 7.0
+
+        env = HookedEnv()
+        env.reset(seed=11)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+
+        obs, reward, terminated, truncated, info = env.step_compiled(_make_action())
+
+        assert obs == {"hooked": True}
+        assert reward == 7.0
+        assert isinstance(terminated, bool)
+        assert truncated is False
+        assert isinstance(info, dict)
+
     def test_precompiled_action_packet_matches_scalar_action_path(self):
         action = _make_action()
 
@@ -431,6 +490,28 @@ class TrackingRNG:
         return self._rng.normal(loc, scale, size)
 
 
+class SequenceRNG:
+    """Return predetermined scalar RNG values."""
+
+    def __init__(self, random_values, normal_values):
+        self._random_values = list(random_values)
+        self._normal_values = list(normal_values)
+
+    def random(self, size=None):
+        if size is not None:
+            raise AssertionError("SequenceRNG only supports scalar draws")
+        if not self._random_values:
+            raise AssertionError("No random() values left in SequenceRNG")
+        return self._random_values.pop(0)
+
+    def normal(self, loc=0.0, scale=1.0, size=None):
+        if size is not None:
+            raise AssertionError("SequenceRNG only supports scalar draws")
+        if not self._normal_values:
+            raise AssertionError("No normal() values left in SequenceRNG")
+        return self._normal_values.pop(0)
+
+
 class TestCompiledStepRNGParity:
     """Compiled staging must preserve the modular RNG branch pattern."""
 
@@ -472,6 +553,111 @@ class TestCompiledStepRNGParity:
         assert modular.state.wire_max_damage == pytest.approx(
             compiled.state.wire_max_damage, abs=1e-4
         )
+
+    def test_random_short_disabled_preserves_rng_draw_pattern(self):
+        params = IgnitionModuleParameters(random_short_max_probability=0.0)
+        action = _make_action()
+
+        modular = WireEDMEnv(ignition_params=params)
+        modular.reset(seed=321)
+        modular.state.time_since_servo = modular.servo_interval
+        modular_rng = TrackingRNG(999)
+        modular.np_random = modular_rng
+
+        compiled = WireEDMEnv(ignition_params=params)
+        compiled.reset(seed=321)
+        compiled.state.time_since_servo = compiled.servo_interval
+        compiled_rng = TrackingRNG(999)
+        compiled.np_random = compiled_rng
+        compiled.init_compiled_scheduler()
+
+        for _ in range(1000):
+            _, _, mod_terminated, mod_truncated, _ = modular.step(action)
+            _, _, comp_terminated, comp_truncated, _ = compiled.step_compiled(action)
+            if mod_terminated or mod_truncated or comp_terminated or comp_truncated:
+                break
+
+        compiled.sync_compiled_to_state()
+
+        assert modular_rng.random_calls == compiled_rng.random_calls
+        assert modular_rng.normal_calls == compiled_rng.normal_calls
+        assert modular.state.workpiece_position == pytest.approx(
+            compiled.state.workpiece_position, abs=0.1
+        )
+        assert modular.state.wire_max_damage == pytest.approx(
+            compiled.state.wire_max_damage, abs=1e-4
+        )
+
+
+class TestCompiledStepHelpers:
+    """Direct helper parity and edge-case coverage."""
+
+    def test_compiled_convection_matches_modular_update(self):
+        env = WireEDMEnv()
+        env.reset(seed=7)
+
+        wire = env.wire
+        wire._update_convection_coefficients(250.0, 0.35)
+        expected = wire.conv_loss_coeff.copy()
+        actual = np.zeros_like(expected)
+
+        _compiled_update_convection(
+            actual,
+            250.0,
+            0.35,
+            wire.params.convection_velocity_factor,
+            wire.params.base_convection_coefficient,
+            wire.params.convection_flow_enhancement,
+            wire.actual_zone_start,
+            wire.actual_zone_end,
+            wire.A,
+        )
+
+        np.testing.assert_allclose(actual, expected, atol=0.0, rtol=0.0)
+
+    @pytest.mark.parametrize(
+        ("kerf_width_mm", "workpiece_height_for_material"),
+        [
+            (0.0, 20.0),
+            (0.2, 0.0),
+        ],
+    )
+    def test_compiled_microstep_skips_material_increment_for_zero_geometry(
+        self,
+        kerf_width_mm,
+        workpiece_height_for_material,
+    ):
+        env = WireEDMEnv()
+        env.reset(seed=5)
+        env.state.time_since_servo = env.servo_interval
+        env.init_compiled_scheduler()
+
+        hot_state = HotStateBundle.from_env(env)
+        constants = replace(
+            env._scheduler_constants,
+            workpiece_height_for_material=workpiece_height_for_material,
+        )
+        rng = SequenceRNG(
+            random_values=[1.0, 1.0, 0.0, 0.0],
+            normal_values=[1000.0],
+        )
+
+        start_position = hot_state.workpiece_position_um
+        termination_code = compiled_microstep(
+            hot_state,
+            rng,
+            constants,
+            env._compiled_target_voltage,
+            env._compiled_peak_current,
+            env._compiled_on_time,
+            env._compiled_off_time,
+            1000.0,
+            0.0,
+            kerf_width_mm,
+        )
+
+        assert termination_code == 0
+        assert hot_state.workpiece_position_um == pytest.approx(start_position)
 
 
 class TestSchedulerConstants:
