@@ -69,65 +69,6 @@ for _ in range(1000):
 print(f"Simulation completed. Wire broken: {info.get('wire_broken', False)}")
 ```
 
-## Performance Profiling
-
-Use the profiling harness to benchmark the local `src` tree against a stable
-active-cutting workload before and after optimization changes.
-
-```bash
-python scripts/profile_simulation.py --segment-len 0.2 --segment-len 0.05 --steps 100000 --initial-gap 12 --warmup 2000 --repeats 3 --hotspots both
-```
-
-The script reports:
-
-- median and per-repeat throughput in steps per second
-- module-level wall-time shares for quick hotspot scans
-- `cProfile` hotspots for deeper function-level analysis
-- crater counts per run derived from fresh crater-forming discharges, even when
-  analysis-history tracking is disabled
-- machine and power context so you can tell whether a run happened on battery,
-  under a capped processor policy, or with no direct thermal visibility
-- per-scenario fidelity signatures for regression checks
-
-The conservative realtime benchmark contract for this PC is documented in
-[`docs/performance_realtime_baseline.md`](docs/performance_realtime_baseline.md).
-
-For the frozen conservative baseline preset, use:
-
-```bash
-python scripts/profile_realtime_baseline.py
-```
-
-To compare a candidate profile against a baseline report directly:
-
-```bash
-python scripts/profile_simulation.py --compare-to outputs/profiling/realtime_baseline_20260322_i1.json --json-out outputs/profiling/candidate.json
-```
-
-To run the frozen preset as a timestamped candidate verification, archive the
-result, and refresh the dashboard in one command:
-
-```bash
-python scripts/verify_realtime_candidate.py
-```
-
-You can also write a machine-readable snapshot for later comparison:
-
-```bash
-python scripts/profile_simulation.py --json-out outputs/profiling/baseline.json
-```
-
-To turn collected profiling JSON files into a standalone progress dashboard:
-
-```bash
-python scripts/build_perf_dashboard.py
-```
-
-That writes `outputs/profiling/performance_dashboard.html`, which tracks
-throughput history, distance to the 1 s wall / 1 s simulated target, archived
-before/after comparisons versus the baseline, and the latest module drilldown
-from module-level down to matching `cProfile` hotspots.
-
 ## Advanced Usage
 
 ### Custom Control Strategy

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import time
 import numpy as np
 from numba import njit
 from dataclasses import dataclass
@@ -572,8 +571,8 @@ class WireModule(EDMModule):
         # Keep the dataclass type for compatibility snapshots, but do not mirror it
         # on every microstep. The NumPy arrays below are the live state.
 
-        # ── Internal NumPy arrays for fast access (optimization) ──
-        # Store segment data in arrays to avoid list comprehensions
+        # ── Internal NumPy arrays for the live wire state ──
+        # Keep segment data in arrays to avoid rebuilding compatibility objects.
         self._base_positions_mm = self._build_initial_positions()
         self._y_start_mm = self._base_positions_mm.copy()
         self._position_offset_mm = 0.0
@@ -653,10 +652,6 @@ class WireModule(EDMModule):
         # Force first-time convection coefficient update on first call to update()
         self._last_flow_condition = None  # type: ignore[assignment]
         self.zone_mean_counter = 0
-        self._profile_update_subhotspots = False
-        self._profile_compiled_subhotspots = False
-        self._compiled_subhotspot_times_ns = None
-        self._compiled_subhotspot_calls = None
 
         # ── Calculate electrical contact positions (physical) ──
         # Contacts are positioned outside the workpiece zone
@@ -791,65 +786,51 @@ class WireModule(EDMModule):
             self._last_flow_condition = flow_condition
 
         T_vec = self._temperature
-        if self._profile_update_subhotspots:
-            self._advance_transport(wire_unwind_vel)
-            max_damage = self._apply_thermal_core(
-                state,
-                T_vec,
-                I,
-                I_squared,
-                dielectric_temp,
-            )
-            state.wire_max_damage = float(max_damage)
-            if max_damage >= 1.0:
-                state.is_wire_broken = True
-            self._sync_state_views(state, T_vec)
-        else:
-            delta_mm = 0.0
-            if self.params.moving_segments:
-                dt_us = self.env.config.dt
-                delta_mm = wire_unwind_vel * 1e-3 * dt_us
-                if delta_mm != 0.0:
-                    self._positions_dirty = True
+        delta_mm = 0.0
+        if self.params.moving_segments:
+            dt_us = self.env.config.dt
+            delta_mm = wire_unwind_vel * 1e-3 * dt_us
+            if delta_mm != 0.0:
+                self._positions_dirty = True
 
-            has_spark_location = state.spark_status[1] is not None
-            spark_location_mm = state.spark_status[1] if has_spark_location else 0.0
+        has_spark_location = state.spark_status[1] is not None
+        spark_location_mm = state.spark_status[1] if has_spark_location else 0.0
 
-            self._position_offset_mm, max_damage = advance_wire_step_inplace(
-                T_vec,
-                self._damage,
-                self.dT_dt,
-                self.conv_loss_coeff,
-                self._position_offset_mm,
-                self._position_wrap_threshold_mm,
-                delta_mm,
-                self.params.spool_T,
-                self.k_cond_coeff,
-                self.temp_update_factor,
-                dielectric_temp,
-                self.temp_ref,
-                self.alpha_rho,
-                int(state.spark_status[0]),
-                bool(has_spark_location),
-                spark_location_mm,
-                state.voltage,
-                I,
-                I_squared,
-                self.segment_len_mm,
-                int(self.zone_start),
-                int(self.zone_end),
-                int(self.contact_bottom_idx),
-                int(self.contact_top_idx),
-                self.params.plasma_efficiency,
-                self.joule_factor_base,
-                self.damage_temperature_threshold_k,
-                self.damage_stress_term_dt,
-                self.damage_activation_scale,
-            )
-            state.wire_max_damage = max_damage
-            if max_damage >= 1.0:
-                state.is_wire_broken = True
-            self._sync_state_views(state, T_vec)
+        self._position_offset_mm, max_damage = advance_wire_step_inplace(
+            T_vec,
+            self._damage,
+            self.dT_dt,
+            self.conv_loss_coeff,
+            self._position_offset_mm,
+            self._position_wrap_threshold_mm,
+            delta_mm,
+            self.params.spool_T,
+            self.k_cond_coeff,
+            self.temp_update_factor,
+            dielectric_temp,
+            self.temp_ref,
+            self.alpha_rho,
+            int(state.spark_status[0]),
+            bool(has_spark_location),
+            spark_location_mm,
+            state.voltage,
+            I,
+            I_squared,
+            self.segment_len_mm,
+            int(self.zone_start),
+            int(self.zone_end),
+            int(self.contact_bottom_idx),
+            int(self.contact_top_idx),
+            self.params.plasma_efficiency,
+            self.joule_factor_base,
+            self.damage_temperature_threshold_k,
+            self.damage_stress_term_dt,
+            self.damage_activation_scale,
+        )
+        state.wire_max_damage = max_damage
+        if max_damage >= 1.0:
+            state.is_wire_broken = True
+        self._sync_state_views(state, T_vec)
 
         # Compute zone mean only when needed
         if self.params.compute_zone_mean:
@@ -1020,147 +1001,6 @@ class WireModule(EDMModule):
         if self.zone_size > 0 and self.actual_zone_end <= len(T):
             return float(np.mean(T[self.actual_zone_start : self.actual_zone_end]))
         return float(np.mean(T))
-
-    def enable_update_subhotspot_profiling(self) -> None:
-        """Route modular-path updates through the hotspot-friendly path."""
-        self._profile_update_subhotspots = True
-
-    def disable_update_subhotspot_profiling(self) -> None:
-        """Restore the normal modular-path update flow."""
-        self._profile_update_subhotspots = False
-
-    def enable_compiled_subhotspot_profiling(self, times_ns, calls) -> None:
-        """Attach compiled wire sub-bucket collectors for hotspot runs only."""
-        self._profile_compiled_subhotspots = True
-        self._compiled_subhotspot_times_ns = times_ns
-        self._compiled_subhotspot_calls = calls
-
-    def disable_compiled_subhotspot_profiling(self) -> None:
-        """Detach compiled wire sub-bucket collectors from the production path."""
-        self._profile_compiled_subhotspots = False
-        self._compiled_subhotspot_times_ns = None
-        self._compiled_subhotspot_calls = None
-
-    def get_compiled_wire_profiler(self):
-        """Return the profiling-only compiled wire hook when enabled."""
-        if not self._profile_compiled_subhotspots:
-            return None
-        if self._compiled_subhotspot_times_ns is None:
-            return None
-        if self._compiled_subhotspot_calls is None:
-            return None
-        return self._profile_compiled_wire_step
-
-    def _record_compiled_subhotspot(self, label: str, start_ns: int) -> None:
-        if self._compiled_subhotspot_times_ns is None or self._compiled_subhotspot_calls is None:
-            return
-        self._compiled_subhotspot_times_ns[label] += time.perf_counter_ns() - start_ns
-        self._compiled_subhotspot_calls[label] += 1
-
-    def _profile_compiled_wire_step(
-        self,
-        hs,
-        flow_condition: float,
-        spark_state: int,
-        spark_location_mm: float,
-        voltage: float,
-        current: float,
-        current_squared: float,
-    ) -> float:
-        """Profiling-only compiled wire path with sub-bucket timing."""
-        if (
-            math.isnan(hs.wire_last_flow_condition)
-            or abs(flow_condition - hs.wire_last_flow_condition) > 0.01
-        ):
-            start_ns = time.perf_counter_ns()
-            self._update_convection_coefficients(
-                hs.wire_unwinding_velocity_um_us, flow_condition
-            )
-            hs.wire_last_flow_condition = flow_condition
-            self._record_compiled_subhotspot("convection_update", start_ns)
-
-        start_ns = time.perf_counter_ns()
-        self._position_offset_mm = hs.wire_position_offset_mm
-        self._advance_transport(hs.wire_unwinding_velocity_um_us)
-        hs.wire_position_offset_mm = self._position_offset_mm
-        self._record_compiled_subhotspot("transport", start_ns)
-
-        has_spark_location = not math.isnan(spark_location_mm)
-
-        start_ns = time.perf_counter_ns()
-        (
-            plasma_idx,
-            plasma_heat,
-            bottom_start,
-            bottom_end,
-            bottom_joule_factor,
-            top_start,
-            top_end,
-            top_joule_factor,
-        ) = resolve_discharge_partition(
-            int(spark_state),
-            has_spark_location,
-            spark_location_mm if has_spark_location else 0.0,
-            voltage,
-            current,
-            current_squared,
-            self.segment_len_mm,
-            int(self.zone_start),
-            int(self.zone_end),
-            int(self.n_segments),
-            int(self.contact_bottom_idx),
-            int(self.contact_top_idx),
-            self.params.plasma_efficiency,
-            self.joule_factor_base,
-        )
-        self._record_compiled_subhotspot("discharge_partition", start_ns)
-
-        start_ns = time.perf_counter_ns()
-        apply_thermal_core_inplace(
-            hs.wire_temperature,
-            hs.wire_d_t_dt,
-            hs.wire_conv_loss_coeff,
-            self.k_cond_coeff,
-            self.temp_update_factor,
-            hs.dielectric_temperature,
-            self.temp_ref,
-            self.alpha_rho,
-            bottom_start,
-            bottom_end,
-            bottom_joule_factor,
-            top_start,
-            top_end,
-            top_joule_factor,
-            plasma_idx,
-            plasma_heat,
-            self.params.spool_T,
-        )
-        self._record_compiled_subhotspot("thermal_core", start_ns)
-
-        start_ns = time.perf_counter_ns()
-        max_damage = accumulate_damage(
-            hs.wire_damage,
-            hs.wire_temperature,
-            self.damage_temperature_threshold_k,
-            self.damage_stress_term_dt,
-            self.damage_activation_scale,
-        )
-        self._record_compiled_subhotspot("damage", start_ns)
-
-        hs.wire_max_damage = max_damage
-        if max_damage >= 1.0:
-            hs.is_wire_broken = 1
-            return max_damage
-
-        if self.params.compute_zone_mean:
-            hs.wire_zone_mean_counter += 1
-            if hs.wire_zone_mean_counter >= self.params.zone_mean_interval:
-                start_ns = time.perf_counter_ns()
-                hs.wire_last_zone_mean = self._compute_zone_mean_fast(hs.wire_temperature)
-                hs.wire_zone_mean_counter = 0
-                self._record_compiled_subhotspot("zone_mean", start_ns)
-
-        return max_damage
 
     def compute_zone_mean_temperature(self, temperature_field: np.ndarray) -> float:
         """Public method for on-demand zone mean calculation."""

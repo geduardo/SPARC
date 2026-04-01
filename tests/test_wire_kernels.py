@@ -296,7 +296,7 @@ def test_apply_thermal_core_inplace_matches_reference():
     np.testing.assert_allclose(temperature, expected, rtol=1e-6, atol=1e-6)
 
 
-def test_apply_thermal_damage_core_inplace_matches_legacy_composition():
+def test_apply_thermal_damage_core_inplace_matches_reference_composition():
     temperature = np.array(
         [293.15, 305.0, 318.5, 330.0, 341.0, 352.5], dtype=np.float32
     )

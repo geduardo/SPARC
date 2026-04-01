@@ -1,4 +1,3 @@
-# src/edm_env/envs/wire_edm.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +10,6 @@ from ..core.hot_state import HotStateBundle
 from ..core.compiled_step import (
     SchedulerConstants,
     compiled_microstep,
-    compiled_microstep_profiled,
 )
 from ..core.state import EDMState
 from ..core.env_config import EnvironmentConfig
@@ -24,7 +22,7 @@ from ..modules.wire import WireModule, WireModuleParameters
 
 @dataclass(frozen=True, slots=True)
 class ScalarGeneratorControl:
-    """Scalar generator settings for the env fast path."""
+    """Lightweight scalar generator settings."""
 
     target_voltage: float
     current_mode: int
@@ -42,7 +40,7 @@ class ScalarAction:
 
 @dataclass(frozen=True, slots=True)
 class CompiledActionPacket:
-    """Pre-resolved compiled-path control packet."""
+    """Resolved control packet for compiled stepping."""
 
     target_delta: float
     target_voltage: float
@@ -76,7 +74,7 @@ def build_scalar_action(
 
 
 class WireEDMEnv(gym.Env):
-    """Main-cut Wire-EDM environment (1 µs base-step, 1 ms control-step)."""
+    """Main-cut Wire-EDM environment (1 us base step, 1 ms control step)."""
 
     metadata = {"render_modes": ["human"], "render_fps": 300}
 
@@ -445,18 +443,18 @@ class WireEDMEnv(gym.Env):
         return 0.0
 
     def build_hot_state_bundle(self) -> HotStateBundle:
-        """Capture the numeric hot state required by a compiled scheduler."""
+        """Capture the scheduler state bundle from the current environment."""
         return HotStateBundle.from_env(self)
 
     def apply_hot_state_bundle(self, hot_state: HotStateBundle) -> None:
-        """Restore env/module state from a previously captured hot-state bundle."""
+        """Restore environment and module state from a scheduler bundle."""
         hot_state.apply_to_env(self)
 
     # ------------------------------------------------------------------ #
     # Compiled scheduler path
     # ------------------------------------------------------------------ #
     def init_compiled_scheduler(self) -> None:
-        """Prepare the compiled scheduler for fast stepping.
+        """Prepare the compiled scheduler for repeated stepping.
 
         Must be called after reset() and before step_compiled().
         Captures all module constants into a frozen snapshot.
@@ -470,11 +468,11 @@ class WireEDMEnv(gym.Env):
         self._resolve_compiled_crater_params()
 
     def compile_action(self, action) -> CompiledActionPacket:
-        """Resolve an action into a compiled-path control packet."""
+        """Resolve an action into a compiled control packet."""
         return self._resolve_compiled_action_packet(action)
 
     def _resolve_compiled_generator_settings(self) -> None:
-        """Cache resolved generator settings for the compiled path."""
+        """Cache generator settings used by compiled stepping."""
         state = self.state
         ign = self.ignition
         tv = state.target_voltage
@@ -493,19 +491,19 @@ class WireEDMEnv(gym.Env):
         self._update_compiled_mode_cache(int(mode[1:]))
 
     def _resolve_compiled_crater_params(self) -> None:
-        """Cache crater sampling parameters for the compiled path."""
+        """Cache crater sampling parameters used by compiled stepping."""
         mode = self.resolve_current_mode(self.state.current_mode)
         self._update_compiled_mode_cache(int(mode[1:]))
 
     def _step_compiled_impl(self, action, *, fast: bool):
-        """Fast step using the compiled scheduler.
+        """Advance one microstep using the compiled scheduler.
 
         Eliminates per-microstep Python module dispatch. RNG stays in
         Python for branch-consumption parity with the modular path.
 
         Public `step_compiled()` preserves the Gym-style return tuple.
         `step_compiled_fast()` returns only termination flags for
-        headless stepping paths.
+        tight stepping loops.
         """
         hs = self._hot_state
         sc = self._scheduler_constants
@@ -530,31 +528,16 @@ class WireEDMEnv(gym.Env):
 
             hs.time_since_servo = 0
 
-        # Execute one compiled microstep
-        profile_wire_step = self.wire.get_compiled_wire_profiler()
-        if profile_wire_step is None:
-            termination_code = compiled_microstep(
-                hs, self.np_random, sc,
-                self._compiled_target_voltage,
-                self._compiled_peak_current,
-                self._compiled_on_time,
-                self._compiled_off_time,
-                self._compiled_crater_mean,
-                self._compiled_crater_std,
-                self._compiled_kerf_width_mm,
-            )
-        else:
-            termination_code = compiled_microstep_profiled(
-                hs, self.np_random, sc,
-                self._compiled_target_voltage,
-                self._compiled_peak_current,
-                self._compiled_on_time,
-                self._compiled_off_time,
-                self._compiled_crater_mean,
-                self._compiled_crater_std,
-                self._compiled_kerf_width_mm,
-                profile_wire_step,
-            )
+        termination_code = compiled_microstep(
+            hs, self.np_random, sc,
+            self._compiled_target_voltage,
+            self._compiled_peak_current,
+            self._compiled_on_time,
+            self._compiled_off_time,
+            self._compiled_crater_mean,
+            self._compiled_crater_std,
+            self._compiled_kerf_width_mm,
+        )
 
         if termination_code != 0:
             if fast:
@@ -592,9 +575,9 @@ class WireEDMEnv(gym.Env):
         return self._step_compiled_impl(action, fast=True)
 
     def sync_compiled_to_state(self) -> None:
-        """Write the hot-state bundle back into EDMState and module internals.
+        """Write the scheduler bundle back into EDMState and module internals.
 
-        Call this when you need the modular state to reflect compiled-path
+        Call this when you need the environment state to reflect compiled
         progress (e.g., for logging, dashboards, or episode end).
         """
         self._hot_state.apply_to_env(self)

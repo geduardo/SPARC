@@ -1,8 +1,8 @@
-"""Lockstep fidelity tests for the compiled scheduler (PBC-02).
+"""Lockstep fidelity tests for the compiled scheduler.
 
-Runs both the modular reference path and the compiled path with the same
-seed and action sequence, then asserts exact or near-exact parity on all
-fidelity-critical state fields.
+Runs both the modular reference implementation and the compiled scheduler
+with the same seed and action sequence, then asserts exact or near-exact
+parity on all fidelity-critical state fields.
 """
 import math
 
@@ -46,7 +46,7 @@ def _run_modular(n_steps: int, seed: int, action=None):
 
 
 def _run_modular_fast(n_steps: int, seed: int, action=None):
-    """Run the modular fast path, return final state snapshot."""
+    """Run the modular flag-only stepping API and return the final state."""
     env = WireEDMEnv()
     env.reset(seed=seed)
     env.state.time_since_servo = env.servo_interval
@@ -61,7 +61,7 @@ def _run_modular_fast(n_steps: int, seed: int, action=None):
 
 
 def _run_compiled(n_steps: int, seed: int, action=None):
-    """Run the compiled scheduler path, return final state snapshot."""
+    """Run the compiled stepping API and return the final state."""
     env = WireEDMEnv()
     env.reset(seed=seed)
     env.state.time_since_servo = env.servo_interval
@@ -80,7 +80,7 @@ def _run_compiled(n_steps: int, seed: int, action=None):
 
 
 def _run_compiled_fast(n_steps: int, seed: int, action=None):
-    """Run the compiled fast path, return final state snapshot."""
+    """Run the compiled flag-only stepping API and return the final state."""
     env = WireEDMEnv()
     env.reset(seed=seed)
     env.state.time_since_servo = env.servo_interval
@@ -98,7 +98,7 @@ def _run_compiled_fast(n_steps: int, seed: int, action=None):
 
 
 class TestCompiledStepParity:
-    """Lockstep parity between modular and compiled paths."""
+    """Lockstep parity between the reference and compiled schedulers."""
 
     @pytest.fixture(scope="class")
     def envs(self):

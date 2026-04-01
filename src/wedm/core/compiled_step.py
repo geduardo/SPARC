@@ -18,16 +18,13 @@ from ..modules.ignition import (
     _get_ignition_probability_scalar,
 )
 from ..modules.wire import advance_wire_step_inplace
-from ..modules.dielectric import fast_exp
-
 if TYPE_CHECKING:
     from ..envs.wire_edm import WireEDMEnv
 
 
 # ── Constants bundle ─────────────────────────────────────────────────────────
-# All module parameters packed once at init time.  Passed to Numba kernels
-# as plain tuples (Numba can't accept dataclasses, but we keep the dataclass
-# on the Python side for readability and use .as_tuple() for the kernels).
+# Module parameters are captured once at init time and passed to Numba
+# kernels as plain tuples.
 
 @dataclass(frozen=True, slots=True)
 class SchedulerConstants:
@@ -180,7 +177,7 @@ class SchedulerConstants:
         mech = env.mechanics
         mat = env.material
 
-        # material – compute kerf width from cached crater info
+        # Material crater depth drives the effective kerf width.
         crater_depth_mm = mat._cached_crater_info["depth_um"] / 1000.0
         kerf_width_mm = mat.params.base_overcut + env.config.wire_diameter + crater_depth_mm
 
@@ -249,10 +246,7 @@ class SchedulerConstants:
 
 
 # ── Compiled kernels ─────────────────────────────────────────────────────────
-# Phase 1: short-circuit detection.
-# Returns (next_random_remaining, next_debris_remaining, is_short,
-#          needs_short_rolls) where needs_short_rolls indicates whether
-#          the two RNG draws were actually consumed.
+# Short-circuit stage.
 
 @njit(cache=False)
 def _compiled_short_circuit(
@@ -323,7 +317,7 @@ def _compiled_short_circuit(
     return random_short_remaining, debris_short_remaining, False
 
 
-# Phase 2: dielectric update (scalar, no arrays, no RNG).
+# Dielectric stage.
 
 @njit(cache=False, fastmath=True)
 def _compiled_dielectric(
@@ -387,7 +381,7 @@ def _compiled_dielectric(
         # Debris obstruction
         arg = debris_obstruction_coeff * debris_density
         if arg < 2.0:
-            # Padé approximation matching fast_exp
+            # Padé approximation for small exponents.
             if arg < 0.5:
                 debris_factor = (1.0 - 0.5 * arg) / (1.0 + 0.5 * arg)
             else:
@@ -420,7 +414,7 @@ def _compiled_dielectric(
     )
 
 
-# Phase 3: mechanics update (scalar, no arrays, no RNG).
+# Mechanics stage.
 
 @njit(cache=False, fastmath=True)
 def _compiled_mechanics(
@@ -471,7 +465,7 @@ def _compiled_mechanics(
     return x, v, a
 
 
-# Phase 4: wire convection coefficient update (when flow condition changes).
+# Wire convection update.
 
 @njit(cache=False, fastmath=True)
 def _compiled_update_convection(
@@ -508,7 +502,7 @@ def _compiled_update_convection(
             conv_loss_coeff[i] = base_coeff
 
 
-# Phase 5: zone mean temperature (when enabled).
+# Zone mean sampling.
 
 @njit(cache=False, fastmath=True)
 def _compiled_zone_mean(
@@ -523,408 +517,6 @@ def _compiled_zone_mean(
     for i in range(zone_start, zone_end):
         total += temperature[i]
     return total / (zone_end - zone_start)
-
-
-@njit(cache=False, fastmath=True)
-def _compiled_prepare_rng_branches(
-    workpiece_position_um: float,
-    wire_position_um: float,
-    spark_state: int,
-    voltage: float,
-    debris_density: float,
-    ignition_random_short_remaining: int,
-    ignition_debris_short_remaining: int,
-    debris_roll: float,
-    random_roll: float,
-    dt_int: int,
-    hard_short_gap: float,
-    base_critical_density: float,
-    gap_coefficient: float,
-    max_critical_density: float,
-    sigmoid_steepness: float,
-    debris_short_duration: int,
-    random_short_duration: int,
-    random_short_min_gap: float,
-    random_short_max_gap: float,
-    random_short_max_probability: float,
-    random_short_enabled: bool,
-    log2_value: float,
-    ignition_a_coeff: float,
-    ignition_b_coeff: float,
-    ignition_c_coeff: float,
-) -> tuple:
-    """Advance short-circuit state and determine whether more RNG draws are needed."""
-    gap = workpiece_position_um - wire_position_um
-    if gap < 0.0:
-        gap = 0.0
-
-    rand_rem, debris_rem, is_short = _compiled_short_circuit(
-        gap,
-        dt_int,
-        debris_density,
-        ignition_random_short_remaining,
-        ignition_debris_short_remaining,
-        debris_roll,
-        random_roll,
-        hard_short_gap,
-        base_critical_density,
-        gap_coefficient,
-        max_critical_density,
-        sigmoid_steepness,
-        debris_short_duration,
-        random_short_duration,
-        random_short_min_gap,
-        random_short_max_gap,
-        random_short_max_probability,
-        random_short_enabled,
-    )
-
-    current_voltage = 0.0 if is_short else voltage
-    ignition_probability = 0.0
-    needs_ignition_roll = False
-    if spark_state == 0 and not is_short:
-        rounded_gap = round(gap, 2)
-        ignition_probability = _get_ignition_probability_scalar(
-            gap,
-            rounded_gap,
-            dt_int,
-            log2_value,
-            ignition_a_coeff,
-            ignition_b_coeff,
-            ignition_c_coeff,
-        )
-        needs_ignition_roll = True
-
-    return (
-        rand_rem,
-        debris_rem,
-        is_short,
-        current_voltage,
-        ignition_probability,
-        needs_ignition_roll,
-    )
-
-
-@njit(cache=False, fastmath=True)
-def _compiled_advance_discharge_stage(
-    spark_state: int,
-    spark_location: float,
-    spark_duration: int,
-    is_short: bool,
-    current_voltage: float,
-    target_voltage: float,
-    peak_current: float,
-    on_time: float,
-    off_time: float,
-    spark_voltage_factor: float,
-    workpiece_height: float,
-    ignition_probability: float,
-    ignition_roll: float,
-    spark_location_roll: float,
-) -> tuple:
-    """Advance the discharge state machine with pre-drawn RNG values."""
-    (
-        next_spark_state,
-        next_spark_location,
-        next_spark_duration,
-        next_voltage,
-        next_current,
-    ) = _advance_discharge_state(
-        spark_state,
-        spark_location,
-        spark_duration,
-        is_short,
-        current_voltage,
-        target_voltage,
-        peak_current,
-        on_time,
-        off_time,
-        spark_voltage_factor,
-        workpiece_height,
-        ignition_probability,
-        ignition_roll,
-        spark_location_roll,
-    )
-
-    is_fresh_discharge = (
-        (next_spark_state == 1 or next_spark_state == -1)
-        and next_spark_duration == 0
-    )
-
-    return (
-        next_spark_state,
-        next_spark_location,
-        next_spark_duration,
-        next_voltage,
-        next_current,
-        is_fresh_discharge,
-    )
-
-
-@njit(cache=False)
-def _compiled_finalize_step(
-    workpiece_position_um: float,
-    wire_position_um: float,
-    wire_velocity_um_s: float,
-    wire_unwinding_velocity_um_us: float,
-    wire_temperature: np.ndarray,
-    wire_damage: np.ndarray,
-    wire_d_t_dt: np.ndarray,
-    wire_conv_loss_coeff: np.ndarray,
-    wire_position_offset_mm: float,
-    wire_last_flow_condition: float,
-    wire_zone_mean_counter: int,
-    wire_last_zone_mean: float,
-    debris_volume: float,
-    debris_density: float,
-    cavity_volume: float,
-    dielectric_cached_gap_um: float,
-    dielectric_cached_debris_density: float,
-    dielectric_cached_flow_condition: float,
-    ionized_channel_location_mm: float,
-    ionized_channel_duration: int,
-    mechanics_prev_accel: float,
-    target_delta: float,
-    time: int,
-    time_since_servo: int,
-    time_since_open_voltage: int,
-    time_since_spark_ignition: int,
-    time_since_spark_end: int,
-    next_spark_state: int,
-    next_spark_location: float,
-    next_spark_duration: int,
-    next_voltage: float,
-    next_current: float,
-    crater_volume_mm3: float,
-    kerf_width_mm: float,
-    workpiece_height_for_material: float,
-    cavity_volume_coeff: float,
-    reference_gap: float,
-    debris_obstruction_coeff: float,
-    debris_removal_per_us: float,
-    ion_channel_duration: int,
-    convection_velocity_factor: float,
-    base_convection_coefficient: float,
-    convection_flow_enhancement: float,
-    actual_zone_start: int,
-    actual_zone_end: int,
-    wire_A: float,
-    moving_segments: bool,
-    dt_int: int,
-    position_wrap_threshold_mm: float,
-    spool_temp: float,
-    k_cond_coeff: float,
-    temp_update_factor: float,
-    dielectric_temperature: float,
-    temp_ref: float,
-    alpha_rho: float,
-    segment_len_mm: float,
-    zone_start: int,
-    zone_end: int,
-    contact_bottom_idx: int,
-    contact_top_idx: int,
-    plasma_efficiency: float,
-    joule_factor_base: float,
-    damage_threshold_k: float,
-    damage_stress_term_dt: float,
-    damage_activation_scale: float,
-    compute_zone_mean: bool,
-    zone_mean_interval: int,
-    mechanics_mode_is_position: bool,
-    damping_coeff: float,
-    stiffness_coeff: float,
-    omega_n: float,
-    max_acceleration: float,
-    max_jerk_dt: float,
-    max_speed: float,
-    mechanics_dt: float,
-) -> tuple:
-    """Apply all deterministic post-RNG state updates for one microstep."""
-    last_crater_volume = crater_volume_mm3
-    if (
-        crater_volume_mm3 > 0.0
-        and kerf_width_mm > 0.0
-        and workpiece_height_for_material > 0.0
-    ):
-        delta_x_mm = crater_volume_mm3 / (
-            kerf_width_mm * workpiece_height_for_material
-        )
-        workpiece_position_um += delta_x_mm * 1000.0
-
-    (
-        debris_volume,
-        debris_density,
-        cavity_volume,
-        flow_condition,
-        dielectric_cached_gap_um,
-        dielectric_cached_debris_density,
-        dielectric_cached_flow_condition,
-        ionized_channel_location_mm,
-        ionized_channel_duration,
-    ) = _compiled_dielectric(
-        workpiece_position_um,
-        wire_position_um,
-        next_spark_state,
-        next_spark_duration,
-        next_spark_location,
-        last_crater_volume,
-        debris_volume,
-        dielectric_cached_gap_um,
-        dielectric_cached_debris_density,
-        dielectric_cached_flow_condition,
-        ionized_channel_location_mm,
-        ionized_channel_duration,
-        cavity_volume_coeff,
-        reference_gap,
-        debris_obstruction_coeff,
-        debris_removal_per_us,
-        ion_channel_duration,
-    )
-
-    if (
-        math.isnan(wire_last_flow_condition)
-        or abs(flow_condition - wire_last_flow_condition) > 0.01
-    ):
-        _compiled_update_convection(
-            wire_conv_loss_coeff,
-            wire_unwinding_velocity_um_us,
-            flow_condition,
-            convection_velocity_factor,
-            base_convection_coefficient,
-            convection_flow_enhancement,
-            actual_zone_start,
-            actual_zone_end,
-            wire_A,
-        )
-        wire_last_flow_condition = flow_condition
-
-    current_squared = next_current * next_current
-    delta_mm = 0.0
-    if moving_segments:
-        delta_mm = wire_unwinding_velocity_um_us * 1e-3 * dt_int
-
-    has_spark_loc = not math.isnan(next_spark_location)
-    wire_position_offset_mm, max_damage = advance_wire_step_inplace(
-        wire_temperature,
-        wire_damage,
-        wire_d_t_dt,
-        wire_conv_loss_coeff,
-        wire_position_offset_mm,
-        position_wrap_threshold_mm,
-        delta_mm,
-        spool_temp,
-        k_cond_coeff,
-        temp_update_factor,
-        dielectric_temperature,
-        temp_ref,
-        alpha_rho,
-        next_spark_state,
-        has_spark_loc,
-        next_spark_location if has_spark_loc else 0.0,
-        next_voltage,
-        next_current,
-        current_squared,
-        segment_len_mm,
-        zone_start,
-        zone_end,
-        contact_bottom_idx,
-        contact_top_idx,
-        plasma_efficiency,
-        joule_factor_base,
-        damage_threshold_k,
-        damage_stress_term_dt,
-        damage_activation_scale,
-    )
-
-    wire_broke = max_damage >= 1.0
-    if wire_broke:
-        return (
-            workpiece_position_um,
-            debris_volume,
-            debris_density,
-            cavity_volume,
-            flow_condition,
-            dielectric_cached_gap_um,
-            dielectric_cached_debris_density,
-            dielectric_cached_flow_condition,
-            ionized_channel_location_mm,
-            ionized_channel_duration,
-            wire_position_offset_mm,
-            wire_last_flow_condition,
-            wire_zone_mean_counter,
-            wire_last_zone_mean,
-            max_damage,
-            wire_position_um,
-            wire_velocity_um_s,
-            mechanics_prev_accel,
-            time,
-            time_since_servo,
-            time_since_open_voltage,
-            time_since_spark_ignition,
-            time_since_spark_end,
-            last_crater_volume,
-            True,
-        )
-
-    if compute_zone_mean:
-        wire_zone_mean_counter += 1
-        if wire_zone_mean_counter >= zone_mean_interval:
-            wire_last_zone_mean = _compiled_zone_mean(wire_temperature, zone_start, zone_end)
-            wire_zone_mean_counter = 0
-
-    wire_position_um, wire_velocity_um_s, mechanics_prev_accel = _compiled_mechanics(
-        wire_position_um,
-        wire_velocity_um_s,
-        target_delta,
-        mechanics_prev_accel,
-        mechanics_mode_is_position,
-        damping_coeff,
-        stiffness_coeff,
-        omega_n,
-        max_acceleration,
-        max_jerk_dt,
-        max_speed,
-        mechanics_dt,
-    )
-
-    time += dt_int
-    time_since_servo += dt_int
-    time_since_open_voltage += dt_int
-
-    if next_spark_state == 1:
-        time_since_spark_ignition += dt_int
-        time_since_spark_end = 0
-    else:
-        time_since_spark_end += dt_int
-        time_since_spark_ignition = 0
-
-    return (
-        workpiece_position_um,
-        debris_volume,
-        debris_density,
-        cavity_volume,
-        flow_condition,
-        dielectric_cached_gap_um,
-        dielectric_cached_debris_density,
-        dielectric_cached_flow_condition,
-        ionized_channel_location_mm,
-        ionized_channel_duration,
-        wire_position_offset_mm,
-        wire_last_flow_condition,
-        wire_zone_mean_counter,
-        wire_last_zone_mean,
-        max_damage,
-        wire_position_um,
-        wire_velocity_um_s,
-        mechanics_prev_accel,
-        time,
-        time_since_servo,
-        time_since_open_voltage,
-        time_since_spark_ignition,
-        time_since_spark_end,
-        last_crater_volume,
-        False,
-    )
 
 
 # ── Python orchestrator ──────────────────────────────────────────────────────
@@ -955,7 +547,7 @@ def _run_compiled_microstep(
     """
     dt_int = sc.dt_int
 
-    # ── Short-circuit detection (always 2 RNG draws) ─────────────────
+    # Short-circuit detection always consumes two RNG draws.
     gap = hs.workpiece_position_um - hs.wire_position_um
     if gap < 0.0:
         gap = 0.0
@@ -978,7 +570,7 @@ def _run_compiled_microstep(
     hs.ignition_debris_short_remaining = debris_rem
     hs.is_short_circuit = int(is_short)
 
-    # ── Ignition / discharge advance ─────────────────────────────────
+    # Ignition and discharge state.
     current_voltage = hs.voltage
     if is_short:
         current_voltage = 0.0
@@ -1019,7 +611,7 @@ def _run_compiled_microstep(
     hs.voltage = next_voltage
     hs.current = next_current
 
-    # ── Material removal (conditional RNG: 1 normal draw) ────────────
+    # Material removal consumes one normal draw on a fresh discharge.
     is_fresh_discharge = (
         (next_spark_state == 1 or next_spark_state == -1)
         and next_spark_duration == 0
@@ -1037,7 +629,7 @@ def _run_compiled_microstep(
     else:
         hs.last_crater_volume = 0.0
 
-    # ── Dielectric ───────────────────────────────────────────────────
+    # Dielectric update.
     (
         hs.debris_volume, hs.debris_density, hs.cavity_volume, flow_condition,
         hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
@@ -1057,8 +649,7 @@ def _run_compiled_microstep(
     )
     hs.flow_rate = flow_condition
 
-    # ── Wire ─────────────────────────────────────────────────────────
-    # Convection update (only when flow condition changes significantly)
+    # Wire thermal update.
     if (
         math.isnan(hs.wire_last_flow_condition)
         or abs(flow_condition - hs.wire_last_flow_condition) > 0.01
@@ -1075,7 +666,6 @@ def _run_compiled_microstep(
         )
         hs.wire_last_flow_condition = flow_condition
 
-    # Transport + thermal + damage
     I = next_current
     I_squared = I * I
 
@@ -1107,7 +697,7 @@ def _run_compiled_microstep(
         hs.is_wire_broken = 1
         return 1
 
-    # Zone mean (optional, periodic)
+    # Periodic zone-mean sampling.
     if sc.compute_zone_mean:
         hs.wire_zone_mean_counter += 1
         if hs.wire_zone_mean_counter >= sc.zone_mean_interval:
@@ -1116,7 +706,7 @@ def _run_compiled_microstep(
             )
             hs.wire_zone_mean_counter = 0
 
-    # ── Mechanics ────────────────────────────────────────────────────
+    # Mechanics update.
     hs.wire_position_um, hs.wire_velocity_um_s, hs.mechanics_prev_accel = (
         _compiled_mechanics(
             hs.wire_position_um, hs.wire_velocity_um_s,
@@ -1128,7 +718,7 @@ def _run_compiled_microstep(
         )
     )
 
-    # ── Time bookkeeping ─────────────────────────────────────────────
+    # Time bookkeeping.
     hs.time += dt_int
     hs.time_since_servo += dt_int
     hs.time_since_open_voltage += dt_int
@@ -1149,170 +739,6 @@ def _run_compiled_microstep(
         return 2
 
     return 0
-
-
-def _run_profiled_compiled_microstep(
-    hs,  # HotStateBundle
-    np_random,
-    sc: SchedulerConstants,
-    target_voltage: float,
-    peak_current: float,
-    on_time: float,
-    off_time: float,
-    crater_mean_um3: float,
-    crater_std_um3: float,
-    kerf_width_mm: float,
-    profile_wire_step,
-) -> int:
-    """Execute one compiled microstep with profiling-only wire sub-buckets."""
-    dt_int = sc.dt_int
-
-    gap = hs.workpiece_position_um - hs.wire_position_um
-    if gap < 0.0:
-        gap = 0.0
-
-    debris_roll = np_random.random()
-    random_roll = np_random.random()
-
-    rand_rem, debris_rem, is_short = _compiled_short_circuit(
-        gap, dt_int, hs.debris_density,
-        hs.ignition_random_short_remaining,
-        hs.ignition_debris_short_remaining,
-        debris_roll, random_roll,
-        sc.hard_short_gap, sc.base_critical_density, sc.gap_coefficient,
-        sc.max_critical_density, sc.sigmoid_steepness,
-        sc.debris_short_duration, sc.random_short_duration,
-        sc.random_short_min_gap, sc.random_short_max_gap,
-        sc.random_short_max_probability, sc.random_short_enabled,
-    )
-    hs.ignition_random_short_remaining = rand_rem
-    hs.ignition_debris_short_remaining = debris_rem
-    hs.is_short_circuit = int(is_short)
-
-    current_voltage = hs.voltage
-    if is_short:
-        current_voltage = 0.0
-
-    spark_state = hs.spark_state
-    spark_location = hs.spark_location_mm
-    spark_duration = hs.spark_duration
-
-    ignition_probability = 0.0
-    ignition_roll = 1.0
-    spark_location_roll = 0.0
-
-    if spark_state == 0 and not is_short:
-        rounded_gap = round(gap, 2)
-        ignition_probability = _get_ignition_probability_scalar(
-            gap, rounded_gap, dt_int,
-            sc.log2_value, sc.ignition_a_coeff,
-            sc.ignition_b_coeff, sc.ignition_c_coeff,
-        )
-        ignition_roll = np_random.random()
-        if ignition_roll < ignition_probability:
-            spark_location_roll = np_random.random()
-
-    (
-        next_spark_state, next_spark_location, next_spark_duration,
-        next_voltage, next_current,
-    ) = _advance_discharge_state(
-        spark_state, spark_location, spark_duration,
-        is_short, current_voltage,
-        target_voltage, peak_current, on_time, off_time,
-        sc.spark_voltage_factor, sc.workpiece_height,
-        ignition_probability, ignition_roll, spark_location_roll,
-    )
-
-    hs.spark_state = next_spark_state
-    hs.spark_location_mm = next_spark_location
-    hs.spark_duration = next_spark_duration
-    hs.voltage = next_voltage
-    hs.current = next_current
-
-    is_fresh_discharge = (
-        (next_spark_state == 1 or next_spark_state == -1)
-        and next_spark_duration == 0
-    )
-    if is_fresh_discharge:
-        sampled_um3 = np_random.normal(crater_mean_um3, crater_std_um3)
-        if sampled_um3 < 0.0:
-            sampled_um3 = 0.0
-        crater_volume_mm3 = sampled_um3 / 1e9
-
-        hs.last_crater_volume = crater_volume_mm3
-        if crater_volume_mm3 > 0.0 and kerf_width_mm > 0.0 and sc.workpiece_height_for_material > 0.0:
-            delta_x_mm = crater_volume_mm3 / (kerf_width_mm * sc.workpiece_height_for_material)
-            hs.workpiece_position_um += delta_x_mm * 1000.0
-    else:
-        hs.last_crater_volume = 0.0
-
-    (
-        hs.debris_volume, hs.debris_density, hs.cavity_volume, flow_condition,
-        hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
-        hs.dielectric_cached_flow_condition,
-        hs.ionized_channel_location_mm, hs.ionized_channel_duration,
-    ) = _compiled_dielectric(
-        hs.workpiece_position_um, hs.wire_position_um,
-        next_spark_state, next_spark_duration, next_spark_location,
-        hs.last_crater_volume,
-        hs.debris_volume,
-        hs.dielectric_cached_gap_um, hs.dielectric_cached_debris_density,
-        hs.dielectric_cached_flow_condition,
-        hs.ionized_channel_location_mm, hs.ionized_channel_duration,
-        sc.cavity_volume_coeff, sc.reference_gap,
-        sc.debris_obstruction_coeff, sc.debris_removal_per_us,
-        sc.ion_channel_duration,
-    )
-    hs.flow_rate = flow_condition
-
-    I = next_current
-    I_squared = I * I
-    max_damage = profile_wire_step(
-        hs,
-        flow_condition,
-        next_spark_state,
-        next_spark_location,
-        next_voltage,
-        I,
-        I_squared,
-    )
-    if max_damage >= 1.0:
-        hs.is_wire_broken = 1
-        return 1
-
-    hs.wire_position_um, hs.wire_velocity_um_s, hs.mechanics_prev_accel = (
-        _compiled_mechanics(
-            hs.wire_position_um, hs.wire_velocity_um_s,
-            hs.target_delta, hs.mechanics_prev_accel,
-            sc.mechanics_mode_is_position,
-            sc.damping_coeff, sc.stiffness_coeff, sc.omega_n,
-            sc.max_acceleration, sc.max_jerk_dt,
-            sc.max_speed, sc.mechanics_dt,
-        )
-    )
-
-    hs.time += dt_int
-    hs.time_since_servo += dt_int
-    hs.time_since_open_voltage += dt_int
-
-    if next_spark_state == 1:
-        hs.time_since_spark_ignition += dt_int
-        hs.time_since_spark_end = 0
-    else:
-        hs.time_since_spark_end += dt_int
-        hs.time_since_spark_ignition = 0
-
-    if hs.wire_position_um > hs.workpiece_position_um + 100.0:
-        hs.is_wire_broken = 1
-        return 1
-
-    if hs.workpiece_position_um >= hs.target_position:
-        hs.is_target_distance_reached = 1
-        return 2
-
-    return 0
-
-
 def compiled_microstep(
     hs,  # HotStateBundle
     np_random,
@@ -1339,33 +765,4 @@ def compiled_microstep(
         crater_mean_um3,
         crater_std_um3,
         kerf_width_mm,
-    )
-
-
-def compiled_microstep_profiled(
-    hs,  # HotStateBundle
-    np_random,
-    sc: SchedulerConstants,
-    target_voltage: float,
-    peak_current: float,
-    on_time: float,
-    off_time: float,
-    crater_mean_um3: float,
-    crater_std_um3: float,
-    kerf_width_mm: float,
-    profile_wire_step,
-) -> int:
-    """Execute one compiled microstep with profiling-only wire sub-buckets."""
-    return _run_profiled_compiled_microstep(
-        hs,
-        np_random,
-        sc,
-        target_voltage,
-        peak_current,
-        on_time,
-        off_time,
-        crater_mean_um3,
-        crater_std_um3,
-        kerf_width_mm,
-        profile_wire_step,
     )
