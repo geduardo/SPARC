@@ -66,7 +66,7 @@ def test_logger_error_includes_typo_hint():
     assert "did you mean workpiece_position" in str(exc_info.value)
 
 
-def test_logger_warns_on_malformed_spark_status(tmp_path, capsys):
+def test_logger_warns_on_malformed_spark_status(tmp_path, caplog):
     output_path = tmp_path / "malformed_spark_status.npz"
     logger = SimulationLogger(
         {
@@ -86,9 +86,9 @@ def test_logger_warns_on_malformed_spark_status(tmp_path, capsys):
         dtype=object,
     )
 
-    logger.finalize()
-    captured = capsys.readouterr().out
+    with caplog.at_level("WARNING"):
+        logger.finalize()
 
-    assert "Malformed spark_status entry" in captured
-    assert "Ignored 2 malformed spark_status entries" in captured
+    assert "Malformed spark_status entry" in caplog.text
+    assert "Ignored 2 malformed spark_status entries" in caplog.text
     assert output_path.exists()

@@ -116,16 +116,8 @@ class TestCompiledStepParity:
         mod, comp = envs
         assert mod.state.time == comp.state.time
 
-    def test_crater_count_exact(self, envs):
-        """Crater count must match exactly (fidelity gate)."""
-        mod, comp = envs
-        # We can't easily count craters without tracking, so compare
-        # workpiece_position which is the cumulative effect of all craters.
-        assert mod.state.workpiece_position == pytest.approx(
-            comp.state.workpiece_position, abs=0.1
-        )
-
-    def test_workpiece_position(self, envs):
+    def test_workpiece_position_tracks_cumulative_crater_effect(self, envs):
+        """Workpiece position should remain aligned as the cumulative crater effect."""
         mod, comp = envs
         assert mod.state.workpiece_position == pytest.approx(
             comp.state.workpiece_position, abs=0.1  # 0.1 µm absolute

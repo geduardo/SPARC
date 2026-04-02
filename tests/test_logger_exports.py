@@ -262,7 +262,7 @@ def test_numpy_logger_auto_includes_visualization_companions_and_metadata(tmp_pa
     assert header["metadata"]["base_overcut"] == 0.05
 
 
-def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, capsys):
+def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, caplog):
     output_path = tmp_path / "partial_pack.npz"
     logger = SimulationLogger(_numpy_logger_config(["time"], output_path))
     logger.log_data["time"] = [0, 1]
@@ -271,10 +271,10 @@ def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, capsys):
         np.array([1.0, 2.0], dtype=np.float32),
     ]
 
-    logger.finalize()
-    captured = capsys.readouterr().out
+    with caplog.at_level("WARNING"):
+        logger.finalize()
 
-    assert "Could not convert signal 'wire_temperature' to NumPy array" in captured
+    assert "Could not convert signal 'wire_temperature' to NumPy array" in caplog.text
     assert output_path.exists()
 
     with zipfile.ZipFile(output_path) as zf:
@@ -286,7 +286,7 @@ def test_numpy_logger_warns_and_skips_unconvertible_signal(tmp_path, capsys):
 
 
 def test_json_logger_warns_on_invalid_metadata_and_still_writes_data(
-    tmp_path, capsys
+    tmp_path, caplog
 ):
     output_path = tmp_path / "bad_metadata.json"
     logger = SimulationLogger(
@@ -295,16 +295,16 @@ def test_json_logger_warns_on_invalid_metadata_and_still_writes_data(
     )
 
     logger.collect(EDMState(time=4))
-    logger.finalize()
-    captured = capsys.readouterr().out
+    with caplog.at_level("WARNING"):
+        logger.finalize()
 
-    assert "Warning: Could not add environment config to JSON metadata" in captured
+    assert "Could not add environment config to JSON metadata" in caplog.text
     payload = json.loads(output_path.read_text())
     assert payload["time"] == [4]
     assert "metadata" not in payload
 
 
-def test_json_logger_reports_file_write_error(tmp_path, capsys, monkeypatch):
+def test_json_logger_reports_file_write_error(tmp_path, caplog, monkeypatch):
     output_path = tmp_path / "unwritable.json"
     logger = SimulationLogger(_json_logger_config(["time"], output_path))
     logger.collect(EDMState(time=1))
@@ -318,8 +318,8 @@ def test_json_logger_reports_file_write_error(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setattr("builtins.open", fail_open)
 
-    logger.finalize()
-    captured = capsys.readouterr().out
+    with caplog.at_level("ERROR"):
+        logger.finalize()
 
-    assert f"Error saving data to {output_path}: disk full" in captured
+    assert f"Error saving data to {output_path}: disk full" in caplog.text
     assert not output_path.exists()

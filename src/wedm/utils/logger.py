@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import fields
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, TypedDict, Union
+import logging
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
@@ -15,6 +16,9 @@ from ..core.state import EDMState
 
 if TYPE_CHECKING:
     from ..envs import WireEDMEnv  # Assuming WireEDMEnv is the main env type
+
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration Types ---
 
@@ -277,7 +281,7 @@ class SimulationLogger:
             filepath_str = self.config["backend"]["filepath"]
 
             if not self.log_data:
-                print("No data collected, skipping .npz file creation.")
+                logger.info("No data collected, skipping .npz file creation.")
                 return
 
             # Convert lists to numpy arrays
@@ -286,13 +290,14 @@ class SimulationLogger:
                 try:
                     numpy_data[signal_name] = np.array(data_list)
                 except (TypeError, ValueError) as e:
-                    print(
-                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. "
-                        "Skipping this signal in .npz."
+                    logger.warning(
+                        "Could not convert signal '%s' to NumPy array: %s. Skipping this signal in .npz.",
+                        signal_name,
+                        e,
                     )
 
             if not numpy_data:
-                print(
+                logger.warning(
                     "No signals could be converted to NumPy arrays, skipping .npz file creation."
                 )
                 return
@@ -311,7 +316,7 @@ class SimulationLogger:
         indent = self.config["backend"].get("indent", 2)
 
         if not self.log_data:
-            print("No data collected, skipping .json file creation.")
+            logger.info("No data collected, skipping .json file creation.")
             return
 
         # Convert numpy arrays and other types to JSON-serializable format
@@ -338,21 +343,24 @@ class SimulationLogger:
 
                 json_data[signal_name] = serializable_list
             except (TypeError, ValueError, OverflowError) as e:
-                print(
-                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. "
-                    "Skipping this signal."
+                logger.warning(
+                    "Could not serialize signal '%s' to JSON: %s. Skipping this signal.",
+                    signal_name,
+                    e,
                 )
 
         if not json_data:
-            print("No signals could be serialized to JSON, skipping .json file creation.")
+            logger.warning(
+                "No signals could be serialized to JSON, skipping .json file creation."
+            )
             return
 
         metadata = self._build_pack_metadata()
         if metadata:
             json_data["metadata"] = metadata
-            print("Added environment config as metadata to JSON")
+            logger.info("Added environment config as metadata to JSON")
         elif self.env and hasattr(self.env, "config"):
-            print("Warning: Could not add environment config to JSON metadata")
+            logger.warning("Could not add environment config to JSON metadata")
 
         output_path = pathlib.Path(filepath_str)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -363,9 +371,9 @@ class SimulationLogger:
                     json.dump(json_data, f, separators=(',', ':'))  # Compact
                 else:
                     json.dump(json_data, f, indent=indent)
-            print(f"Logged data saved to {output_path}")
+            logger.info("Logged data saved to %s", output_path)
         except (OSError, TypeError, ValueError) as e:
-            print(f"Error saving data to {output_path}: {e}")
+            logger.error("Error saving data to %s: %s", output_path, e)
 
     def _finalize_numpy_pack(self, output_path: pathlib.Path, numpy_data: Dict[str, np.ndarray]) -> None:
         """Export data as sparc_pack_v1 format for web dashboard compatibility.
@@ -415,7 +423,7 @@ class SimulationLogger:
                     try:
                         add_numpy_to_zip(zf, key, arr)
                     except (TypeError, ValueError, OSError) as e:
-                        print(f"[WARN] Skipping array '{key}': {e}")
+                        logger.warning("Skipping array '%s': %s", key, e)
 
             # Special handling for spark_status (object array of 3-tuple-like entries)
             if "spark_status" in numpy_data:
@@ -433,9 +441,10 @@ class SimulationLogger:
                                 continue
                             if not isinstance(item, (list, tuple, np.ndarray)):
                                 malformed_entries += 1
-                                print(
-                                    f"[WARN] Malformed spark_status entry at index {i}: "
-                                    f"expected sequence, got {type(item).__name__}. Skipping."
+                                logger.warning(
+                                    "Malformed spark_status entry at index %s: expected sequence, got %s. Skipping.",
+                                    i,
+                                    type(item).__name__,
                                 )
                                 continue
                             try:
@@ -447,21 +456,22 @@ class SimulationLogger:
                                     extra[i] = float(item[2])
                             except (TypeError, ValueError, IndexError) as e:
                                 malformed_entries += 1
-                                print(
-                                    f"[WARN] Malformed spark_status entry at index {i}: {e}. "
-                                    "Skipping."
+                                logger.warning(
+                                    "Malformed spark_status entry at index %s: %s. Skipping.",
+                                    i,
+                                    e,
                                 )
 
                         if malformed_entries:
-                            print(
-                                f"[WARN] Ignored {malformed_entries} malformed spark_status "
-                                "entries while exporting."
+                            logger.warning(
+                                "Ignored %s malformed spark_status entries while exporting.",
+                                malformed_entries,
                             )
                         add_numpy_to_zip(zf, "spark_status_state", state)
                         add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
                         add_numpy_to_zip(zf, "spark_status_extra", extra)
                     except (TypeError, ValueError, IndexError, OSError) as e:
-                        print(f"[WARN] Failed to decompose 'spark_status': {e}")
+                        logger.warning("Failed to decompose 'spark_status': %s", e)
 
             # Write header.json last
             header = {
@@ -473,7 +483,11 @@ class SimulationLogger:
             zf.writestr("header.json", json.dumps(header))
 
         file_size_mb = output_path.stat().st_size / (1024 * 1024)
-        print(f"Logged data saved to {output_path} ({file_size_mb:.2f} MB) [sparc_pack_v1 format]")
+        logger.info(
+            "Logged data saved to %s (%.2f MB) [sparc_pack_v1 format]",
+            output_path,
+            file_size_mb,
+        )
 
     def get_data(self) -> Dict[str, List[Any]] | str | None:
         """
@@ -513,14 +527,14 @@ class SimulationLogger:
                     }
                 )
             except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract env config for metadata: {e}")
+                logger.warning("Could not extract env config for metadata: %s", e)
                 return {}
 
         if self.env and hasattr(self.env, "material") and hasattr(self.env.material, "params"):
             try:
                 metadata["base_overcut"] = float(self.env.material.params.base_overcut)
             except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract material params for metadata: {e}")
+                logger.warning("Could not extract material params for metadata: %s", e)
 
         if self.env and hasattr(self.env, "wire") and hasattr(self.env.wire, "params"):
             try:
@@ -541,7 +555,7 @@ class SimulationLogger:
                     getattr(wire_params, "segment_len", 0.2)
                 )
             except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract wire params for metadata: {e}")
+                logger.warning("Could not extract wire params for metadata: %s", e)
 
         return metadata
 

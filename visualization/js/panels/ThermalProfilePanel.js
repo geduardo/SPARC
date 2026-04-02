@@ -272,6 +272,19 @@ export class ThermalProfilePanel extends BasePanel {
         return color;
     }
 
+    computeExtent(values) {
+        let min = Infinity;
+        let max = -Infinity;
+
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i];
+            if (value < min) min = value;
+            if (value > max) max = value;
+        }
+
+        return { min, max };
+    }
+
     draw(frameData, frameIndex) {
         this.clear();
 
@@ -300,8 +313,6 @@ export class ThermalProfilePanel extends BasePanel {
         const wireTemperatures = frameData.wire_temperature;
         const wirePositions = frameData.wire_material_positions_mm;
         const nSegments = wireTemperatures.length;
-        this.lastWireMin = Math.min(...wirePositions);
-        this.lastWireMax = Math.max(...wirePositions);
 
         if (nSegments === 0) {
             this.drawText('No wire segments', w / 2, h / 2, {
@@ -312,6 +323,10 @@ export class ThermalProfilePanel extends BasePanel {
             });
             return;
         }
+
+        const { min, max } = this.computeExtent(wirePositions);
+        this.lastWireMin = min;
+        this.lastWireMax = max;
 
         let segmentLenMM = 0.2;
         if (nSegments > 1) {

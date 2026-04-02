@@ -369,6 +369,8 @@ def advance_wire_step_inplace(
         return position_offset_mm, 0.0
 
     if delta_mm != 0.0:
+        if position_wrap_threshold_mm <= 0.0:
+            raise ValueError("position_wrap_threshold_mm must be positive")
         position_offset_mm += delta_mm
         rollover_count = 0
         while position_offset_mm > position_wrap_threshold_mm:
@@ -453,6 +455,10 @@ class WireModule(EDMModule):
 
         # ── Module Parameters ──
         self.params = parameters or WireModuleParameters()
+        if self.params.segment_len <= 0.0:
+            raise ValueError("WireModuleParameters.segment_len must be positive")
+        if self.params.buffer_len_bottom < 0.0 or self.params.buffer_len_top < 0.0:
+            raise ValueError("Wire buffer lengths must be non-negative")
 
         # ── Automatic Material Loading ──
         material_db = get_material_db()
@@ -618,11 +624,13 @@ class WireModule(EDMModule):
 
     def _compute_position_wrap_threshold(self) -> float:
         """Return the distance advanced before the leading segment rolls over."""
+        if self.segment_len_mm <= 0.0:
+            raise ValueError("segment_len_mm must be positive")
         threshold = float(
             self.total_L - (self.segment_len_mm * float(max(self.n_segments - 1, 0)))
         )
         if threshold <= 0.0:
-            return self.segment_len_mm
+            raise ValueError("position_wrap_threshold_mm must be positive")
         return threshold
 
     def _ensure_position_buffer(self) -> np.ndarray:
@@ -776,6 +784,8 @@ class WireModule(EDMModule):
         delta_mm = v_mm_per_us * dt_us
         if delta_mm == 0.0:
             return
+        if self._position_wrap_threshold_mm <= 0.0:
+            raise ValueError("position_wrap_threshold_mm must be positive")
 
         self._positions_dirty = True
         self._position_offset_mm += delta_mm

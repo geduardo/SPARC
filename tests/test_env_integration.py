@@ -7,6 +7,7 @@ from wedm import (
     EnvironmentConfig,
     IgnitionModuleParameters,
     MaterialModuleParameters,
+    WireModuleParameters,
 )
 from wedm.core.state import EDMState
 from wedm.envs.wire_edm import ScalarAction, build_scalar_action
@@ -387,6 +388,11 @@ class TestWireEDMEnv:
         assert env.config.workpiece_height == 20.0
         assert env.config.wire_diameter == 0.3
         assert env.config.target_cutting_distance == 1000.0
+
+    def test_invalid_wire_segment_length_is_rejected(self):
+        """Wire transport parameters should fail fast on invalid segment geometry."""
+        with pytest.raises(ValueError, match="segment_len must be positive"):
+            WireEDMEnv(wire_params=WireModuleParameters(segment_len=0.0))
 
     def test_control_modes(self):
         """Test different control modes."""

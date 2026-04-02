@@ -89,14 +89,13 @@ Use the timeline controls:
 ## Architecture
 
 ```
-dashboard.html              # Main HTML structure & styling
-dashboard.js                # Controller + Panel modules
-├── DashboardController     # Coordinates everything
-├── BasePanel               # Base class for all panels
-├── SideViewPanel           # Panel 1: Side view
-├── OscilloscopePanel       # Panel 2: Oscilloscope
-├── TopViewPanel            # Panel 3: Top view
-└── ThermalProfilePanel     # Panel 4: Thermal profile
+dashboard.html                 # Main HTML structure & styling
+js/DashboardController.js      # Coordinates everything
+js/panels/BasePanel.js         # Base class for all panels
+js/panels/SideViewPanel.js     # Panel 1: Side view
+js/panels/OscilloscopePanel.js # Panel 2: Oscilloscope
+js/panels/TopViewPanel.js      # Panel 3: Top view
+js/panels/ThermalProfilePanel.js # Panel 4: Thermal profile
 ```
 
 ## Data Format
@@ -150,8 +149,9 @@ this.panels.myCustom = new MyCustomPanel('myCustomCanvas');
 ## Adding New Panels
 
 1. Add canvas element to `dashboard.html`
-2. Create new panel class in `dashboard.js`
-3. Register in `DashboardController.initializePanels()`
+2. Create a new panel class in `js/panels/`
+3. Export it from `js/panels/index.js`
+4. Register it in `DashboardController.initializePanels()`
 4. Panel will automatically receive:
    - Frame data
    - Resize events

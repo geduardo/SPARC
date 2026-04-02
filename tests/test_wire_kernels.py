@@ -498,6 +498,46 @@ def test_advance_wire_step_inplace_matches_reference():
     assert actual_max_damage == pytest.approx(expected_max_damage)
 
 
+def test_advance_wire_step_inplace_rejects_non_positive_wrap_threshold():
+    temperature = np.array([293.15, 305.0], dtype=np.float32)
+    damage = np.zeros_like(temperature)
+    dT_dt = np.zeros_like(temperature)
+    conv_loss_coeff = np.zeros_like(temperature)
+
+    with pytest.raises(ValueError, match="position_wrap_threshold_mm must be positive"):
+        advance_wire_step_inplace(
+            temperature,
+            damage,
+            dT_dt,
+            conv_loss_coeff,
+            0.0,
+            0.0,
+            0.01,
+            293.15,
+            2.4,
+            1.5e-4,
+            298.0,
+            293.15,
+            0.0034,
+            0,
+            False,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.2,
+            0,
+            1,
+            0,
+            1,
+            0.25,
+            0.015,
+            320.0,
+            1.3e-4,
+            -175.0,
+        )
+
+
 def test_advance_wire_step_inplace_matches_resolved_partition_composition():
     temperature = np.array(
         [293.15, 305.0, 318.5, 330.0, 341.0, 352.5], dtype=np.float32
