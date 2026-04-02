@@ -25,7 +25,7 @@ import sys
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from experiments.run_simulation import (
+from experiments.simulation_runner import (
     run_simulation,
     setup_logger,
 )

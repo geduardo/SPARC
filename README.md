@@ -173,6 +173,9 @@ See [visualization/README.md](visualization/README.md) for detailed documentatio
 
 For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki).
 
+Runner usage, engine modes, logging modes, and recommended CLI workflows are
+documented in [docs/simulation_runner_guide.md](docs/simulation_runner_guide.md).
+
 ## Examples
 
 Check out the `examples/` directory for a quickstart example demonstrating basic environment usage.

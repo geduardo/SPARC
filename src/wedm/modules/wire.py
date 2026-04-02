@@ -11,6 +11,9 @@ from ..core.state import EDMState
 from ..core.material_db import get_material_db
 
 
+_UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K = 8.314
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Wire Module Parameters - Defined within module
 # ──────────────────────────────────────────────────────────────────────────────
@@ -53,15 +56,6 @@ class WireModuleParameters:
     moving_segments: bool = (
         True  # Use circular buffer movement model instead of advection
     )
-
-    # ── Damage Model Parameters (from CIRP-HPC 2026 paper) ──
-    damage_rate_constant: float = 7.168e-5  # [s⁻¹·MPa⁻ⁿ] Rate constant k
-    damage_stress_exponent: float = 6.734  # [-] Stress exponent n
-    damage_activation_energy: float = 143.1e3  # [J/mol] Activation energy Q
-    gas_constant: float = 8.314  # [J/(mol·K)] Universal gas constant R
-
-
-_DAMAGE_TEMPERATURE_THRESHOLD_K = 423.0
 
 
 @njit(cache=True, fastmath=True)
@@ -565,19 +559,22 @@ class WireModule(EDMModule):
         else:
             self.zone_size = 1
 
-        # ── Damage Model - Wire Stress Calculation ──
+        # ── Damage Model - material-specific wire break coefficients ──
         # sigma = F / A where A = pi * r^2 (already computed as self.S in m²)
         self.wire_stress_mpa = (
             self.params.wire_tension_force / self.S
         ) / 1e6  # Convert Pa to MPa
-        self.damage_temperature_threshold_k = _DAMAGE_TEMPERATURE_THRESHOLD_K
+        self.damage_temperature_threshold_k = (
+            self.wire_material.damage_temperature_threshold
+        )
         self.damage_stress_term_dt = (
-            self.params.damage_rate_constant
-            * (self.wire_stress_mpa ** self.params.damage_stress_exponent)
+            self.wire_material.damage_rate_constant
+            * (self.wire_stress_mpa ** self.wire_material.damage_stress_exponent)
             * self.dt_sim
         )
         self.damage_activation_scale = (
-            -self.params.damage_activation_energy / self.params.gas_constant
+            -self.wire_material.damage_activation_energy
+            / _UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K
         )
 
         # Cache for last computed zone mean

@@ -1,10 +1,6 @@
 #!/usr/bin/env python
-# experiments/smoke_test.py
 """
-Quick-n-dirty simulation run to be sure everything wires together.
-Run:
-    python experiments/smoke_test.py --steps 200000 --plot
-    python experiments/smoke_test.py --steps 200000 --plot --mode velocity
+Shared simulation-runner implementation used by the canonical CLI entry point.
 """
 from __future__ import annotations
 
@@ -28,6 +24,7 @@ from wedm.envs.wire_edm import build_scalar_action
 from wedm.modules.material import MaterialModuleParameters
 from wedm.modules.wire import WireModuleParameters
 from wedm.utils.logger import SimulationLogger, LoggerConfig
+from wedm.utils.performance import print_realtime_summary
 
 
 def create_gap_controller(
@@ -296,6 +293,7 @@ def run_simulation(
     max_steps: int,
     verbose: bool,
     logger_config: LoggerConfig,
+    engine: str = "modular",
     controller_type: str = "gap",
     target_gap: float = 5.0,
     target_avg_voltage: float = 30.0,
@@ -309,6 +307,7 @@ def run_simulation(
     print(
         f"[RUN] Running smoke test with {env.mechanics.control_mode.upper()} control mode"
     )
+    print(f"[ENG] Engine: {engine.upper()}")
 
     if controller_type == "gap":
         print(f"[CTRL] Using GAP controller (target: {target_gap:.1f} um)")
@@ -321,8 +320,14 @@ def run_simulation(
         print(f"[CTRL] Using FIXED-SERVO controller (servo: {fixed_servo:.3f})")
     print(f"[GEN] Generator voltage setpoint: {generator_voltage:.1f} V")
 
-    logger = SimulationLogger(config=logger_config, env_reference=env)
-    logger.reset()
+    use_logger = engine != "compiled-fast"
+    logger = None
+    if use_logger:
+        logger = SimulationLogger(config=logger_config, env_reference=env)
+        logger.reset()
+
+    if engine in {"compiled", "compiled-fast"}:
+        env.init_compiled_scheduler()
 
     # Create the appropriate controller
     if controller_type == "gap":
@@ -358,32 +363,58 @@ def run_simulation(
         action = controller(env, voltage_history)
     else:
         action = controller(env)
+    step_action = (
+        env.compile_action(action) if engine in {"compiled", "compiled-fast"} else action
+    )
 
     # Print simulation start message
     print(f"[START] Starting simulation for {max_steps:,} us...")
-    start_time = time.time()
+    run_start_time = time.perf_counter()
 
     for step in range(max_steps):
         # Run the simulation step
-        obs, reward, terminated, truncated, info = env.step(action)
-        logger.collect(env.state, info)
+        if engine == "compiled":
+            obs, reward, terminated, truncated, info = env.step_compiled(step_action)
+        elif engine == "compiled-fast":
+            terminated, truncated = env.step_compiled_fast(step_action)
+            hs = env._hot_state
+            info = {
+                "wire_broken": bool(hs.is_wire_broken),
+                "target_reached": bool(hs.is_target_distance_reached),
+                "spark_state": int(hs.spark_state),
+                "time": int(hs.time),
+                "control_step": hs.time_since_servo == env.dt,
+            }
+            obs = None
+            reward = 0.0
+        else:
+            obs, reward, terminated, truncated, info = env.step(step_action)
+        if use_logger:
+            logger.collect(env.state, info)
 
         # For voltage controller, collect voltage history every µs
         if controller_type == "voltage":
-            current_voltage = (
-                env.state.voltage if env.state.voltage is not None else 0.0
-            )
+            if engine == "compiled-fast":
+                current_voltage = float(env._hot_state.voltage)
+                current_time_us = int(env._hot_state.time)
+            else:
+                current_voltage = (
+                    env.state.voltage if env.state.voltage is not None else 0.0
+                )
+                current_time_us = int(env.state.time)
             voltage_history.append(current_voltage)
-            time_history.append(env.state.time)
+            time_history.append(current_time_us)
 
             # Keep only last 1ms of data (1000 µs)
-            cutoff_time = env.state.time - 1000.0
+            cutoff_time = current_time_us - 1000.0
             while time_history and time_history[0] < cutoff_time:
                 voltage_history.pop(0)
                 time_history.pop(0)
 
         # Update action on control steps
         if info.get("control_step", False):
+            if engine == "compiled-fast":
+                env.sync_compiled_to_state()
             if controller_type == "gap":
                 action = controller(env)
             elif controller_type == "voltage":
@@ -392,6 +423,11 @@ def run_simulation(
                 )  # Pass copy to avoid modification
             else:
                 action = controller(env)
+            step_action = (
+                env.compile_action(action)
+                if engine in {"compiled", "compiled-fast"}
+                else action
+            )
 
             if verbose:
                 # Calculate true average for display
@@ -418,21 +454,31 @@ def run_simulation(
 
         # Check termination
         if terminated or truncated:
+            if engine == "compiled-fast":
+                env.sync_compiled_to_state()
             reason = get_termination_reason(info, terminated, truncated)
             print(f"\n[TERM] Terminated at t={env.state.time} us ({reason}).")
             break
 
-    wall_time = time.time() - start_time
+    simulation_wall_time = time.perf_counter() - run_start_time
+    if engine == "compiled-fast":
+        env.sync_compiled_to_state()
+
+    if use_logger:
+        logger.finalize()
+        log_data = logger.get_data()
+    else:
+        log_data = None
+
+    # Calculate simulation time
+    sim_time_us = int(env.state.time) if log_data is None else get_simulation_time(
+        log_data, logger_config
+    )
+    wall_time = time.perf_counter() - run_start_time
 
     # Print simulation completion message
     print(f"[OK] Simulation completed! Took {wall_time:.2f} seconds")
-
-    logger.finalize()
-    log_data = logger.get_data()
-
-    # Calculate simulation time
-    sim_time_us = get_simulation_time(log_data, logger_config)
-    print_performance_summary(sim_time_us, wall_time)
+    print_performance_summary(sim_time_us, simulation_wall_time, wall_time)
 
     return log_data, wall_time, sim_time_us
 
@@ -519,22 +565,26 @@ def get_simulation_time(log_data: Any, logger_config: LoggerConfig) -> int:
     return 0
 
 
-def print_performance_summary(sim_time_us: int, wall_time: float) -> None:
+def print_performance_summary(
+    sim_time_us: int,
+    simulation_wall_time: float,
+    recorded_run_wall_time: float,
+) -> None:
     """Print simulation performance summary."""
-    if wall_time > 0 and sim_time_us > 0:
-        speed_factor = sim_time_us / wall_time / 1e6  # sim_seconds / real_seconds
-        print(
-            f"Simulated {sim_time_us:,} µs ({sim_time_us / 1e3:.2f} ms) "
-            f"in {wall_time:.2f} s -> {speed_factor:.1f}x realtime."
-        )
-
-        sim_time_s = sim_time_us / 1_000_000.0
-        wall_time_per_sim_time = wall_time / sim_time_s
-        print(
-            f"Performance: {wall_time_per_sim_time:.3f} wall-clock seconds per simulated second."
-        )
-    else:
-        print(f"Simulation completed in {wall_time:.2f} s")
+    print_realtime_summary(
+        sim_time_us,
+        simulation_wall_time,
+        label="Simulation loop",
+    )
+    print_realtime_summary(
+        sim_time_us,
+        recorded_run_wall_time,
+        label="Recorded run",
+    )
+    print(
+        "Logging/finalization overhead: "
+        f"{recorded_run_wall_time - simulation_wall_time:.2f} s."
+    )
 
 
 def load_simulation_data(log_data: Any, logger_config: LoggerConfig) -> Optional[Any]:
@@ -929,7 +979,9 @@ def generate_output_filename(
 
 def main():
     """Main entry point with clean CLI handling."""
-    parser = argparse.ArgumentParser(description="Wire-EDM smoke test")
+    parser = argparse.ArgumentParser(
+        description="Run recorded or benchmark-style Wire EDM simulations."
+    )
     parser.add_argument(
         "--steps", type=int, default=200_000, help="µs to simulate (default: 200,000)"
     )
@@ -943,6 +995,16 @@ def main():
         "--verbose", action="store_true", help="Print verbose output during simulation"
     )
     parser.add_argument(
+        "--engine",
+        type=str,
+        choices=["modular", "compiled", "compiled-fast"],
+        default="modular",
+        help=(
+            "Stepping engine: modular reference path, compiled engine with normal "
+            "logging/state sync, or compiled-fast for lowest-overhead no-log timing runs"
+        ),
+    )
+    parser.add_argument(
         "--mode",
         type=str,
         choices=["position", "velocity"],
@@ -954,19 +1016,22 @@ def main():
         type=str,
         choices=["full_field", "zone_mean", "both"],
         default="full_field",
-        help="Temperature logging strategy (default: full_field)",
+        help="Logging detail: full_field for rich arrays, zone_mean for lighter runs, both for maximum detail",
     )
     parser.add_argument(
         "--no-log",
         action="store_true",
-        help="Disable saving log files (keep only minimal data in memory)",
+        help=(
+            "Disable log-file generation. Use this for timing runs; required for "
+            "compiled-fast."
+        ),
     )
     parser.add_argument(
         "--controller",
         type=str,
         choices=["gap", "voltage", "fixed-servo"],
         default="gap",
-        help="Control strategy for the servo loop (default: gap)",
+        help="Servo control strategy: gap target, average-voltage target, or fixed command",
     )
     parser.add_argument(
         "--target-gap",
@@ -1037,7 +1102,10 @@ def main():
         "-o",
         type=str,
         default="visualization/data/smoke_test_results.npz",
-        help="Output filepath for log data (default: visualization/data/smoke_test_results.npz)",
+        help=(
+            "Output filepath for log data, resolved relative to the current working "
+            "directory. Ignored when --no-log is used."
+        ),
     )
 
     args = parser.parse_args()
@@ -1054,6 +1122,17 @@ def main():
     if args.generator_voltage < 0.0:
         parser.error("`--generator-voltage` must be non-negative.")
 
+    if args.engine == "compiled-fast" and not args.no_log:
+        parser.error(
+            "`--engine compiled-fast` requires `--no-log`. "
+            "This mode is intended for benchmark-style stepping without per-step logging."
+        )
+
+    if args.engine == "compiled-fast" and args.plot:
+        parser.error(
+            "`--engine compiled-fast` cannot be used with `--plot` because no log data is collected."
+        )
+
     # Process flexible -I argument
     current_mode = 7
     on_time = args.on_time
@@ -1066,25 +1145,26 @@ def main():
                 f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs"
             )
 
-    # Generate output filename if not explicitly provided
     output_filepath = args.output
-    if output_filepath == "visualization/data/smoke_test_results.npz":
-        # Default filename was used, generate parameterized filename
-        output_filepath = generate_output_filename(
-            steps=args.steps,
-            segment_len=args.segment_len,
-            workpiece_height=args.workpiece_height,
-            current_mode=current_mode,
-            controller=args.controller,
-            target_avg_voltage=(
-                args.target_avg_voltage if args.controller == "voltage" else None
-            ),
-            generator_voltage=args.generator_voltage,
-            fixed_servo=(args.servo if args.controller == "fixed-servo" else None),
-            on_time=on_time,
-            off_time=args.off_time,
-            mode=args.mode,
-        )
+    if args.no_log:
+        print("[INFO] Logging: DISABLED (--no-log); no output file will be written.")
+    else:
+        if output_filepath == "visualization/data/smoke_test_results.npz":
+            output_filepath = generate_output_filename(
+                steps=args.steps,
+                segment_len=args.segment_len,
+                workpiece_height=args.workpiece_height,
+                current_mode=current_mode,
+                controller=args.controller,
+                target_avg_voltage=(
+                    args.target_avg_voltage if args.controller == "voltage" else None
+                ),
+                generator_voltage=args.generator_voltage,
+                fixed_servo=(args.servo if args.controller == "fixed-servo" else None),
+                on_time=on_time,
+                off_time=args.off_time,
+                mode=args.mode,
+            )
         print(f"[INFO] Output file: {output_filepath}")
 
     # Setup
@@ -1110,6 +1190,7 @@ def main():
         args.steps,
         args.verbose,
         logger_config,
+        args.engine,
         args.controller,
         args.target_gap,
         args.target_avg_voltage,

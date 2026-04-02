@@ -6,8 +6,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_RUNNER = REPO_ROOT / "examples" / "run_simulation.py"
-EXPERIMENT_RUNNER = REPO_ROOT / "experiments" / "run_simulation.py"
+RUNNER = REPO_ROOT / "scripts" / "run_simulation.py"
 REQUIRED_DASHBOARD_ARRAYS = {
     "time",
     "voltage",
@@ -34,9 +33,9 @@ REQUIRED_DASHBOARD_METADATA = {
 }
 
 
-def run_cli(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(script), *args],
+        [sys.executable, str(RUNNER), *args],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -57,26 +56,19 @@ def assert_dashboard_pack_contract(header: dict) -> None:
     assert set(header["signals"]) == manifest_names
 
 
-def test_example_runner_help_shows_explicit_voltage_flags() -> None:
-    result = run_cli(EXAMPLE_RUNNER, "--help")
+def test_runner_help_shows_engine_and_voltage_flags() -> None:
+    result = run_cli("--help")
 
     assert result.returncode == 0
     assert "--generator-voltage" in result.stdout
     assert "--target-avg-voltage" in result.stdout
+    assert "--engine" in result.stdout
+    assert "compiled-fast" in result.stdout
     assert "fixed-servo" in result.stdout
 
 
-def test_experiment_runner_help_shows_explicit_voltage_flags() -> None:
-    result = run_cli(EXPERIMENT_RUNNER, "--help")
-
-    assert result.returncode == 0
-    assert "--generator-voltage" in result.stdout
-    assert "--target-avg-voltage" in result.stdout
-    assert "fixed-servo" in result.stdout
-
-
-def test_example_runner_rejects_legacy_target_voltage_flag() -> None:
-    result = run_cli(EXAMPLE_RUNNER, "--target-voltage", "47")
+def test_runner_rejects_legacy_target_voltage_flag() -> None:
+    result = run_cli("--target-voltage", "47")
 
     assert result.returncode != 0
     assert "ambiguous" in result.stderr
@@ -84,35 +76,9 @@ def test_example_runner_rejects_legacy_target_voltage_flag() -> None:
     assert "--target-avg-voltage" in result.stderr
 
 
-def test_experiment_runner_rejects_legacy_target_voltage_flag() -> None:
-    result = run_cli(EXPERIMENT_RUNNER, "--target-voltage", "47")
-
-    assert result.returncode != 0
-    assert "ambiguous" in result.stderr
-    assert "--generator-voltage" in result.stderr
-    assert "--target-avg-voltage" in result.stderr
-
-
-def test_example_runner_smoke_run_completes(tmp_path) -> None:
-    output_path = tmp_path / "example_smoke.npz"
+def test_runner_modular_smoke_run_completes(tmp_path) -> None:
+    output_path = tmp_path / "runner_modular_smoke.npz"
     result = run_cli(
-        EXAMPLE_RUNNER,
-        "--steps",
-        "5",
-        "--quiet",
-        "--output",
-        str(output_path),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert output_path.exists()
-    assert_dashboard_pack_contract(load_pack_header(output_path))
-
-
-def test_experiment_runner_smoke_run_completes(tmp_path) -> None:
-    output_path = tmp_path / "experiment_smoke.npz"
-    result = run_cli(
-        EXPERIMENT_RUNNER,
         "--steps",
         "5",
         "--output",
@@ -121,4 +87,70 @@ def test_experiment_runner_smoke_run_completes(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert output_path.exists()
+    assert "Simulation loop" in result.stdout
+    assert "Recorded run" in result.stdout
+    assert "slower than realtime" in result.stdout
     assert_dashboard_pack_contract(load_pack_header(output_path))
+
+
+def test_runner_compiled_smoke_run_completes(tmp_path) -> None:
+    output_path = tmp_path / "runner_compiled_smoke.npz"
+    result = run_cli(
+        "--steps",
+        "5",
+        "--engine",
+        "compiled",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output_path.exists()
+    assert "Engine: COMPILED" in result.stdout
+    assert "Simulation loop" in result.stdout
+    assert "Recorded run" in result.stdout
+    assert_dashboard_pack_contract(load_pack_header(output_path))
+
+
+def test_runner_compiled_fast_requires_no_log() -> None:
+    result = run_cli(
+        "--steps",
+        "5",
+        "--engine",
+        "compiled-fast",
+    )
+
+    assert result.returncode != 0
+    assert "requires `--no-log`" in result.stderr
+
+
+def test_runner_compiled_fast_no_log_smoke_run_completes() -> None:
+    result = run_cli(
+        "--steps",
+        "5",
+        "--engine",
+        "compiled-fast",
+        "--no-log",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Engine: COMPILED-FAST" in result.stdout
+    assert "Logging: DISABLED (--no-log)" in result.stdout
+    assert "Output file:" not in result.stdout
+    assert "Simulation loop" in result.stdout
+    assert "Recorded run" in result.stdout
+
+
+def test_runner_modular_no_log_suppresses_output_file_message() -> None:
+    result = run_cli(
+        "--steps",
+        "5",
+        "--engine",
+        "modular",
+        "--no-log",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Engine: MODULAR" in result.stdout
+    assert "Logging: DISABLED (--no-log)" in result.stdout
+    assert "Output file:" not in result.stdout
