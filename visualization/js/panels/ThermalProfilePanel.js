@@ -324,7 +324,38 @@ export class ThermalProfilePanel extends BasePanel {
             return;
         }
 
+        if (!wirePositions || wirePositions.length !== nSegments) {
+            this.drawText('Thermal profile arrays are inconsistent', w / 2, h / 2 + 10, {
+                color: COLORS.danger,
+                font: '14px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            this.drawText('wire_temperature and wire_material_positions_mm must have the same length', w / 2, h / 2 + 35, {
+                color: COLORS.textMuted,
+                font: '12px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
+        }
+
         const { min, max } = this.computeExtent(wirePositions);
+        if (!Number.isFinite(min) || !Number.isFinite(max)) {
+            this.drawText('Thermal profile positions are invalid', w / 2, h / 2 + 10, {
+                color: COLORS.danger,
+                font: '14px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            this.drawText('wire_material_positions_mm contains no finite values', w / 2, h / 2 + 35, {
+                color: COLORS.textMuted,
+                font: '12px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
+        }
         this.lastWireMin = min;
         this.lastWireMax = max;
 

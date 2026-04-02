@@ -180,3 +180,25 @@ def test_hot_state_bundle_rejects_incompatible_wire_shapes():
 
     with pytest.raises(ValueError, match="shape is incompatible"):
         other_env.apply_hot_state_bundle(bundle)
+
+
+def test_hot_state_bundle_refreshes_wire_position_snapshot_on_apply():
+    env = WireEDMEnv()
+    env.reset(seed=123)
+
+    env.wire._position_offset_mm = 0.4
+    env.wire._positions_dirty = True
+    env.state.wire_material_positions_mm = env.wire._ensure_position_buffer()
+
+    bundle = HotStateBundle.from_env(env)
+
+    restored_env = WireEDMEnv()
+    restored_env.reset(seed=456)
+    restored_env.apply_hot_state_bundle(bundle)
+
+    expected_positions = restored_env.wire._base_positions_mm + restored_env.wire._position_offset_mm
+    assert restored_env.state.wire_material_positions_mm is restored_env.wire._y_start_mm
+    np.testing.assert_allclose(
+        restored_env.state.wire_material_positions_mm,
+        expected_positions,
+    )

@@ -582,6 +582,8 @@ def _run_compiled_microstep(
         return 2
 
     return 0
+
+
 def compiled_microstep(
     hs,  # HotStateBundle
     np_random,

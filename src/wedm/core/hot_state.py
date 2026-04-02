@@ -255,6 +255,7 @@ class HotStateBundle:
         mechanics.prev_accel = self.mechanics_prev_accel
 
         wire._position_offset_mm = self.wire_position_offset_mm
+        wire._positions_dirty = True
         wire._last_flow_condition = _decode_optional_float(self.wire_last_flow_condition)
         wire.zone_mean_counter = self.wire_zone_mean_counter
         wire._last_zone_mean = _decode_optional_float(self.wire_last_zone_mean)
@@ -265,4 +266,4 @@ class HotStateBundle:
 
         state.wire_temperature = wire._temperature
         state.wire_damage = wire._damage
-
+        state.wire_material_positions_mm = wire._ensure_position_buffer()
