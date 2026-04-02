@@ -158,8 +158,12 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     assert restored_env.wire._last_flow_condition == pytest.approx(0.42)
     assert restored_env.wire.zone_mean_counter == 7
     assert restored_env.wire._last_zone_mean == pytest.approx(318.0)
-    assert restored_env.state.wire_temperature is bundle.wire_temperature
-    assert restored_env.state.wire_damage is bundle.wire_damage
+    # apply_to_env copies data into the env's own buffers; state arrays
+    # should alias the wire module's arrays, not the bundle's.
+    assert restored_env.state.wire_temperature is restored_env.wire._temperature
+    assert restored_env.state.wire_damage is restored_env.wire._damage
+    np.testing.assert_allclose(restored_env.state.wire_temperature, bundle.wire_temperature)
+    np.testing.assert_allclose(restored_env.state.wire_damage, bundle.wire_damage)
     np.testing.assert_allclose(restored_env.wire._temperature, 305.0)
     np.testing.assert_allclose(restored_env.wire._damage, 0.01)
     np.testing.assert_allclose(restored_env.wire.dT_dt, 0.5)

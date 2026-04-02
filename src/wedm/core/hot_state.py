@@ -90,7 +90,14 @@ class HotStateBundle:
     wire_conv_loss_coeff: np.ndarray
 
     @classmethod
-    def from_env(cls, env: Any) -> "HotStateBundle":
+    def from_env(cls, env: Any, *, copy_arrays: bool = False) -> "HotStateBundle":
+        """Build a bundle from a live environment.
+
+        By default the bundle **aliases** the wire module's internal arrays
+        (temperature, damage, dT_dt, conv_loss_coeff) for zero-copy speed on
+        the same-env compiled path.  Pass ``copy_arrays=True`` when the bundle
+        will be applied to a *different* env to avoid shared-buffer hazards.
+        """
         state = env.state
         ignition = env.ignition
         dielectric = env.dielectric
@@ -155,13 +162,19 @@ class HotStateBundle:
             wire_last_flow_condition=_encode_optional_float(wire._last_flow_condition),
             wire_zone_mean_counter=int(wire.zone_mean_counter),
             wire_last_zone_mean=_encode_optional_float(wire._last_zone_mean),
-            wire_temperature=wire._temperature,
-            wire_damage=wire._damage,
-            wire_d_t_dt=wire.dT_dt,
-            wire_conv_loss_coeff=wire.conv_loss_coeff,
+            wire_temperature=wire._temperature.copy() if copy_arrays else wire._temperature,
+            wire_damage=wire._damage.copy() if copy_arrays else wire._damage,
+            wire_d_t_dt=wire.dT_dt.copy() if copy_arrays else wire.dT_dt,
+            wire_conv_loss_coeff=wire.conv_loss_coeff.copy() if copy_arrays else wire.conv_loss_coeff,
         )
 
     def apply_to_env(self, env: Any) -> None:
+        """Write bundle scalars and arrays back into *env*.
+
+        Array fields are always **copied** into the target wire module's
+        existing buffers (via ``np.copyto``) so that the bundle and the env
+        never silently share the same underlying memory.
+        """
         wire = env.wire
         if wire._temperature.shape != self.wire_temperature.shape:
             raise ValueError("HotStateBundle wire_temperature shape is incompatible")
@@ -245,11 +258,11 @@ class HotStateBundle:
         wire._last_flow_condition = _decode_optional_float(self.wire_last_flow_condition)
         wire.zone_mean_counter = self.wire_zone_mean_counter
         wire._last_zone_mean = _decode_optional_float(self.wire_last_zone_mean)
-        wire._temperature = self.wire_temperature
-        wire._damage = self.wire_damage
-        wire.dT_dt = self.wire_d_t_dt
-        wire.conv_loss_coeff = self.wire_conv_loss_coeff
+        np.copyto(wire._temperature, self.wire_temperature)
+        np.copyto(wire._damage, self.wire_damage)
+        np.copyto(wire.dT_dt, self.wire_d_t_dt)
+        np.copyto(wire.conv_loss_coeff, self.wire_conv_loss_coeff)
 
-        state.wire_temperature = self.wire_temperature
-        state.wire_damage = self.wire_damage
+        state.wire_temperature = wire._temperature
+        state.wire_damage = wire._damage
 

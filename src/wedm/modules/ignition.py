@@ -275,6 +275,11 @@ def _advance_discharge_state(
     voltage = current_voltage
     current = 0.0
 
+    # Enforce zero voltage during short circuits regardless of what the
+    # caller passed — removes a fragile implicit precondition.
+    if is_short_circuit:
+        voltage = 0.0
+
     if spark_state == 0:
         if is_short_circuit:
             return -1, math.nan, 0, voltage, peak_current
