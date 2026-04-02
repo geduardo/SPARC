@@ -17,6 +17,7 @@ too similar in their thermal histories.
 
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import deque
 from datetime import datetime
 from wedm import WireEDMEnv, EnvironmentConfig
 from wedm.utils.logger import SimulationLogger
@@ -32,9 +33,9 @@ def create_voltage_controller(target_voltage: float = 47.0):
         nonlocal integral_error
 
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
 
         error = target_voltage - avg_voltage
         integral_error += error
@@ -219,8 +220,8 @@ def main():
     controller = create_voltage_controller(target_voltage)
 
     # Voltage history tracking
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
 
     # Reset environment
     obs, info = env.reset()
@@ -228,7 +229,7 @@ def main():
     print(f"Wire segments: {env.wire.n_segments}")
     print(f"Total wire length: {env.wire.total_L:.2f} mm")
     print(f"Segment length: {env.wire.segment_len_mm:.2f} mm")
-    print(f"Wire velocity: {env.state.wire_unwinding_velocity:.4f} µm/µs\n")
+    print(f"Wire velocity: {env.state.wire_unwinding_velocity:.4f} um/us\n")
 
     # Calculate expected transit time
     # Wire velocity: 0.2 µm/µs, Wire length: 85 mm = 85,000 µm
@@ -318,15 +319,15 @@ def main():
         obs, reward, terminated, truncated, info = env.step(action)
 
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
 
         # Keep only last 1ms
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
 
         # Increment simulation step counter
         step_count += 1
@@ -368,7 +369,7 @@ def main():
         # Update action on control steps
         if info.get("control_step", False):
             control_step_count += 1
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
 
         # Progress update every 10,000 simulation steps
         if step_count % 10000 == 0:
@@ -427,9 +428,9 @@ def main():
     final_sim_time_us = env.state.time
 
     print(f"\n{'='*70}")
-    print(f"✓ Simulation Complete!")
+    print(f"[ok] Simulation Complete!")
     print(f"{'='*70}")
-    print(f"Total simulation steps: {step_count:,} ({final_sim_time_us:,} µs)")
+    print(f"Total simulation steps: {step_count:,} ({final_sim_time_us:,} us)")
     print(f"Total control steps: {control_step_count:,}")
     print(
         f"Total real time elapsed: {total_real_time:.1f} seconds ({total_real_time/60:.2f} minutes)"
@@ -537,9 +538,9 @@ def main():
                         ]
                     )
 
-            print(f"  ✓ Saved: {csv_filename}")
+            print(f"  [ok] Saved: {csv_filename}")
 
-        print(f"\n✓ All {len(completed_segments)} heating curves saved to CSV!")
+        print(f"\n[ok] All {len(completed_segments)} heating curves saved to CSV!")
 
     # Plot each segment's temperature history
     if len(completed_segments) > 0:
@@ -598,7 +599,7 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"segment_temperature_tracking_{timestamp}.png"
         plt.savefig(filename, dpi=150, bbox_inches="tight")
-        print(f"\n✓ Figure saved: {filename}")
+        print(f"\n[ok] Figure saved: {filename}")
 
         plt.show()
     else:

@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import fields
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, TypedDict, Union
+import logging
 import pathlib  # Added for path manipulation
 import numpy as np  # Added for numpy backend
 import json  # Added for JSON backend
@@ -15,6 +16,10 @@ from ..core.state import EDMState
 
 if TYPE_CHECKING:
     from ..envs import WireEDMEnv  # Assuming WireEDMEnv is the main env type
+
+
+logger = logging.getLogger(__name__)
+MALFORMED_SPARK_STATUS_SENTINEL = np.int8(-128)
 
 # --- Configuration Types ---
 
@@ -64,14 +69,29 @@ class LoggerConfig(TypedDict):
     # Optional: buffer_size for file backends, etc.
 
 
+_VISUALIZATION_SIGNAL_DEPENDENCIES: Dict[str, tuple[str, ...]] = {
+    "wire_temperature": (
+        "wire_material_positions_mm",
+        "wire_head_idx",
+        "wire_offset_mm",
+    ),
+    "wire_damage": (
+        "wire_material_positions_mm",
+        "wire_head_idx",
+        "wire_offset_mm",
+    ),
+}
+
+
 class SimulationLogger:
     """
     Handles logging of simulation data based on a flexible configuration.
     """
 
     def __init__(self, config: LoggerConfig, env_reference: WireEDMEnv | None = None):
-        self.config = config
+        self.config = copy.deepcopy(config)
         self.env = env_reference  # Optional, for accessing env-level info if needed for signals
+        self._normalize_signals_to_log()
 
         self._validate_config()
 
@@ -86,6 +106,24 @@ class SimulationLogger:
         }
         self.signal_accessors: Dict[str, Callable[[EDMState], Any]] = {}
         self._prepare_signal_accessors()
+
+    def _normalize_signals_to_log(self) -> None:
+        """Normalize and augment requested signals for dashboard file backends."""
+        signals = list(dict.fromkeys(self.config.get("signals_to_log", [])))
+        backend = self.config.get("backend", {})
+        backend_type = backend.get("type")
+
+        if backend_type in {"json", "numpy"}:
+            extra_signals: list[str] = []
+            for signal_name in signals:
+                extra_signals.extend(
+                    _VISUALIZATION_SIGNAL_DEPENDENCIES.get(signal_name, ())
+                )
+            for signal_name in extra_signals:
+                if signal_name not in signals:
+                    signals.append(signal_name)
+
+        self.config["signals_to_log"] = signals
 
     def _validate_config(self):
         if not self.config.get("signals_to_log"):
@@ -244,7 +282,7 @@ class SimulationLogger:
             filepath_str = self.config["backend"]["filepath"]
 
             if not self.log_data:
-                print("No data collected, skipping .npz file creation.")
+                logger.info("No data collected, skipping .npz file creation.")
                 return
 
             # Convert lists to numpy arrays
@@ -253,13 +291,14 @@ class SimulationLogger:
                 try:
                     numpy_data[signal_name] = np.array(data_list)
                 except (TypeError, ValueError) as e:
-                    print(
-                        f"Warning: Could not convert signal '{signal_name}' to NumPy array: {e}. "
-                        "Skipping this signal in .npz."
+                    logger.warning(
+                        "Could not convert signal '%s' to NumPy array: %s. Skipping this signal in .npz.",
+                        signal_name,
+                        e,
                     )
 
             if not numpy_data:
-                print(
+                logger.warning(
                     "No signals could be converted to NumPy arrays, skipping .npz file creation."
                 )
                 return
@@ -278,7 +317,7 @@ class SimulationLogger:
         indent = self.config["backend"].get("indent", 2)
 
         if not self.log_data:
-            print("No data collected, skipping .json file creation.")
+            logger.info("No data collected, skipping .json file creation.")
             return
 
         # Convert numpy arrays and other types to JSON-serializable format
@@ -305,34 +344,24 @@ class SimulationLogger:
 
                 json_data[signal_name] = serializable_list
             except (TypeError, ValueError, OverflowError) as e:
-                print(
-                    f"Warning: Could not serialize signal '{signal_name}' to JSON: {e}. "
-                    "Skipping this signal."
+                logger.warning(
+                    "Could not serialize signal '%s' to JSON: %s. Skipping this signal.",
+                    signal_name,
+                    e,
                 )
 
         if not json_data:
-            print("No signals could be serialized to JSON, skipping .json file creation.")
+            logger.warning(
+                "No signals could be serialized to JSON, skipping .json file creation."
+            )
             return
 
-        # Add environment config as metadata for dashboard
-        if self.env and hasattr(self.env, 'config'):
-            try:
-                json_data['metadata'] = {
-                    'wire_diameter': float(self.env.config.wire_diameter),
-                    'wire_diameter_um': float(self.env.config.wire_diameter * 1000),
-                    'initial_gap': float(self.env.config.initial_gap),
-                    'workpiece_height': float(self.env.config.workpiece_height),
-                    'workpiece_height_mm': float(self.env.config.workpiece_height),
-                    'target_cutting_distance': float(self.env.config.target_cutting_distance),
-                    'dt': int(self.env.config.dt),
-                    'servo_interval': int(self.env.config.servo_interval),
-                }
-                # Add material parameters if available
-                if hasattr(self.env, 'material') and hasattr(self.env.material, 'params'):
-                    json_data['metadata']['base_overcut'] = float(self.env.material.params.base_overcut)
-                print("Added environment config as metadata to JSON")
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not add environment config to JSON metadata: {e}")
+        metadata = self._build_pack_metadata()
+        if metadata:
+            json_data["metadata"] = metadata
+            logger.info("Added environment config as metadata to JSON")
+        elif self.env and hasattr(self.env, "config"):
+            logger.warning("Could not add environment config to JSON metadata")
 
         output_path = pathlib.Path(filepath_str)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,9 +372,9 @@ class SimulationLogger:
                     json.dump(json_data, f, separators=(',', ':'))  # Compact
                 else:
                     json.dump(json_data, f, indent=indent)
-            print(f"Logged data saved to {output_path}")
+            logger.info("Logged data saved to %s", output_path)
         except (OSError, TypeError, ValueError) as e:
-            print(f"Error saving data to {output_path}: {e}")
+            logger.error("Error saving data to %s: %s", output_path, e)
 
     def _finalize_numpy_pack(self, output_path: pathlib.Path, numpy_data: Dict[str, np.ndarray]) -> None:
         """Export data as sparc_pack_v1 format for web dashboard compatibility.
@@ -359,35 +388,17 @@ class SimulationLogger:
             spark_status_state (int8), spark_status_location_mm (float64), spark_status_extra (float64)
           - All numeric arrays are written losslessly as-is.
         """
-        # Build metadata from environment config
-        metadata = {}
-        if self.env and hasattr(self.env, 'config'):
-            try:
-                metadata = {
-                    "workpiece_height": float(self.env.config.workpiece_height),
-                    "wire_diameter": float(self.env.config.wire_diameter),
-                }
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract env config for metadata: {e}")
-
-        # Add wire module parameters if available
-        if self.env and hasattr(self.env, 'wire') and hasattr(self.env.wire, 'params'):
-            try:
-                wire_params = self.env.wire.params
-                metadata["buffer_len_bottom"] = float(getattr(wire_params, "buffer_len_bottom", 20.0))
-                metadata["buffer_len_top"] = float(getattr(wire_params, "buffer_len_top", 20.0))
-                metadata["contact_offset_bottom"] = float(getattr(wire_params, "contact_offset_bottom", 10.0))
-                metadata["contact_offset_top"] = float(getattr(wire_params, "contact_offset_top", 10.0))
-            except (AttributeError, TypeError, ValueError) as e:
-                print(f"Warning: Could not extract wire params for metadata: {e}")
+        metadata = self._build_pack_metadata()
 
         # Set defaults if not already set
         metadata.setdefault("workpiece_height", 20.0)
+        metadata.setdefault("workpiece_height_mm", metadata["workpiece_height"])
         metadata.setdefault("buffer_len_bottom", 20.0)
         metadata.setdefault("buffer_len_top", 20.0)
         metadata.setdefault("contact_offset_bottom", 10.0)
         metadata.setdefault("contact_offset_top", 10.0)
         metadata.setdefault("wire_diameter", 0.25)
+        metadata.setdefault("wire_diameter_um", metadata["wire_diameter"] * 1000.0)
 
         arrays_manifest = []
 
@@ -413,7 +424,7 @@ class SimulationLogger:
                     try:
                         add_numpy_to_zip(zf, key, arr)
                     except (TypeError, ValueError, OSError) as e:
-                        print(f"[WARN] Skipping array '{key}': {e}")
+                        logger.warning("Skipping array '%s': %s", key, e)
 
             # Special handling for spark_status (object array of 3-tuple-like entries)
             if "spark_status" in numpy_data:
@@ -431,46 +442,63 @@ class SimulationLogger:
                                 continue
                             if not isinstance(item, (list, tuple, np.ndarray)):
                                 malformed_entries += 1
-                                print(
-                                    f"[WARN] Malformed spark_status entry at index {i}: "
-                                    f"expected sequence, got {type(item).__name__}. Skipping."
+                                state[i] = MALFORMED_SPARK_STATUS_SENTINEL
+                                logger.warning(
+                                    "Malformed spark_status entry at index %s: expected sequence, got %s. Skipping.",
+                                    i,
+                                    type(item).__name__,
                                 )
                                 continue
                             try:
+                                parsed_state = np.int8(0)
+                                parsed_loc_mm = np.nan
+                                parsed_extra = np.nan
                                 if len(item) > 0 and item[0] is not None:
-                                    state[i] = int(item[0])
+                                    parsed_state = np.int8(int(item[0]))
                                 if len(item) > 1 and item[1] is not None:
-                                    loc_mm[i] = float(item[1])
+                                    parsed_loc_mm = float(item[1])
                                 if len(item) > 2 and item[2] is not None:
-                                    extra[i] = float(item[2])
+                                    parsed_extra = float(item[2])
+                                state[i] = parsed_state
+                                loc_mm[i] = parsed_loc_mm
+                                extra[i] = parsed_extra
                             except (TypeError, ValueError, IndexError) as e:
                                 malformed_entries += 1
-                                print(
-                                    f"[WARN] Malformed spark_status entry at index {i}: {e}. "
-                                    "Skipping."
+                                state[i] = MALFORMED_SPARK_STATUS_SENTINEL
+                                loc_mm[i] = np.nan
+                                extra[i] = np.nan
+                                logger.warning(
+                                    "Malformed spark_status entry at index %s: %s. Skipping.",
+                                    i,
+                                    e,
                                 )
 
                         if malformed_entries:
-                            print(
-                                f"[WARN] Ignored {malformed_entries} malformed spark_status "
-                                "entries while exporting."
+                            logger.warning(
+                                "Ignored %s malformed spark_status entries while exporting.",
+                                malformed_entries,
                             )
                         add_numpy_to_zip(zf, "spark_status_state", state)
                         add_numpy_to_zip(zf, "spark_status_location_mm", loc_mm)
                         add_numpy_to_zip(zf, "spark_status_extra", extra)
                     except (TypeError, ValueError, IndexError, OSError) as e:
-                        print(f"[WARN] Failed to decompose 'spark_status': {e}")
+                        logger.warning("Failed to decompose 'spark_status': %s", e)
 
             # Write header.json last
             header = {
                 "format": "sparc_pack_v1",
+                "signals": [entry["name"] for entry in arrays_manifest],
                 "arrays": arrays_manifest,
                 "metadata": metadata,
             }
             zf.writestr("header.json", json.dumps(header))
 
         file_size_mb = output_path.stat().st_size / (1024 * 1024)
-        print(f"Logged data saved to {output_path} ({file_size_mb:.2f} MB) [sparc_pack_v1 format]")
+        logger.info(
+            "Logged data saved to %s (%.2f MB) [sparc_pack_v1 format]",
+            output_path,
+            file_size_mb,
+        )
 
     def get_data(self) -> Dict[str, List[Any]] | str | None:
         """
@@ -488,6 +516,59 @@ class SimulationLogger:
             # User is responsible for loading the file.
             return self.config["backend"].get("filepath")
         return None
+
+    def _build_pack_metadata(self) -> Dict[str, Any]:
+        """Collect dashboard-relevant metadata for file exports."""
+        metadata: Dict[str, Any] = {}
+
+        if self.env and hasattr(self.env, "config"):
+            try:
+                metadata.update(
+                    {
+                        "wire_diameter": float(self.env.config.wire_diameter),
+                        "wire_diameter_um": float(self.env.config.wire_diameter * 1000),
+                        "initial_gap": float(self.env.config.initial_gap),
+                        "workpiece_height": float(self.env.config.workpiece_height),
+                        "workpiece_height_mm": float(self.env.config.workpiece_height),
+                        "target_cutting_distance": float(
+                            self.env.config.target_cutting_distance
+                        ),
+                        "dt": int(self.env.config.dt),
+                        "servo_interval": int(self.env.config.servo_interval),
+                    }
+                )
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.warning("Could not extract env config for metadata: %s", e)
+                return {}
+
+        if self.env and hasattr(self.env, "material") and hasattr(self.env.material, "params"):
+            try:
+                metadata["base_overcut"] = float(self.env.material.params.base_overcut)
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.warning("Could not extract material params for metadata: %s", e)
+
+        if self.env and hasattr(self.env, "wire") and hasattr(self.env.wire, "params"):
+            try:
+                wire_params = self.env.wire.params
+                metadata["buffer_len_bottom"] = float(
+                    getattr(wire_params, "buffer_len_bottom", 20.0)
+                )
+                metadata["buffer_len_top"] = float(
+                    getattr(wire_params, "buffer_len_top", 20.0)
+                )
+                metadata["contact_offset_bottom"] = float(
+                    getattr(wire_params, "contact_offset_bottom", 10.0)
+                )
+                metadata["contact_offset_top"] = float(
+                    getattr(wire_params, "contact_offset_top", 10.0)
+                )
+                metadata["segment_len_mm"] = float(
+                    getattr(wire_params, "segment_len", 0.2)
+                )
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.warning("Could not extract wire params for metadata: %s", e)
+
+        return metadata
 
     def reset(self):
         """

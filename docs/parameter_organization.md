@@ -39,7 +39,6 @@ Fixed parameters that define the physical setup and constraints. These cannot ch
 - **Wire Properties**: `wire_diameter`, `wire_material`
 - **Simulation Parameters**: `dt`, `servo_interval`
 - **Cutting Parameters**: `initial_gap`, `target_cutting_distance`
-- **Physical Constraints**: `max_wire_temperature`, `min_gap_for_operation`
 
 ### Features:
 - JSON import/export: `from_json()`, `to_json()`
@@ -56,7 +55,7 @@ Module-specific parameters like empirical values, probabilities, and computation
 - **Thermal Model**: `buffer_len_bottom`, `buffer_len_top`, `segment_len`, `spool_T`
 - **Heat Transfer**: `base_convection_coefficient`, `plasma_efficiency`, `convection_velocity_factor`, `convection_flow_enhancement`
 - **Computational**: `compute_zone_mean`, `zone_mean_interval`
-- **Critical Temperature**: `critical_temp_threshold`, `wire_breaking_temp_factor`
+- **Machine Setting**: `wire_tension_force`
 
 ### Ignition Module (`IgnitionModuleParameters`)
 - **Debris Model**: `base_critical_density`, `gap_coefficient`, `max_critical_density`, `hard_short_gap`
@@ -91,6 +90,10 @@ Currently supports only **brass** wire with the following properties:
 - **temperature_coefficient**: 0.0039 1/K
 - **melting_point**: 1173 K
 - **breaking_temperature**: 1500 K
+- **damage_temperature_threshold**: 423 K
+- **damage_rate_constant**: 7.168e-5 s^-1*MPa^-n
+- **damage_stress_exponent**: 6.734
+- **damage_activation_energy**: 143.1 kJ/mol
 
 ### Usage:
 ```python

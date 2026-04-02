@@ -1,5 +1,7 @@
+import io
 import numpy as np
 import pytest
+import zipfile
 
 from wedm.core.state import EDMState
 from wedm.utils.logger import SimulationLogger
@@ -31,6 +33,29 @@ def test_logger_accepts_supported_derived_signal():
     assert logger.get_data()["gap_um"] == [13.0]
 
 
+def test_logger_accepts_wire_diagnostics_from_state_contract():
+    logger = SimulationLogger(
+        _memory_logger_config(
+            ["wire_head_idx", "wire_offset_mm", "wire_material_positions_mm"]
+        )
+    )
+    state = EDMState(
+        wire_head_idx=7,
+        wire_offset_mm=12.5,
+        wire_material_positions_mm=np.array([0.1, 0.3, 0.5], dtype=np.float64),
+    )
+
+    logger.collect(state)
+
+    data = logger.get_data()
+    assert data["wire_head_idx"] == [7]
+    assert data["wire_offset_mm"] == [12.5]
+    np.testing.assert_array_equal(
+        data["wire_material_positions_mm"][0],
+        np.array([0.1, 0.3, 0.5], dtype=np.float64),
+    )
+
+
 def test_logger_rejects_unknown_signal_name():
     with pytest.raises(ValueError, match="Unknown signals_to_log entries: gap_width"):
         SimulationLogger(_memory_logger_config(["gap_width"]))
@@ -43,7 +68,7 @@ def test_logger_error_includes_typo_hint():
     assert "did you mean workpiece_position" in str(exc_info.value)
 
 
-def test_logger_warns_on_malformed_spark_status(tmp_path, capsys):
+def test_logger_warns_on_malformed_spark_status(tmp_path, caplog):
     output_path = tmp_path / "malformed_spark_status.npz"
     logger = SimulationLogger(
         {
@@ -63,9 +88,18 @@ def test_logger_warns_on_malformed_spark_status(tmp_path, capsys):
         dtype=object,
     )
 
-    logger.finalize()
-    captured = capsys.readouterr().out
+    with caplog.at_level("WARNING"):
+        logger.finalize()
 
-    assert "Malformed spark_status entry" in captured
-    assert "Ignored 2 malformed spark_status entries" in captured
+    assert "Malformed spark_status entry" in caplog.text
+    assert "Ignored 2 malformed spark_status entries" in caplog.text
     assert output_path.exists()
+    with zipfile.ZipFile(output_path) as zf:
+        packed_state = np.load(
+            io.BytesIO(zf.read("spark_status_state.npy")), allow_pickle=False
+        )
+
+    np.testing.assert_array_equal(
+        packed_state,
+        np.array([1, -128, -128], dtype=np.int8),
+    )

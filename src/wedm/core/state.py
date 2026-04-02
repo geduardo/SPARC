@@ -37,8 +37,8 @@ class EDMState:
     time_since_spark_end: int = 0  # Time since last spark ended
 
     # ── Electrical State ──
-    voltage: Optional[float] = None  # [V] Current voltage between wire and workpiece
-    current: Optional[float] = None  # [A] Current flowing through the circuit
+    voltage: float = 0.0  # [V] Current voltage between wire and workpiece
+    current: float = 0.0  # [A] Current flowing through the circuit
 
     # ── Generator Settings (can be changed by control actions) ──
     target_voltage: Optional[float] = None  # [V] Target voltage setting
@@ -61,6 +61,11 @@ class EDMState:
     )  # Accumulated damage per segment (0-1), wire breaks when any reaches 1.0
     wire_max_damage: float = 0.0  # Maximum accumulated damage across all segments (0-1)
     wire_average_temperature: float | None = None  # Average temperature in cutting zone
+    wire_head_idx: int = 0  # Circular-buffer head index for wire diagnostics
+    wire_offset_mm: float = 0.0  # Leading material position used by visualizations
+    wire_material_positions_mm: np.ndarray = field(
+        default_factory=lambda: np.array([], dtype=np.float64)
+    )  # Lagrangian wire segment positions for logging/visualization
 
     # ── Spark/Discharge State ──
     # Format: [state, y-location, duration]

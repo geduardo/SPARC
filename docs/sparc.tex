@@ -1,0 +1,540 @@
+% Template for Elsevier CRC journal article
+% version 1.2 dated 09 May 2011
+
+% This file (c) 2009-2011 Elsevier Ltd.  Modifications may be freely made,
+% provided the edited file is saved under a different name
+
+% This file contains modifications for Transportation Research Procedia
+
+% Changes since version 1.1
+% - added "procedia" option compliant with ecrc.sty version 1.2a
+%   (makes the layout approximately the same as the Word CRC template)
+% - added example for generating copyright line in abstract
+
+%-----------------------------------------------------------------------------------
+
+%% This template uses the elsarticle.cls document class and the extension package ecrc.sty
+%% For full documentation on usage of elsarticle.cls, consult the documentation "elsdoc.pdf"
+%% Further resources available at http://www.elsevier.com/latex
+
+%-----------------------------------------------------------------------------------
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                          %%p
+%% Important note on usage                                  %%
+%% -----------------------                                  %%
+%% This file should normally be compiled with PDFLaTeX      %%
+%% Using standard LaTeX should work but may produce clashes %%
+%%                                                          %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% The '3p' and 'times' class options of elsarticle are used for Elsevier CRC
+%% The 'procedia' option causes ecrc to approximate to the Word template
+\documentclass[5p,times,procedia]{elsarticle}
+\flushbottom
+
+%% The `ecrc' package must be called to make the CRC functionality available
+\usepackage{ecrc}
+%\usepackage{amsmath}
+
+
+%% The ecrc package defines commands needed for running heads and logos.
+%% For running heads, you can set the journal name, the volume, the starting page and the authors
+
+%% set the volume if you know. Otherwise `00'
+\volume{00}
+
+%% set the starting page if not 1
+\firstpage{1}
+
+%% Give the name of the journal
+\journalname{Procedia CIRP}
+
+%% Give the author list to appear in the running head
+%% Example \runauth{C.V. Radhakrishnan et al.}
+\runauth{Author name}
+
+%% The choice of journal logo is determined by the \jid and \jnltitlelogo commands.
+%% A user-supplied logo with the name <\jid>logo.pdf will be inserted if present.
+%% e.g. if \jid{yspmi} the system will look for a file yspmilogo.pdf
+%% Otherwise the content of \jnltitlelogo will be set between horizontal lines as a default logo
+
+%% Give the abbreviation of the Journal.
+\jid{trpro}
+
+%% Give a short journal name for the dummy logo (if needed)
+%\jnltitlelogo{Transportation Research}
+
+%% Hereafter the template follows `elsarticle'.
+%% For more details see the existing template files elsarticle-template-harv.tex and elsarticle-template-num.tex.
+
+%% Elsevier CRC generally uses a numbered reference style
+%% For this, the conventions of elsarticle-template-num.tex should be followed (included below)
+%% If using BibTeX, use the style file elsarticle-num.bst
+
+%% End of ecrc-specific commands
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% The amssymb package provides various useful mathematical symbols
+
+\usepackage{amssymb}
+\usepackage{amsmath}
+%% The amsthm package provides extended theorem environments
+%% \usepackage{amsthm}
+
+%% The lineno packages adds line numbers. Start line numbering with
+%% \begin{linenumbers}, end it with \end{linenumbers}. Or switch it on
+%% for the whole article with \linenumbers after \end{frontmatter}.
+%% \usepackage{lineno}
+
+%% natbib.sty is loaded by default. However, natbib options can be
+%% provided with \biboptions{...} command. Following options are
+%% valid:
+
+%%   round  -  round parentheses are used (default)
+%%   square -  square brackets are used   [option]
+%%   curly  -  curly braces are used      {option}
+%%   angle  -  angle brackets are used    <option>
+%%   semicolon  -  multiple citations separated by semi-colon
+%%   colon  - same as semicolon, an earlier confusion
+%%   comma  -  separated by comma
+%%   numbers-  selects numerical citations
+%%   super  -  numerical citations as superscripts
+%%   sort   -  sorts multiple citations according to order in ref. list
+%%   sort&compress   -  like sort, but also compresses numerical citations
+%%   compress - compresses without sorting
+%%
+%\biboptions{authoryear}
+
+% \biboptions{}
+
+% if you have landscape tablesm
+\usepackage[figuresright]{rotating}
+%\usepackage{harvard}
+% put your own definitions here:x
+%   \newcommand{\cZ}{\cal{Z}}
+%   \newtheorem{def}{Definition}[section]
+%   ...
+
+% add words to TeX's hyphenation exception list
+%\hyphenation{author another created financial paper re-commend-ed Post-Script}
+
+% declarations for front matter
+
+\usepackage[bookmarks=false]{hyperref}
+    \hypersetup{colorlinks,
+      linkcolor=blue,
+      citecolor=blue,
+      urlcolor=blue}
+
+\usepackage{float}
+
+\begin{document}
+\begin{frontmatter}
+
+%% Title, authors and addresses
+
+%% use the tnoteref command within \title for footnotes;
+%% use the tnotetext command for the associated footnote;
+%% use the fnref command within \author or \address for footnotes;
+%% use the fntext command for the associated footnote;
+%% use the corref command within \author for corresponding author footnotes;
+%% use the cortext command for the associated footnote;
+%% use the ead command for the email address,
+%% and the form \ead[url] for the home page:
+%%
+%% \title{Title\tnoteref{label1}}
+%% \tnotetext[label1]{}
+%% \author{Name\corref{cor1}\fnref{label2}}
+%% \ead{email address}
+%% \ead[url]{home page}
+%% \fntext[label2]{}
+%% \cortext[cor1]{}
+%% \address{Address\fnref{label3}}
+%% \fntext[label3]{}
+
+\dochead{CIRP Conference on Electro Physical and Chemical Engineering}%
+
+\title{SPARC - A Simulation Platform for Advanced Rough-cut Control \\in Wire EDM}
+
+%% use optional labels to link authors explicitly to addresses:
+%% \author[label1,label2]{<author name>}
+%% \address[label1]{<address>}
+%% \address[label2]{<address>}
+
+\author[a,b]{Eduardo Gonzalez-Sanchez\corref{*}}
+\author[b]{Konrad Wegener}
+
+\address[a]{ETH Zurich, Technoparkstrasse 1, 8092 Zurich, Switzerland}
+\address[b]{Inspire AG, Technoparkstrasse 1, 8005 Zurich, Switzerland}
+
+\aucores{* Corresponding author. {\it E-mail address:} eduardo.gonzalez@inspire.ch}
+
+\begin{abstract}
+%% Text of abstract
+This paper presents SPARC (Simulation Platform for Advanced Rough-cut Control), a modular simulation framework for Wire Electrical Discharge Machining (wire EDM) rough cut operations, designed to facilitate the development and validation of advanced control strategies. SPARC implements five core modules that capture key process behaviors: ignition dynamics, material removal, dielectric behavior, wire status, and movement mechanics. Each module employs simplified stochastic models that balance computational efficiency with physical accuracy. The platform integrates with the Gymnasium environment, enabling standardized implementation and evaluation of control algorithms, particularly for Reinforcement Learning (RL) approaches. The modular architecture allows independent refinement of individual components while maintaining a consistent interface for control development. This open-source platform provides a foundation for rapid prototyping and validation of wire EDM control strategies prior to physical implementation.
+\end{abstract}
+
+\begin{keyword}
+wire EDM; Process simulation; Control optimization; Reinforcement learning; Digital twin
+
+%% keywords here, in the form: keyword \sep keyword
+
+%% PACS codes here, in the form: \PACS code \sep code
+
+%% MSC codes here, in the form: \MSC code \sep code
+%% or \MSC[2008] code \sep code (2000 is the default)
+
+\end{keyword}
+%\cortext[cor1]{Corresponding author. Tel.: +0-000-000-0000 ; fax: +0-000-000-0000.}
+
+\end{frontmatter}
+
+%%
+%% Start line numbering here if you want
+%%
+% \linenumbers
+
+%% main text
+
+%\enlargethispage{-7mm}
+\section{Introduction}
+
+\label{Intro}
+
+
+
+Wire Electrical Discharge Machining (EDM) is a non-mechanical machining process that uses a continuously unwinding wire electrode to cut conductive materials.
+
+The process operates by generating a rapid sequence of electrical discharges between the wire electrode and the workpiece, creating localized plasma that melts and vaporizes material. The eroded material is flushed away by dielectric fluid, enabling precise cuts with tolerances of 1-10 $\mu m$ in hard conductive materials. Wire EDM has become essential for manufacturing precision components in aerospace, medical devices, and tool making industries.
+
+The wire EDM process typically consists of sequential cutting passes: an initial high-energy rough (or main) cut followed by precision finishing operations. The rough cut prioritizes maximizing material removal rate while maintaining basic dimensional accuracy, utilizing real-time process signals for adaptive control. In contrast, finishing passes focus on achieving precise geometric tolerances and surface quality specifications that can only be verified through post-process measurements.
+
+Significant productivity improvements in wire EDM rough cut operations are possible through intelligent control strategies based on continuous process monitoring. To facilitate the development and validation of such strategies, this paper presents SPARC (Simulation Platform for Advanced Rough-cut Control), a modular simulation framework specifically addressing wire EDM rough cut optimization. SPARC implements five core modules—ignition dynamics, material removal, dielectric behavior, wire status, and movement mechanics—using simplified stochastic models that capture key process behaviors. Integration with the Gymnasium \cite{towers2024gymnasium} environment enables standardized implementation and evaluation of control algorithms, particularly for Reinforcement Learning (RL) approaches. The modular architecture allows independent refinement of individual components while maintaining a flexible interface for control development. This open-source platform provides a foundation for rapid prototyping and validation of wire EDM control strategies prior to physical implementation, facilitating both academic research and industrial adoption.
+
+% \vspace*{8pt}
+% \begin{nomenclature}
+%     \begin{deflist}[$V_c$]
+%         \defitem{$A$}\defterm{Cross-sectional area of the wire}
+%         \defitem{$A_\text{surf}$}\defterm{Surface area of a wire segment}
+%         \defitem{${c}$}\defterm{Normalized debris concentration in the dielectric fluid}
+%         \defitem{$c_p$}\defterm{Specific heat capacity of the wire material}
+%         \defitem{$d$}\defterm{Gap distance between wire and workpiece}
+%         \defitem{$f$}\defterm{Normalized dielectric flow rate}
+%         \defitem{$F_d(t)$}\defterm{Cumulative distribution function of ignition delay time at gap distance $d$}
+%         \defitem{$f_d(t)$}\defterm{Probability density function of ignition delay time at gap distance $d$}
+%         \defitem{$h$}\defterm{Convective heat transfer coefficient}
+%         \defitem{$h(t)$}\defterm{Hazard function for ignition delay time}
+%         \defitem{$h_w$}\defterm{Workpiece height}
+%         \defitem{$H$}\defterm{Heaviside step function}
+%         \defitem{$I$}\defterm{Current}
+%         \defitem{$\mathbb{I}$}\defterm{Indicator function}
+%         \defitem{$k$}\defterm{Kerf width}
+%         \defitem{$\kappa$}\defterm{Thermal conductivity of the wire material}
+%         \defitem{$Q$}\defterm{Power}
+%         \defitem{$R_i$}\defterm{Electrical resistance of a wire segment}
+%         \defitem{$\mathbf{s}_t$}\defterm{State vector at time $t$}
+%         \defitem{$\mathcal{S}$}\defterm{State space}
+%         \defitem{$T_i$}\defterm{Temperature of the $i$-th wire segment}
+%         \defitem{$T_\text{fluid}$}\defterm{Dielectric fluid temperature}
+%         \defitem{$V$}\defterm{Gap voltage}
+%         \defitem{$V_c$}\defterm{Crater volume}
+%         \defitem{$v_w$}\defterm{Wire unwinding velocity}
+%         \defitem{$x_w$}\defterm{Workpiece position}
+%         \defitem{$\Delta x_w$}\defterm{Increment in workpiece position}
+%         \defitem{$y$}\defterm{Position along the wire}
+%         \defitem{$y_\text{spark}$}\defterm{Spark location along the wire}
+%         \defitem{$\Delta y$}\defterm{Wire segment length}
+%         \defitem{$\beta$}\defterm{Debris generation coefficient}
+%         \defitem{$\gamma$}\defterm{Debris decay rate}
+%         \defitem{$\eta_\text{w}$}\defterm{Plasma heating efficiency for the wire}
+%         \defitem{$\lambda(d)$}\defterm{Gap-dependent breakdown rate parameter}
+%         \defitem{$\mu_{V_c}$}\defterm{Mean crater volume for pulse parameters}
+%         \defitem{$\sigma_{V_c}$}\defterm{Standard deviation of crater volume for pulse parameters}
+%         \defitem{$\rho$}\defterm{Density of the wire material}
+%         \defitem{$\tau_d$}\defterm{Deionization time}
+%         \defitem{$\boldsymbol{\theta}$}\defterm{Simulation parameters}
+%         \defitem{$\Theta$}\defterm{Parameter space}
+%     \end{deflist}
+% \end{nomenclature}\vskip24pt
+
+\subsection{State of the Art}
+The primary motivation for this research is to overcome the limitations of current control approaches in wire EDM by exploring the potential of learning-based methods for improving process efficiency and robustness. Existing wire EDM systems often rely on pre-defined lookup tables and conventional controllers. These systems can struggle to adapt optimally to new materials or varying cutting conditions without extensive experimental characterization \cite{almeida2022servo}. Furthermore, they may not fully leverage the capabilities of modern high-speed electronics, such as fast Field Programmable Gate Arrays (FPGAs), for real-time process monitoring and control, including advanced techniques like spark location tracking \cite{sparktrack2018}. While researchers have attempted to implement advanced control methods for wire EDM \cite{yan1998adaptive, liao2000design, lee2007adaptive}, the complexity and limited accessibility of industrial machines have hindered significant progress. This work aims to develop a simulation framework that facilitates the development and testing of advanced control strategies, particularly learning-based methods, which can utilize high-speed monitoring capabilities to achieve more efficient machining.
+
+Numerous simulation studies exist that model specific aspects of the wire EDM process with high fidelity, such as thermal crater formation \cite{weingartner_modeling_2012}, wire vibration dynamics \cite{shibata_simulation_2022, sawada_development_2022}, and electromagnetic forces \cite{di_campli_real-time_2020}. However, due to the inherent complexity of the process involving multiple coupled physical phenomena \cite{zivanovic_wire_2016}, these models typically focus on isolated aspects and are computationally intensive. To the authors' knowledge, there is currently no framework that integrates diverse process models in a computationally efficient manner while providing a platform for rapid prototyping and development of novel control strategies for rough-cut wire EDM.
+
+Furthermore, recent advances in RL highlight the need for specialized simulation environments. The success of RL in robotic control \cite{hwangbo2017control} and complex tasks \cite{mnih2015human, vinyals2019grandmaster} demonstrates that learned policies can outperform traditional methods when trained in sufficiently realistic yet efficient simulations. Several techniques have emerged to address the simulation-to-reality (sim2real) gap: domain randomization randomizes simulation parameters to make policies robust to real-world variations \cite{tobin2017domain}, sharpness-aware minimization improves generalization by finding flat optima \cite{bochem2024improvinggeneralizationrobotlocomotion}, and domain adaptation methods explicitly bridge simulation and reality through transfer learning \cite{zhang2022transfer}. Particularly relevant is the work by Haarnoja et al. \cite{haarnoja2018soft}, which successfully combined these approaches to transfer robotic manipulation policies from simulation to reality, suggesting similar potential for wire EDM control.
+
+
+\section{Theory: a stochastic state-based approach}
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.48\textwidth]{diagram_simulation.pdf}
+    \caption{Sequential update flow in the SPARC simulation framework. Each module updates based on the previous full state and partial updates from preceding modules in the current timestep. Arrows indicate information flow and update dependencies between modules.}
+    \label{fig:sequential_updates}
+\end{figure}
+
+\subsection{Structure}
+
+The simulation framework consists of five interconnected modules that model different aspects of the wire EDM process (as shown in Fig.~\ref{fig:sequential_updates}). The modules are:
+
+\begin{enumerate}
+    \item \textbf{Ignition Module:} models the stochastic ignition of sparks, determining spark occurrence and characteristics based on gap conditions.
+
+    \item \textbf{Material Removal Module:} models material removal by estimating crater dimensions for each spark and updating the workpiece geometry.
+
+    \item \textbf{Dielectric Module:} models the dielectric fluid state, considering factors like temperature and contamination that affect spark ignition and wire cooling.
+    
+    \item \textbf{Wire Module:} simulates the wire condition, predicting wire breakage probability based on temperature, stress, and material properties.
+
+    \item \textbf{Mechanics Module:} simulates machine mechanics, including servo control and wire vibrations, to model the relative motion of wire and workpiece.
+
+\end{enumerate}
+
+\subsection{Markovian State Representation}
+
+The simulation framework models the wire EDM process as a discrete-time Markovian system. The state vector $\mathbf{s}_t \in \mathcal{S}$ at time $t$ encapsulates all relevant process information, where $\mathcal{S}$ is the state space, including:
+\begin{itemize}
+    \item Real-time physical descriptors (gap voltage, current, wire temperature field, etc.)
+    \item Actuator states (servo status, generator status, commanded wire tension, etc.)
+    \item Temporal counters tracking time since the last successful discharge, voltage opening, servo action, and other relevant events
+\end{itemize}
+The state vector incorporates temporal counters to track time-dependent phenomena at the chosen level of abstraction, such as discharge probability increasing with the duration of the voltage application. By augmenting the state vector with these counters, the system can capture temporal dependencies while maintaining the Markovian property. The simulation framework distinguishes the dynamic state variables $\mathbf{s}_t$ from the simulation parameters $\boldsymbol{\theta} \in \Theta$. Parameters are fixed quantities for a given simulation run, like material properties or machine specifications, which define the system's characteristics.
+
+% The Markovian representation provides a natural foundation for modeling wire EDM. For example, discharge probability is determined by present gap conditions, and material removal depends on instantaneous discharge parameters. This approach offers several key advantages:
+% \begin{itemize}
+%     \item \textbf{Memory efficiency:} By encoding history in state variables rather than maintaining full trajectories, memory usage is minimized.
+%     \item \textbf{Compatibility with RL:} Most RL algorithms assume Markov Decision Processes, making this representation directly applicable.
+%     \item \textbf{Modular design:} The state-based approach allows independent module development while maintaining clear interfaces between components.
+%     \item \textbf{Flexible actuation:} State variables include actuator states, enabling direct control by modifying directly the simulation state. This provides a natural framework for testing various control strategies.
+% \end{itemize}
+
+
+The evolution of the system from state $\mathbf{s}_t$ to $\mathbf{s}_{t+1}$ is governed by a probabilistic state transition function $P(\mathbf{s}_{t+1}|\mathbf{s}_t, \boldsymbol{\theta})$. The simulation aims to approximate this overall transition by composing the effects of individual modules, such that $\mathbf{s}_{t+1}$ is effectively sampled from $\hat{P}(\cdot|\mathbf{s}_t, \boldsymbol{\theta})$.
+
+\subsection{Sequential State Updates}
+
+Within each simulation timestep (e.g., at microsecond intervals), the transition from $\mathbf{s}_t$ to $\mathbf{s}_{t+1}$ is achieved through a sequence of updates performed by the individual modules. Each module takes the current state—as modified by any preceding modules in that same timestep—and applies its physics-based calculations and stochastic models to produce an updated, valid state. This creates a chain of intermediate states within the timestep:
+
+Let the initial state for the current timestep be $\mathbf{s}_t^{(0)} = \mathbf{s}_t$. The modules then update the state sequentially:
+\begin{enumerate}
+    \item \textbf{Ignition Module:} Transforms $\mathbf{s}_t^{(0)}$ to an intermediate state $\mathbf{s}_t^{(1)}$. This update reflects the stochastic ignition process and determines spark characteristics.
+    \item \textbf{Material Removal Module:} Takes $\mathbf{s}_t^{(1)}$ (which now includes ignition outcomes) and produces $\mathbf{s}_t^{(2)}$, updating workpiece geometry based on any spark events.
+    \item \textbf{Dielectric Module:} Acts on $\mathbf{s}_t^{(2)}$ to yield $\mathbf{s}_t^{(3)}$, modeling changes in the dielectric fluid state (e.g., contamination, temperature) resulting from sparks and material removal.
+    \item \textbf{Wire Module:} Uses $\mathbf{s}_t^{(3)}$ (reflecting current dielectric conditions and spark heating) to calculate $\mathbf{s}_t^{(4)}$, simulating the wire's thermal condition and checking for breakage.
+    \item \textbf{Mechanics Module:} Takes $\mathbf{s}_t^{(4)}$ and produces $\mathbf{s}_t^{(5)}$, simulating machine axis movements and servo responses based on control inputs and process feedback.
+\end{enumerate}
+The state at the beginning of the next full timestep is then $\mathbf{s}_{t+1} = \mathbf{s}_t^{(5)}$.
+
+This sequential processing ensures that causal dependencies between different physical phenomena are respected (e.g., material removal depends on the outcome of ignition, and wire temperature depends on spark energy and dielectric cooling). Each module's operation can be conceptualized as applying a conditional probability distribution for its part of the state transformation (e.g., $P_{ign}(\mathbf{s}_t^{(1)}|\mathbf{s}_t^{(0)}, \boldsymbol{\theta})$ for the ignition module). The overall transition $P(\mathbf{s}_{t+1}|\mathbf{s}_t, \boldsymbol{\theta})$ is thus the result of composing these individual module transformations. This modular, sequential approach allows for detailed modeling of complex interactions while maintaining a clear and extensible structure for the simulation logic.
+
+\section{Implementation Details}
+
+The wire EDM simulation framework is implemented using an object-oriented approach in Python, leveraging its extensive scientific computing ecosystem and widespread adoption in the machine learning community.
+
+The simulation architecture follows the Gymnasium \cite{towers2024gymnasium} interface, a standard framework for RL environments. This design choice ensures compatibility with existing RL algorithms and tools while providing a well-defined structure for Markovian Decision Process state management and action spaces.
+
+The codebase is publicly available under an MIT license, promoting transparency, reproducibility, and collaborative development. Researchers and developers are encouraged to contribute to the project by extending existing modules or developing new ones. The repository can be accessed at: \url{https://github.com/geduardo/SPARC}
+
+
+\subsection{Simulation Architecture}
+
+The core structure revolves around a central \texttt{EDMState} dataclass, which stores all state variables. This class encapsulates the entire state, including time, electrical parameters, generator settings, workpiece and wire positions, spark status, dielectric properties, and servo control signals.
+
+Individual modules, such as \texttt{IgnitionModule}, \texttt{MaterialRemovalModule}, \texttt{DielectricModule}, \texttt{WireModule}, and \texttt{MechanicsModule}, are implemented as separate classes. Each of these inherits from a base \texttt{EDMModule} class, which defines a common \texttt{update(state: EDMState)} method. This method allows each module to access and modify the shared \texttt{EDMState} object in a controlled manner during each simulation step. 
+
+The simulation environment itself, \texttt{WireEDMEnv}, adheres to the Gymnasium interface. This provides a standardized structure for RL and control applications, defining \texttt{step()} and \texttt{reset()} methods, along with \texttt{action\_space} and \texttt{observation\_space} attributes using the \texttt{gymnasium.spaces} module. The \texttt{step()} function orchestrates the sequential updates of all modules and handles action processing, reward calculation, and termination checks.
+
+\subsection{Description of Example Modules}
+
+The following sections present simplified example module descriptions that demonstrate how different models can be integrated into the framework. These serve as reference implementations rather than complete models.
+
+\subsubsection{Ignition Module}
+\label{sec:ignition_module}
+
+The ignition module simulates the stochastic nature of dielectric breakdown in EDM. 
+% \begin{figure}[t]
+%     \centering
+%     \includegraphics[width=0.4\textwidth]{experimental_CDFs_b.png}
+%     \caption{Experimental characterization of ignition delay distributions in wire EDM}
+%     \label{fig:ignition_delay}
+% \end{figure}
+
+
+Experimental observation of EDM ignition delay time, as detailed in prior work \cite{jmmp7050177}, makes it possible to characterize the cumulative probability of breakdown over time for different gap distances. For a fixed gap distance $d$, this behavior can be described by an empirical cumulative distribution function (CDF) $F_d(t)$ representing the probability that breakdown has after time $t$ from the voltage application.
+
+
+\paragraph{Hazard Function}
+In the context of a discrete-time simulation, it is necessary to determine the probability of a breakdown occurring in the next timestep, given that it has not yet occurred. This conditional probability is captured by the hazard function $h(t)$, which represents the instantaneous rate of breakdown at time $t$, given survival up to that time. For a given cumulative distribution function $F_d(t)$ and its corresponding probability density function $f_d(t)$, the hazard function can be calculated using the Bayes theorem and its expression is $h(t) = \frac{f_d(t)}{1-F_d(t)}$.
+
+
+\paragraph{Exponential Approximation}
+The ignition delay time distribution follows, according to \cite{jmmp7050177}, a Weibull distribution. Alternatively, an exponential distribution could be used as an approximation. For this implementation, the exponential distribution is adopted for simplicity, with a gap-dependent rate parameter $\lambda(d)$. A key advantage of this choice is that its hazard function simplifies to a constant value equal to the rate parameter: $h(t) = \lambda(d)$.
+
+This simplification implies that the probability of breakdown in the next timestep is independent of the time elapsed since voltage application. The specific value of $\lambda(d)$ is determined by fitting a second-order polynomial to experimental data provided by the authors of \cite{jmmp7050177}.
+\begin{equation}
+    \lambda(d) = \frac{\ln 2}{0.48d^2 - 3.69d + 14.05}
+    \label{eq:lambda_d}
+\end{equation}
+
+For $\lambda(d)$ to be dimensionless, the numerical coefficients $0.48$, $3.69$, and $14.05$ carry implicit units of $\mu\text{m}^{-2}$, $\mu\text{m}^{-1}$ and dimensionless, respectively, assuming $d$ in $\mu\text{m}.$
+
+\paragraph{Implementation}
+The ignition module's core logic is implemented as a finite-state machine (FSM). This FSM determines if and when a spark or short circuit forms and manages the generator's voltage and current output accordingly.
+
+\textbf{Normal Operation (Not in Short Circuit):}
+During normal operation, the FSM cycles through three states. In the `OPEN` state, the generator applies the open circuit voltage ($V = V_{open}, I = 0$) while waiting for the dielectric breakdown, which occurs stochastically with probability based on the rate dependent on the gap $\lambda(d)$ (Equation \ref{eq:lambda_d}). Upon breakdown, it transitions to the `SPARK` state where $V = V_{ignition}$ and $I = I_{pulse}$ for duration $T_{ON}$. After the spark, it enters the `REST` state ($V = 0, I = 0$) for time $T_{OFF}$ before returning to `OPEN`.
+
+\textbf{Short Circuit Condition:}
+In this condition, the generator only transitions between `SHORT` ($V = 0, I = I_{pulse}$) and `REST` states. 
+
+\subsection{Material Removal Module}
+The Material Removal Module simulates the erosion of material from the workpiece during wire EDM. Since in rough-cut operations the workpiece surface quality is not a primary concern, this module focuses on estimating the wire's advancement speed through the cut.
+
+Material removal occurs through individual spark events, with the volume removed by each spark sampled from empirically derived probability distributions. For a given wire/workpiece material combination, the crater volume distributions can be experimentally characterized for each pulse profile $\mathbf{p}$ available with the generator. Specifically, experimental studies \cite{gonzalezsanchez2024} have shown that crater volumes ($V_c$) follow a Gaussian distribution with mean $\mu_{V_c}(\mathbf{p})$ and variance $\sigma_{V_c}^2(\mathbf{p})$.
+
+For each spark event, the geometry of the workpiece is updated according to the volume of the sampled crater $V_c \sim \mathcal{N}(\mu_{V_c}(\mathbf{p}), \sigma_{V_c}^2(\mathbf{p}))$. Given a 1D approximation, this volume is distributed uniformly across the workpiece height $h_w$. The increment in workpiece position ($\Delta x_w$) is calculated as 
+\begin{equation}
+    \Delta x_w = \frac{V_c}{k(\mathbf{p}) \cdot h_w}
+\end{equation}
+ where $k(\mathbf{p})$ is the kerf width (wire diameter plus twice the gap) for the specific pulse profile $\mathbf{p}$. The workpiece position is then updated by $x_w \leftarrow x_w + \Delta x_w$
+
+\subsubsection{Dielectric Module}
+
+The Dielectric Module simulates the state of the dielectric fluid, focusing on ionization, debris contamination, and flow conditions, which influence short-circuit probability and wire cooling.
+Key quantities tracked include the total volume of debris in the gap ($V_{debr}$), the total volume of the gap between wire and workpiece ($V_{cavity}$), the density of debris/cavity contamination ($\rho_{debr}$), and the flow condition ($f$).
+The core dynamics of debris volume are modeled by:
+\begin{equation}
+    V_{debr}(t + \Delta t) = \max(0, V_{debr}(t) + \Delta V_{debr,gen} - \Delta V_{debr,rem})
+\end{equation}
+where $\Delta V_{debr,gen} = V_{crater}\delta_t$ represents debris generation from crater erosion, and $\Delta V_{debr,rem} = \beta \cdot f(t) \cdot \Delta t$ represents debris removal, with $\beta$ as the removal efficiency.
+The flow condition $f$ is managed by:
+\begin{equation}
+    f = f_{gap}(g) \cdot f_{debr}(\rho_{debr})
+\end{equation}
+where $f_{gap}(g) \propto \left(\frac{g}{g_{ref}}\right)^3$ models the effect of gap size $g$ relative to a reference gap $g_{ref}$, and $f_{debr}(\rho_{debr}) = e^{-\gamma \rho_{debr}}$ models the impact of debris density, with $\gamma$ as a decay constant.
+
+
+% The coefficients in this module can be empirically calibrated by observing the proportions of different discharge types under varying flow conditions. Specifically, the ratio between short circuits, arc discharges, and effective sparks shows strong correlation with both the flushing pressure and nozzle distance. At low flow rates (characterized by reduced pressure or increased nozzle gaps), the proportion of shorts and arcs increases due to insufficient debris removal. Conversely, optimal flow conditions (higher pressure, proper nozzle positioning) maximize the fraction of effective discharges. While initial rough estimates of the model parameters have been made based on these relationships, systematic calibration and validation of the exact parameter values is still pending and will require additional experimental data.
+
+
+
+\subsubsection{Wire Module}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.43\textwidth]{wire_temperature.png}
+    \caption{Simulated temperature distribution in a 0.25 mm brass wire approaching a 10 mm tall workpiece. The wire unwinds downwards at 0.1 mm/ms and the feed is regulated by a proportional controller with a voltage setpoint. The heatmap visualizes key thermal phenomena: localized heating from spark events and subsequent diffusion, heat transport due to wire movement, global Joule heating and convective cooling.
+    }
+    \label{fig:sweeping_heatmap}
+\end{figure}
+
+\paragraph{Thermal modelling of the wire}
+The wire module simulates the thermal behavior of the continuously moving wire electrode. It discretizes the wire into segments and tracks the temperature distribution along its length. The key phenomena modeled are:
+
+\textbf{Joule heating:} The passage of electric current through the resistive wire generates heat. The heat rate per segment is given by $\dot{Q}_\text{joule} = I^2 R_\text{segment}$ where $I$ is the current and $R_\text{segment}$ is the electrical resistance of the segment, which varies with temperature.
+
+\textbf{Plasma heating:} During each spark event, a fraction $\eta_\text{w}$ of the electrical power is transferred to the wire through the plasma channel. This localized power input is given by $\dot{Q}_\text{plasma} = \eta_\text{w} V I \cdot \mathbb{I}(y_\text{spark} \in \text{segment})$ where $V$ is the gap voltage, $I$ is the current, and $\eta_\text{w}$ is the proportion of energy generated by the spark that goes into the wire.
+
+\textbf{Conductive heat transfer:} Heat diffuses along the wire according to the heat equation. The conductive heat rate between adjacent segments is $\dot{Q}_\text{cond} = k A \frac{T_{i-1} - 2T_i + T_{i+1}}{\Delta y^2}$ where $k$ is the thermal conductivity, $A$ is the cross-sectional area, $\Delta y$ is the length of the segment, and $T_i$ is the temperature of the $i$-th segment.
+
+\textbf{Convective cooling:} The flow of dielectric fluid around the wire carries heat away. The convective heat rate loss per segment is $\dot{Q}_\text{conv} = h A_\text{surf} (T_i - T_\text{fluid})$ where $h$ is the coefficient of convective heat transfer, which depends on the dielectric flow conditions, $A_\text{surf}$ is the surface area of the segment, and $T_\text{fluid}$ is the temperature of the fluid.
+
+\textbf{Advective transport:} As the wire moves, it carries its temperature profile along. This is modeled by an difference scheme for advective heat rate: $\dot{Q}_\text{transport} = \rho c_p v_w A \frac{T_{i+1} - T_i}{\Delta y}$ where $\rho$ is the density, $c_p$ is the specific heat capacity, and $v_w$ is the unwinding velocity of the wire.
+
+At each timestep, the net heat rate input to each segment is computed by summing the above terms. The temperature change is then calculated using the explicit Euler method:
+\begin{equation}
+\frac{dT}{dt} = \frac{\dot{Q}_\text{net}}{\rho c_p V}
+\end{equation}
+where $V$ is the volume of the segment.
+The wire is modeled with additional buffer zones at both ends; at the upper end, the temperature is fixed at room temperature $T_\text{room}$, while the lower end employs an open boundary condition.
+
+\paragraph{Wire Breakage Conditions}
+The wire module simulates the thermal behavior of the wire and predicts potential breakage. Wire failure is primarily attributed to local annealing.
+
+\textbf{Local Annealing:} Wire failure occurs if the temperature of any segment $T_i$ exceeds the critical annealing temperature $T_\text{anneal}$ (approximately 300 ° C for brass wire). This condition is checked at each timestep.
+
+The effect of dielectric vaporization near the wire, which could lead to reduced cooling and subsequent failure, can be implicitly accounted for by adjusting the convective heat transfer coefficient $h$ in the thermal model. A significant decrease in $h$ due to vapor film formation would lead to a rapid temperature increase, triggering the annealing condition.
+
+In Figure \ref{fig:sweeping_heatmap}, a demonstration of the wire module's thermal simulation capabilities shows the temperature distribution during machining.
+
+
+% \clearpage  % Force the figure to start on a new page (previous page in flow)
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[height=0.2\textheight]{position_voltage_plot1.pdf}
+    \hspace*{\fill}
+    \includegraphics[height=0.2\textheight]{position_voltage_plot2.pdf}
+    \caption{Demonstration of the servo control behaviour in the simulation, showing the wire approaching a 10 mm workpiece with a proportional controller regulating the position targeting to an average voltage of 47 V. Left: Full approach sequence showing the simulated position trajectory and voltage response calculated by the ignition module. Right: Detailed view highlighting the slight overshoot in the servo response while maintaining stable machining conditions, demonstrating realistic control behavior of the simulation.}
+    \label{fig:servo_plots}
+\end{figure*}
+
+\subsubsection{Mechanics Module}
+
+The mechanics module simulates the nested servo control architecture commonly found in wire EDM machines. This control system consists of two hierarchical control loops:
+
+\begin{itemize}
+    \item An external loop that determines the setpoint for the internal servo loop by monitoring process variables such as average gap voltage or ignition delay time. This loop generates commanded axis positions to maintain optimal machining conditions.
+    \item An internal servo loop that executes position control through machine-specific servo drives and motors, with feedback from high-resolution encoders to maintain precise axis tracking.
+\end{itemize}
+
+The internal servo loop, using standard PID control with motor and load inertia, behaves as a damped oscillator. This allows modeling the closed-loop dynamics with a second-order differential equation:
+
+\begin{equation}
+    \ddot{x} + 2\zeta\omega_n \dot{x} + \omega_n^2(x - \hat{x}) = 0
+\end{equation}
+
+where $\hat{x}$ is the commanded position, $\omega_n$ is the natural frequency of the closed loop, and $\zeta$ is the damping ratio. The motion is bounded by the drive's physical limits: maximum acceleration ($|\ddot{x}| \leq \ddot{x}_{\text{max}}$), maximum jerk ($|\Delta \ddot{x}/\Delta t| \leq j_{\text{max}}$), and maximum velocity ($|\dot{x}| \leq v_{\text{max}}$). The system state is updated using explicit Euler integration with jerk-limited acceleration control.
+
+Figure \ref{fig:servo_plots} demonstrates the servo control module's performance during workpiece approach and erosion.
+
+\subsection{Experimental Validation}
+
+The models presented were validated using data collected from an AgieCharmilles CUT P 350 wire EDM machine. Experiments utilized brass wires (0.20 mm 0.25 mm and 0.30 mm diameter) from Thermo Compact as tool electrodes, with machining performed in deionized water (10 µS/cm conductivity) on DIN 1.2379 stainless steel workpieces of 10mm thickness. A detailed prescription of model parameters and tuning procedures can be found in the open-source repository of the paper.
+
+\section{Conclusion and Future Work}
+
+This paper presents SPARC, a comprehensive simulation framework for wire EDM that integrates physical modeling with machine learning capabilities. The modular architecture allows for flexible extension and refinement of individual process components while maintaining a cohesive system-level view of the machining process.
+
+\subsection{Key Contributions}
+
+\begin{itemize}
+    \item A modular, physics-informed simulation architecture that captures the key phenomena in wire EDM
+    \item Integration with standard RL interfaces to enable advanced control development
+    \item Open-source implementation promoting reproducibility and collaborative development
+    \item Validated models based on experimental data from industrial wire EDM systems
+\end{itemize}
+
+
+
+\subsection{Future Work}
+
+This simulation framework is a crucial first step towards learning-based control for rough cut wire EDM, but further development is needed in several areas.
+
+
+\paragraph{Module Enhancements}
+The simulation modules can be further enhanced in the following ways: the ignition model could benefit from incorporating discharge clustering and spatial correlation of spark locations to improve ignition prediction accuracy \cite{kronauer2022data}. For the wire breakage model, integrating simplified models of thermal stress, material property changes, and mechanical loading would improve breakage prediction. The material removal model could explore a detailed 3D voxel-based approach \cite{maderesteves2024} with an adaptive grid to balance computational cost and accuracy in tracking workpiece geometry, predicting discharge conditions, and simulating surface roughness evolution. Enhancing the debris flow model with a simplified particle transport system would simulate more realistic interactions between debris and the ignition process. Finally, developing a spatial model of the wire that accounts for vibrations and forces would improve the fidelity of gap distance and ignition behavior, particularly for larger workpieces.
+
+\paragraph{Community and Adoption}
+Promote an open ecosystem where researchers and engineers can contribute improved or refined models or custom models for specific machines, materials, and use cases. Develop comprehensive documentation and calibration procedures to enable tuning the simulation for specific wire EDM machine configurations.
+
+\paragraph{Advanced Control Strategies}
+The core purpose of SPARC is to unlock research into advanced control strategies that was previously impractical. By providing a safe, fast, and cost-effective virtual environment, SPARC will enable:
+
+\begin{itemize}
+    \item Implementation of both synchronous and asynchronous RL algorithms within SPARC's framework to optimize machining speed while maintaining process stability
+    \item Development of adaptive control strategies that utilize SPARC's physics models to respond to changing machining conditions like gap width variations and debris accumulation
+    \item Creation of transfer learning approaches to bridge the reality gap between SPARC's simulated environment and physical wire EDM machines
+\end{itemize}
+
+\bibliographystyle{elsarticle-num}
+\bibliography{references}
+
+\clearpage\onecolumn
+
+\end{document}
+

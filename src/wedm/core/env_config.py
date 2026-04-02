@@ -29,10 +29,6 @@ class EnvironmentConfig:
     initial_gap: float = 50.0  # [µm] Initial gap between wire and workpiece
     target_cutting_distance: float = 500.0  # [µm] Target distance to cut
 
-    # ── Physical Constraints ──
-    max_wire_temperature: float = 1500.0  # [K] Temperature at which wire breaks
-    min_gap_for_operation: float = 2.0  # [µm] Minimum gap before collision
-    max_cutting_force: float = 100.0  # [N] Maximum allowable cutting force
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "EnvironmentConfig":
@@ -59,9 +55,6 @@ class EnvironmentConfig:
             "servo_interval": self.servo_interval,
             "initial_gap": self.initial_gap,
             "target_cutting_distance": self.target_cutting_distance,
-            "max_wire_temperature": self.max_wire_temperature,
-            "min_gap_for_operation": self.min_gap_for_operation,
-            "max_cutting_force": self.max_cutting_force,
         }
 
     def to_json(self, json_path: str | Path) -> None:
@@ -84,7 +77,3 @@ class EnvironmentConfig:
             raise ValueError("dt must be positive")
         if self.servo_interval <= 0:
             raise ValueError("servo_interval must be positive")
-        if self.max_wire_temperature <= 293.15:
-            raise ValueError(
-                "max_wire_temperature must be greater than room temperature"
-            )

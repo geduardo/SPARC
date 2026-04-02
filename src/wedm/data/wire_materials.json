@@ -6,6 +6,10 @@
     "electrical_resistivity": 6.4e-8,
     "temperature_coefficient": 0.0039,
     "melting_point": 1173,
-    "breaking_temperature": 1500
+    "breaking_temperature": 1500,
+    "damage_temperature_threshold": 423.0,
+    "damage_rate_constant": 7.168e-5,
+    "damage_stress_exponent": 6.734,
+    "damage_activation_energy": 143100.0
   }
-} 
+}

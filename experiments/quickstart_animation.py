@@ -25,7 +25,7 @@ import sys
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from experiments.run_simulation import (
+from experiments.simulation_runner import (
     run_simulation,
     setup_logger,
 )
@@ -813,7 +813,7 @@ def create_animation(
             if animation.writers["ffmpeg"].isAvailable():
                 writer_name = "ffmpeg"
             else:
-                print("⚠️ FFmpeg writer not available. Saving GIF instead.")
+                print("[!] FFmpeg writer not available. Saving GIF instead.")
                 output_filename = str(output_path.with_suffix(".gif"))
                 writer_name = "pillow"
                 save_dpi = 100

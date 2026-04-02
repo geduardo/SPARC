@@ -1,13 +1,17 @@
-# src/wedm/modules/wire_optimized.py
+# src/wedm/modules/wire.py
 from __future__ import annotations
 
+import math
 import numpy as np
-from numba import njit, prange
+from numba import njit
 from dataclasses import dataclass
 
 from ..core.module import EDMModule
 from ..core.state import EDMState
 from ..core.material_db import get_material_db
+
+
+_UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K = 8.314
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -53,95 +57,390 @@ class WireModuleParameters:
         True  # Use circular buffer movement model instead of advection
     )
 
-    # ── Damage Model Parameters (from CIRP-HPC 2026 paper) ──
-    damage_rate_constant: float = 7.168e-5  # [s⁻¹·MPa⁻ⁿ] Rate constant k
-    damage_stress_exponent: float = 6.734  # [-] Stress exponent n
-    damage_activation_energy: float = 143.1e3  # [J/mol] Activation energy Q
-    gas_constant: float = 8.314  # [J/(mol·K)] Universal gas constant R
+
+@njit(cache=True, fastmath=True)
+def accumulate_damage(
+    damage: np.ndarray,
+    temperature: np.ndarray,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> float:
+    """Update accumulated damage in-place and return the new maximum damage."""
+    max_damage = 0.0
+
+    for i in range(temperature.shape[0]):
+        current_damage = damage[i]
+        temp = temperature[i]
+        if temp > threshold_k:
+            current_damage += stress_term_dt * np.exp(activation_scale / temp)
+            damage[i] = current_damage
+
+        if current_damage > max_damage:
+            max_damage = current_damage
+
+    return max_damage
 
 
-# Numba-compiled functions for performance-critical calculations
-@njit(cache=True, fastmath=True, parallel=True)
-def compute_thermal_update(
-    T,
-    dT_dt,
-    n_segments,
-    spool_T,
-    k_cond_coeff,
-    I_squared,
-    joule_geom_factor,
-    rho_elec,
-    alpha_rho,
-    temp_ref,
-    plasma_idx_phys,
-    plasma_heat,
-    h_eff_base,
-    h_eff_zone_phys,
-    dielectric_temp,
-    A,
-    adv_coeff,
-    temp_update_factor,
-    contact_bottom_idx_phys,
-    contact_top_idx_phys,
-    head_idx,
-):
-    """Optimized thermal update using circular-buffer aware indexing.
+@njit(cache=True, fastmath=True)
+def apply_thermal_core_inplace(
+    temperature: np.ndarray,
+    dT_dt: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    bottom_start: int,
+    bottom_end: int,
+    bottom_joule_factor: float,
+    top_start: int,
+    top_end: int,
+    top_joule_factor: float,
+    plasma_idx: int,
+    plasma_heat: float,
+    spool_temp: float,
+) -> None:
+    """Apply one fused thermal update step in-place using preallocated buffers."""
+    n_segments = temperature.shape[0]
+    if n_segments == 0:
+        return
 
-    Arrays T and dT_dt are stored in ring-buffer order. Physical order from inlet (i=0)
-    to outlet (i=N-1) maps to storage index s(i) = (head_idx + i + 1) % N.
-    """
-    # Helper: map physical index -> storage index
-    N = n_segments
+    dT_dt[0] = 0.0
 
-    # Apply inlet Dirichlet (physical i=0)
-    s_inlet = (head_idx + 1) % N
-    T[s_inlet] = spool_T
+    if n_segments > 1:
+        for i in range(1, n_segments - 1):
+            temp = temperature[i]
+            dT_dt[i] = (
+                k_cond_coeff * (temperature[i - 1] - 2.0 * temp + temperature[i + 1])
+                - conv_loss_coeff[i] * (temp - dielectric_temp)
+            )
 
-    # Reset dT/dt in storage order
-    dT_dt[:] = 0.0
+        temp_last = temperature[n_segments - 1]
+        dT_dt[n_segments - 1] = (
+            k_cond_coeff * (temperature[n_segments - 2] - temp_last)
+            - conv_loss_coeff[n_segments - 1] * (temp_last - dielectric_temp)
+        )
 
-    # 1) Conduction (physical interior: i=1..N-2), Neumann at outlet (i=N-1)
-    if N > 1:
-        for i in prange(1, N - 1):
-            s_c = (head_idx + i + 1) % N
-            s_l = (head_idx + (i - 1) + 1) % N
-            s_r = (head_idx + (i + 1) + 1) % N
-            dT_dt[s_c] = k_cond_coeff * (T[s_l] - 2.0 * T[s_c] + T[s_r])
+    if bottom_joule_factor != 0.0:
+        for i in range(bottom_start, bottom_end):
+            dT_dt[i] += bottom_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
 
-        # Neumann at outlet (physical i=N-1): use last interior neighbor
-        s_out = (head_idx + (N - 1) + 1) % N
-        s_out_l = (head_idx + (N - 2) + 1) % N
-        dT_dt[s_out] = k_cond_coeff * (T[s_out_l] - T[s_out])
+    if top_joule_factor != 0.0:
+        for i in range(top_start, top_end):
+            dT_dt[i] += top_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
 
-    # 2) Joule heating between physical contact indices (inclusive)
-    if I_squared > 1e-6:
-        joule_factor = joule_geom_factor * I_squared * rho_elec
-        start_i = 0 if contact_bottom_idx_phys < 0 else contact_bottom_idx_phys
-        end_i = N - 1 if contact_top_idx_phys >= N else contact_top_idx_phys
-        for i in prange(start_i, end_i + 1):
-            s_i = (head_idx + i + 1) % N
-            rho_T = 1.0 + alpha_rho * (T[s_i] - temp_ref)
-            dT_dt[s_i] += joule_factor * rho_T
+    if 0 <= plasma_idx < n_segments:
+        dT_dt[plasma_idx] += plasma_heat
 
-    # 3) Plasma heating at physical index
-    if plasma_idx_phys >= 0 and plasma_idx_phys < N:
-        s_pl = (head_idx + plasma_idx_phys + 1) % N
-        dT_dt[s_pl] += plasma_heat
+    for i in range(1, n_segments):
+        temperature[i] += dT_dt[i] * temp_update_factor
 
-    # 4) Convection using physical-indexed coefficients
-    for i in prange(N):
-        s_i = (head_idx + i + 1) % N
-        conv_coeff = h_eff_zone_phys[i] * A
-        dT_dt[s_i] -= conv_coeff * (T[s_i] - dielectric_temp)
+    temperature[0] = spool_temp
 
-    # 5) Advection removed (adv_coeff ignored)
 
-    # 6) Temperature update in storage order
-    for i in prange(N):
-        T[i] += dT_dt[i] * temp_update_factor
+@njit(cache=True, fastmath=True)
+def apply_thermal_damage_core_inplace(
+    temperature: np.ndarray,
+    damage: np.ndarray,
+    dT_dt: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    bottom_start: int,
+    bottom_end: int,
+    bottom_joule_factor: float,
+    top_start: int,
+    top_end: int,
+    top_joule_factor: float,
+    plasma_idx: int,
+    plasma_heat: float,
+    spool_temp: float,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> float:
+    """Apply one fused thermal update and damage accumulation step in-place."""
+    n_segments = temperature.shape[0]
+    if n_segments == 0:
+        return 0.0
 
-    # Re-apply inlet Dirichlet
-    T[s_inlet] = spool_T
+    dT_dt[0] = 0.0
+
+    if n_segments > 1:
+        for i in range(1, n_segments - 1):
+            temp = temperature[i]
+            dT_dt[i] = (
+                k_cond_coeff * (temperature[i - 1] - 2.0 * temp + temperature[i + 1])
+                - conv_loss_coeff[i] * (temp - dielectric_temp)
+            )
+
+        temp_last = temperature[n_segments - 1]
+        dT_dt[n_segments - 1] = (
+            k_cond_coeff * (temperature[n_segments - 2] - temp_last)
+            - conv_loss_coeff[n_segments - 1] * (temp_last - dielectric_temp)
+        )
+
+    if bottom_joule_factor != 0.0:
+        for i in range(bottom_start, bottom_end):
+            dT_dt[i] += bottom_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if top_joule_factor != 0.0:
+        for i in range(top_start, top_end):
+            dT_dt[i] += top_joule_factor * (
+                1.0 + alpha_rho * (temperature[i] - temp_ref)
+            )
+
+    if 0 <= plasma_idx < n_segments:
+        dT_dt[plasma_idx] += plasma_heat
+
+    max_damage = 0.0
+    for i in range(1, n_segments):
+        temperature[i] += dT_dt[i] * temp_update_factor
+
+        current_damage = damage[i]
+        temp = temperature[i]
+        if temp > threshold_k:
+            current_damage += stress_term_dt * np.exp(activation_scale / temp)
+            damage[i] = current_damage
+
+        if current_damage > max_damage:
+            max_damage = current_damage
+
+    temperature[0] = spool_temp
+    current_damage = damage[0]
+    if spool_temp > threshold_k:
+        current_damage += stress_term_dt * np.exp(activation_scale / spool_temp)
+        damage[0] = current_damage
+    if current_damage > max_damage:
+        max_damage = current_damage
+
+    return max_damage
+
+
+@njit(cache=True, fastmath=True)
+def resolve_discharge_partition(
+    spark_state: int,
+    has_spark_location: bool,
+    spark_location_mm: float,
+    voltage: float,
+    current: float,
+    current_squared: float,
+    segment_len_mm: float,
+    zone_start: int,
+    zone_end: int,
+    n_segments: int,
+    contact_bottom_idx: int,
+    contact_top_idx: int,
+    plasma_efficiency: float,
+    joule_factor_base: float,
+) -> tuple[int, float, int, int, float, int, int, float]:
+    """Resolve spark index, plasma heating, and contact-current partitioning."""
+    plasma_idx = -1
+    plasma_heat = 0.0
+    bottom_start = 0
+    bottom_end = 0
+    bottom_joule_factor = 0.0
+    top_start = 0
+    top_end = 0
+    top_joule_factor = 0.0
+
+    is_active_discharge = spark_state == 1 or spark_state == -1
+    if is_active_discharge and has_spark_location:
+        if segment_len_mm > 0.0 and zone_end > zone_start:
+            rel_idx_float = spark_location_mm / segment_len_mm
+            zone_len = zone_end - zone_start
+            rel_idx = int(min(max(0.0, rel_idx_float), float(zone_len - 1)))
+            plasma_idx = zone_start + rel_idx
+
+        if 0 <= plasma_idx < n_segments:
+            plasma_heat = plasma_efficiency * voltage * current
+            if not np.isfinite(plasma_heat):
+                plasma_heat = 0.0
+
+    if (
+        not is_active_discharge
+        or current_squared <= 1e-6
+        or contact_top_idx < contact_bottom_idx
+    ):
+        return (
+            plasma_idx,
+            plasma_heat,
+            bottom_start,
+            bottom_end,
+            bottom_joule_factor,
+            top_start,
+            top_end,
+            top_joule_factor,
+        )
+
+    spark_idx = plasma_idx
+    if spark_idx < 0 and has_spark_location:
+        spark_idx = int(
+            min(max(spark_location_mm / segment_len_mm, 0.0), float(n_segments - 1))
+        )
+
+    spark_idx = min(max(int(spark_idx), contact_bottom_idx), contact_top_idx)
+
+    L_bottom = max(0, spark_idx - contact_bottom_idx)
+    L_top = max(0, contact_top_idx - spark_idx)
+    total_length = L_bottom + L_top
+    if total_length > 0:
+        if L_bottom == 0:
+            i_bottom = 0.0
+            i_top = current
+        elif L_top == 0:
+            i_bottom = current
+            i_top = 0.0
+        else:
+            i_bottom = current * (L_top / total_length)
+            i_top = current * (L_bottom / total_length)
+    else:
+        i_bottom = current * 0.5
+        i_top = current * 0.5
+
+    if L_bottom > 0 and spark_idx > contact_bottom_idx:
+        bottom_start = contact_bottom_idx
+        bottom_end = spark_idx
+        bottom_joule_factor = joule_factor_base * (i_bottom * i_bottom)
+
+    if L_top > 0 and spark_idx < contact_top_idx:
+        top_start = spark_idx + 1
+        top_end = contact_top_idx + 1
+        top_joule_factor = joule_factor_base * (i_top * i_top)
+
+    return (
+        plasma_idx,
+        plasma_heat,
+        bottom_start,
+        bottom_end,
+        bottom_joule_factor,
+        top_start,
+        top_end,
+        top_joule_factor,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def advance_wire_step_inplace(
+    temperature: np.ndarray,
+    damage: np.ndarray,
+    dT_dt: np.ndarray,
+    conv_loss_coeff: np.ndarray,
+    position_offset_mm: float,
+    position_wrap_threshold_mm: float,
+    delta_mm: float,
+    spool_temp: float,
+    k_cond_coeff: float,
+    temp_update_factor: float,
+    dielectric_temp: float,
+    temp_ref: float,
+    alpha_rho: float,
+    spark_state: int,
+    has_spark_location: bool,
+    spark_location_mm: float,
+    voltage: float,
+    current: float,
+    current_squared: float,
+    segment_len_mm: float,
+    zone_start: int,
+    zone_end: int,
+    contact_bottom_idx: int,
+    contact_top_idx: int,
+    plasma_efficiency: float,
+    joule_factor_base: float,
+    threshold_k: float,
+    stress_term_dt: float,
+    activation_scale: float,
+) -> tuple[float, float]:
+    """Advance transport and apply the full discharge thermal-damage step."""
+    n_segments = temperature.shape[0]
+    if n_segments == 0:
+        return position_offset_mm, 0.0
+
+    if delta_mm != 0.0:
+        if position_wrap_threshold_mm <= 0.0:
+            raise ValueError("position_wrap_threshold_mm must be positive")
+        position_offset_mm += delta_mm
+        rollover_count = 0
+        while position_offset_mm > position_wrap_threshold_mm:
+            position_offset_mm -= position_wrap_threshold_mm
+            rollover_count += 1
+
+        if rollover_count >= n_segments:
+            for i in range(n_segments):
+                temperature[i] = spool_temp
+                damage[i] = 0.0
+        elif rollover_count > 0:
+            for i in range(n_segments - 1, rollover_count - 1, -1):
+                temperature[i] = temperature[i - rollover_count]
+                damage[i] = damage[i - rollover_count]
+
+            for i in range(rollover_count):
+                temperature[i] = spool_temp
+                damage[i] = 0.0
+
+    (
+        plasma_idx,
+        plasma_heat,
+        bottom_start,
+        bottom_end,
+        bottom_joule_factor,
+        top_start,
+        top_end,
+        top_joule_factor,
+    ) = resolve_discharge_partition(
+        spark_state,
+        has_spark_location,
+        spark_location_mm,
+        voltage,
+        current,
+        current_squared,
+        segment_len_mm,
+        zone_start,
+        zone_end,
+        n_segments,
+        contact_bottom_idx,
+        contact_top_idx,
+        plasma_efficiency,
+        joule_factor_base,
+    )
+
+    max_damage = apply_thermal_damage_core_inplace(
+        temperature,
+        damage,
+        dT_dt,
+        conv_loss_coeff,
+        k_cond_coeff,
+        temp_update_factor,
+        dielectric_temp,
+        temp_ref,
+        alpha_rho,
+        bottom_start,
+        bottom_end,
+        bottom_joule_factor,
+        top_start,
+        top_end,
+        top_joule_factor,
+        plasma_idx,
+        plasma_heat,
+        spool_temp,
+        threshold_k,
+        stress_term_dt,
+        activation_scale,
+    )
+
+    return position_offset_mm, max_damage
 
 
 class WireModule(EDMModule):
@@ -156,6 +455,10 @@ class WireModule(EDMModule):
 
         # ── Module Parameters ──
         self.params = parameters or WireModuleParameters()
+        if self.params.segment_len <= 0.0:
+            raise ValueError("WireModuleParameters.segment_len must be positive")
+        if self.params.buffer_len_bottom < 0.0 or self.params.buffer_len_top < 0.0:
+            raise ValueError("Wire buffer lengths must be non-negative")
 
         # ── Automatic Material Loading ──
         material_db = get_material_db()
@@ -198,17 +501,16 @@ class WireModule(EDMModule):
         self._Segment = Segment
         self.segment_len_mm = float(self.params.segment_len)
 
-        # Initialize segments list (for API compatibility)
-        self.segments = [
-            Segment(i * self.segment_len_mm, float(self.params.spool_T), 0.0)
-            for i in range(self.n_segments)
-        ]
+        # Keep the dataclass type for compatibility snapshots, but do not mirror it
+        # on every microstep. The NumPy arrays below are the live state.
 
-        # ── Internal NumPy arrays for fast access (optimization) ──
-        # Store segment data in arrays to avoid list comprehensions
-        self._y_start_mm = np.array(
-            [i * self.segment_len_mm for i in range(self.n_segments)], dtype=np.float32
-        )
+        # ── Internal NumPy arrays for the live wire state ──
+        # Keep segment data in arrays to avoid rebuilding compatibility objects.
+        self._base_positions_mm = self._build_initial_positions()
+        self._y_start_mm = self._base_positions_mm.copy()
+        self._position_offset_mm = 0.0
+        self._position_wrap_threshold_mm = self._compute_position_wrap_threshold()
+        self._positions_dirty = False
         self._temperature = np.full(
             self.n_segments, self.params.spool_T, dtype=np.float32
         )
@@ -234,23 +536,25 @@ class WireModule(EDMModule):
         # Electrical properties from material database
         self.rho_elec = self.wire_material.electrical_resistivity
         self.alpha_rho = self.wire_material.temperature_coefficient
+        self.joule_factor_base = self.joule_geom_factor * self.rho_elec
 
         # Time constants
         self.dt_sim = 1e-6  # [s]
         self.temp_ref = 293.15  # [K]
-
-        # Pre-compute combined scaling factor
-        self.temp_update_factor = self.dt_sim / self.denominator
 
         if self.denominator == 0:
             raise ValueError(
                 "Denominator for dT/dt is zero. Check wire/segment properties."
             )
 
+        # Pre-compute combined scaling factor
+        self.temp_update_factor = self.dt_sim / self.denominator
+
         # ── Pre-allocate Arrays ──
         self.dT_dt = np.zeros(self.n_segments, dtype=np.float32)
         # Convection coefficients per PHYSICAL index (0..N-1)
         self.h_eff_zone = np.zeros(self.n_segments, dtype=np.float32)
+        self.conv_loss_coeff = np.zeros(self.n_segments, dtype=np.float32)
 
         # Zone boundaries
         self.actual_zone_start = min(self.zone_start, self.n_segments - 1)
@@ -261,11 +565,23 @@ class WireModule(EDMModule):
         else:
             self.zone_size = 1
 
-        # ── Damage Model - Wire Stress Calculation ──
+        # ── Damage Model - material-specific wire break coefficients ──
         # sigma = F / A where A = pi * r^2 (already computed as self.S in m²)
         self.wire_stress_mpa = (
             self.params.wire_tension_force / self.S
         ) / 1e6  # Convert Pa to MPa
+        self.damage_temperature_threshold_k = (
+            self.wire_material.damage_temperature_threshold
+        )
+        self.damage_stress_term_dt = (
+            self.wire_material.damage_rate_constant
+            * (self.wire_stress_mpa ** self.wire_material.damage_stress_exponent)
+            * self.dt_sim
+        )
+        self.damage_activation_scale = (
+            -self.wire_material.damage_activation_energy
+            / _UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K
+        )
 
         # Cache for last computed zone mean
         self._last_zone_mean = self.params.spool_T
@@ -300,27 +616,94 @@ class WireModule(EDMModule):
             self.n_segments - 1, max(self.contact_top_idx, self.zone_end)
         )
 
-        print(
-            f"[+] Electrical contacts (physical): segments {self.contact_bottom_idx} to {self.contact_top_idx}"
+    def _build_initial_positions(self) -> np.ndarray:
+        """Return the default segment start positions for a fresh episode."""
+        return np.arange(self.n_segments, dtype=np.float32) * np.float32(
+            self.segment_len_mm
         )
-        print(
-            f"   Workpiece zone (physical): segments {self.zone_start} to {self.zone_end}"
+
+    def _compute_position_wrap_threshold(self) -> float:
+        """Return the distance advanced before the leading segment rolls over."""
+        if self.segment_len_mm <= 0.0:
+            raise ValueError("segment_len_mm must be positive")
+        threshold = float(
+            self.total_L - (self.segment_len_mm * float(max(self.n_segments - 1, 0)))
         )
+        if threshold <= 0.0:
+            raise ValueError("position_wrap_threshold_mm must be positive")
+        return threshold
+
+    def _ensure_position_buffer(self) -> np.ndarray:
+        """Refresh the compatibility position snapshot only when transport moved."""
+        if self._positions_dirty and self._y_start_mm.size > 0:
+            np.add(
+                self._base_positions_mm,
+                self._position_offset_mm,
+                out=self._y_start_mm,
+                casting="unsafe",
+            )
+            self._positions_dirty = False
+        return self._y_start_mm
+
+    def _roll_in_fresh_segments(self, count: int) -> None:
+        """Insert fresh spool segments after one or more wraparound events."""
+        if count <= 0:
+            return
+
+        if count >= self.n_segments:
+            self._temperature.fill(np.float32(self.params.spool_T))
+            self._damage.fill(0.0)
+            return
+
+        self._temperature[count:] = self._temperature[:-count]
+        self._damage[count:] = self._damage[:-count]
+        self._temperature[:count] = np.float32(self.params.spool_T)
+        self._damage[:count] = 0.0
+
+    @property
+    def segments(self) -> list:
+        """Return a point-in-time snapshot of segment data for compatibility."""
+        y_start_mm = self._ensure_position_buffer()
+        return [
+            self._Segment(
+                float(y_start_mm[i]),
+                float(self._temperature[i]),
+                float(self._damage[i]),
+            )
+            for i in range(self.n_segments)
+        ]
+
+    def reset(self, state: EDMState) -> None:
+        """Restore wire thermal, damage, and transport state for a new episode."""
+        self._position_offset_mm = 0.0
+        self._positions_dirty = False
+        self._y_start_mm = self._base_positions_mm.copy()
+        self._temperature.fill(np.float32(self.params.spool_T))
+        self._damage.fill(0.0)
+        self.dT_dt.fill(0.0)
+        self.h_eff_zone.fill(0.0)
+        self.conv_loss_coeff.fill(0.0)
+        self._last_zone_mean = self.params.spool_T
+        self._last_flow_condition = None
+        self.zone_mean_counter = 0
+
+        state.wire_temperature = self._temperature
+        state.wire_damage = self._damage
+        state.wire_max_damage = 0.0
+        state.is_wire_broken = False
+        state.wire_average_temperature = (
+            self._last_zone_mean if self.params.compute_zone_mean else None
+        )
+        state.wire_head_idx = 0
+        state.wire_offset_mm = 0.0
+        state.wire_material_positions_mm = self._y_start_mm
 
     def update(self, state: EDMState) -> None:
         if state.is_wire_broken:
             return
 
-        # Fast path: avoid array length checks
-        T = state.wire_temperature
-        if len(T) != self.n_segments:
-            state.wire_temperature = np.full(
-                self.n_segments, self.params.spool_T, dtype=np.float32
-            )
-            T = state.wire_temperature
-
         # Cache lookups for efficiency
-        I = state.current or 0.0
+        I = state.current
         I_squared = I * I
         dielectric_temp = state.dielectric_temperature
         wire_unwind_vel = state.wire_unwinding_velocity
@@ -333,272 +716,103 @@ class WireModule(EDMModule):
             self._update_convection_coefficients(wire_unwind_vel, flow_condition)
             self._last_flow_condition = flow_condition
 
-        # ── Wire movement: simple Lagrangian advance and single-segment rollover ──
+        T_vec = self._temperature
+        delta_mm = 0.0
         if self.params.moving_segments:
-            dt_us = float(self.env.config.dt)
-            v_mm_per_us = float(wire_unwind_vel) * 1e-3
-            delta_mm = v_mm_per_us * dt_us
+            dt_us = self.env.config.dt
+            delta_mm = wire_unwind_vel * 1e-3 * dt_us
+            if delta_mm != 0.0:
+                self._positions_dirty = True
 
-            # Update positions using vectorized operation
-            self._y_start_mm += delta_mm
+        has_spark_location = state.spark_status[1] is not None
+        spark_location_mm = state.spark_status[1] if has_spark_location else 0.0
 
-            # Check if last segment crossed threshold
-            if self._y_start_mm[-1] > self.total_L:
-                remainder = self._y_start_mm[-1] - self.total_L
-
-                # Rollover: shift all segments one position forward
-                # Using NumPy array operations for speed
-                self._y_start_mm[1:] = self._y_start_mm[:-1]
-                self._temperature[1:] = self._temperature[:-1]
-                self._damage[1:] = self._damage[:-1]
-
-                # Initialize new segment at position 0
-                self._y_start_mm[0] = remainder
-                self._temperature[0] = float(self.params.spool_T)
-                self._damage[0] = 0.0
-
-                # Sync arrays back to Segment objects (only when rollover occurs)
-                for i in range(self.n_segments):
-                    self.segments[i].y_start_mm = float(self._y_start_mm[i])
-                    self.segments[i].temperature = float(self._temperature[i])
-                    self.segments[i].damage = float(self._damage[i])
-            else:
-                # Only update positions in Segment objects (faster when no rollover)
-                # We can skip this if we're not accessing segments elsewhere
-                # For now, sync only y_start_mm to maintain compatibility
-                for i in range(self.n_segments):
-                    self.segments[i].y_start_mm = float(self._y_start_mm[i])
-
-        # Prepare plasma heating (physical index)
-        # Apply plasma heating for both sparks (1) AND short circuits (-1)
-        # Both discharge types generate the same heat at the discharge location
-        plasma_idx = -1
-        plasma_heat = 0.0
-        is_active_discharge = (state.spark_status[0] == 1 or state.spark_status[0] == -1)
-        if is_active_discharge and state.spark_status[1] is not None:
-            y_spark = state.spark_status[1]
-            # Clamp spark location strictly within the workpiece zone
-            if self.params.segment_len > 0 and self.zone_end > self.zone_start:
-                rel_idx_float = y_spark / self.params.segment_len
-                # Clip to [0, zone_len - 1]
-                zone_len = self.zone_end - self.zone_start
-                rel_idx = int(min(max(0.0, rel_idx_float), zone_len - 1))
-                plasma_idx = self.zone_start + rel_idx
-            else:
-                plasma_idx = -1
-
-            if 0 <= plasma_idx < self.n_segments:
-                voltage = state.voltage if state.voltage is not None else 0.0
-                plasma_heat = self.params.plasma_efficiency * voltage * I
-                if not np.isfinite(plasma_heat):
-                    plasma_heat = 0.0
-
-        # Advection disabled when moving_segments is enabled
-        adv_coeff = 0.0
-
-        # ── Thermal update (vectorized NumPy operations) ──
-        # Sync internal array from state array at start (if state array exists and matches size)
-        # On first call, initialize arrays from segments
-        if not hasattr(self, "_arrays_initialized"):
-            # Initial sync from segments to arrays (one-time)
-            for i in range(self.n_segments):
-                self._temperature[i] = float(self.segments[i].temperature)
-                self._damage[i] = float(self.segments[i].damage)
-            self._arrays_initialized = True
-
-        # Use internal array as primary working array for vectorized operations
-        T_vec = self._temperature  # Work with internal array
-        dT_dt = self.dT_dt
-        dT_dt[:] = 0.0
-
-        # 1) Conduction (vectorized)
-        if self.n_segments > 1:
-            # Interior points: vectorized second derivative
-            dT_dt[1:-1] = self.k_cond_coeff * (
-                T_vec[:-2] - 2.0 * T_vec[1:-1] + T_vec[2:]
-            )
-            # Outlet boundary (Neumann): use last interior neighbor
-            dT_dt[-1] = self.k_cond_coeff * (T_vec[-2] - T_vec[-1])
-
-        # 2) Joule heating (vectorized)
-        # Only apply Joule heating when there's an active spark or short circuit
-        # During idle state with open-circuit voltage, current should be zero or negligible
-        # IMPORTANT: Check spark_status[0] explicitly - it must be 1 (spark) or -1 (short)
-        # Don't rely on is_short_circuit flag alone, as it might be set incorrectly
-        is_active_discharge = state.spark_status[0] == 1 or state.spark_status[0] == -1
-
-        # Additional safety check: even if there's current, only apply Joule heating with active discharge
-        # CRITICAL: Do NOT apply Joule heating if:
-        #   - spark_status[0] == 0 (idle) - no current should flow
-        #   - spark_status[0] == -2 (rest) - no current should flow
-        #   - current is zero or negligible
-        if (
-            is_active_discharge
-            and I_squared > 1e-6
-            and self.contact_top_idx >= self.contact_bottom_idx
-        ):
-            # Current splits between two paths: bottom contact → spark and top contact → spark
-            # For uniform wire, current splits inversely proportional to path length
-            # By Kirchhoff's law: I_total = I_bottom_path + I_top_path
-
-            # Find spark location (use plasma_idx if available, otherwise use spark_status location)
-            spark_idx = plasma_idx
-            if spark_idx < 0 and state.spark_status[1] is not None:
-                # Convert spark location (mm) to segment index
-                y_spark_mm = state.spark_status[1]
-                spark_idx = int(
-                    np.clip(
-                        y_spark_mm / self.params.segment_len, 0, self.n_segments - 1
-                    )
-                )
-
-            # Ensure spark is within valid range
-            spark_idx = np.clip(
-                spark_idx, self.contact_bottom_idx, self.contact_top_idx
-            )
-
-            # Calculate path lengths (in number of segments)
-            # Path from bottom contact to spark
-            L_bottom = max(
-                0, spark_idx - self.contact_bottom_idx
-            )  # Can be 0 if spark at bottom contact
-            # Path from spark to top contact
-            L_top = max(
-                0, self.contact_top_idx - spark_idx
-            )  # Can be 0 if spark at top contact
-
-            # Current splits inversely proportional to resistance (proportional to length for uniform wire)
-            # For uniform wire: R ∝ L, so current splits as: I ∝ 1/R ∝ 1/L
-            # I_bottom = I_total * R_top / (R_bottom + R_top) = I_total * L_top / (L_bottom + L_top)
-            # I_top = I_total * R_bottom / (R_bottom + R_top) = I_total * L_bottom / (L_bottom + L_top)
-            # This ensures more current flows through the shorter path (lower resistance)
-            total_length = L_bottom + L_top
-            if total_length > 0:
-                # Current splits inversely proportional to path length
-                # More current flows through shorter path (lower resistance)
-                if L_bottom == 0:
-                    # Spark at bottom contact: all current through top path
-                    I_bottom = 0.0
-                    I_top = I
-                elif L_top == 0:
-                    # Spark at top contact: all current through bottom path
-                    I_bottom = I
-                    I_top = 0.0
-                else:
-                    # Both paths exist: split inversely proportional to length
-                    I_bottom = I * (L_top / total_length)
-                    I_top = I * (L_bottom / total_length)
-            else:
-                # Edge case: spark exactly at both contacts (shouldn't happen, but handle gracefully)
-                I_bottom = I * 0.5
-                I_top = I * 0.5
-
-            # Calculate Joule heating factors for each path
-            joule_factor_base = self.joule_geom_factor * self.rho_elec
-
-            # Apply Joule heating to bottom path (contact_bottom_idx to spark_idx)
-            # Current is constant along this path (same current flows through all segments)
-            if L_bottom > 0 and spark_idx > self.contact_bottom_idx:
-                bottom_slice = slice(self.contact_bottom_idx, spark_idx)
-                I_bottom_sq = I_bottom * I_bottom
-                joule_factor_bottom = joule_factor_base * I_bottom_sq
-                rho_T_bottom = 1.0 + self.alpha_rho * (
-                    T_vec[bottom_slice] - self.temp_ref
-                )
-                dT_dt[bottom_slice] += joule_factor_bottom * rho_T_bottom
-
-            # Apply Joule heating to top path (spark_idx to contact_top_idx)
-            # Current is constant along this path (same current flows through all segments)
-            if L_top > 0 and spark_idx < self.contact_top_idx:
-                top_slice = slice(
-                    spark_idx + 1, self.contact_top_idx + 1
-                )  # +1 to exclude spark itself
-                I_top_sq = I_top * I_top
-                joule_factor_top = joule_factor_base * I_top_sq
-                rho_T_top = 1.0 + self.alpha_rho * (T_vec[top_slice] - self.temp_ref)
-                dT_dt[top_slice] += joule_factor_top * rho_T_top
-
-            # Note: The spark location itself gets plasma heating (handled separately in step 3)
-            # so we don't apply Joule heating there to avoid double counting
-            # Edge cases (spark at contacts) are handled by the above conditions:
-            # - If spark at bottom contact: only top path gets heated (L_bottom==0 or spark_idx==contact_bottom_idx fails first condition)
-            # - If spark at top contact: only bottom path gets heated (L_top==0 or spark_idx==contact_top_idx fails second condition)
-
-        # 3) Plasma heating (single point, no vectorization needed)
-        if 0 <= plasma_idx < self.n_segments:
-            dT_dt[plasma_idx] += plasma_heat
-
-        # 4) Convection (vectorized)
-        conv_coeffs = self.h_eff_zone * self.A
-        dT_dt -= conv_coeffs * (T_vec - dielectric_temp)
-
-        # 5) Update temperatures (vectorized)
-        T_vec += dT_dt * self.temp_update_factor
-        T_vec[0] = self.params.spool_T
-
-        # Sync temperatures back to Segment objects
-        # Optimized: use vectorized assignment where possible
-        # Note: Python dataclasses don't support bulk assignment, so we use a loop
-        # but we can optimize by only updating changed values or using list comprehension
-        if self.n_segments > 0:
-            # Update all segments (necessary for compatibility)
-            for i in range(self.n_segments):
-                self.segments[i].temperature = float(T_vec[i])
-
-        # ── Damage Accumulation and Wire Breaking ──
-        self._accumulate_damage(state, T_vec)
-
-        # Expose movement diagnostics and positions with guarded sync.
-        state.wire_head_idx = 0
-        if self._y_start_mm.size > 0:
-            state.wire_offset_mm = float(self._y_start_mm[0])
-            # Use internal array directly (no list comprehension needed)
-            state.wire_material_positions_mm = self._y_start_mm.copy()
-        else:
-            state.wire_offset_mm = 0.0
-            state.wire_material_positions_mm = np.array([], dtype=np.float64)
-            print(
-                "[WARN] Wire position buffer is empty during state sync. "
-                "Exporting empty wire_material_positions_mm."
-            )
-
-        # Sync temperature back to state array, resetting on shape/type mismatch.
-        if not isinstance(state.wire_temperature, np.ndarray):
-            print(
-                "[WARN] state.wire_temperature is not a NumPy array during sync. "
-                "Resetting to current wire temperature field."
-            )
-            state.wire_temperature = T_vec.copy()
-        elif state.wire_temperature.shape != T_vec.shape:
-            print(
-                "[WARN] state.wire_temperature shape mismatch during sync "
-                f"({state.wire_temperature.shape} vs {T_vec.shape}). "
-                "Resetting array to match simulation field."
-            )
-            state.wire_temperature = T_vec.copy()
-        else:
-            try:
-                state.wire_temperature[:] = T_vec
-            except (TypeError, ValueError) as e:
-                print(
-                    f"[WARN] Could not sync wire temperature in-place: {e}. "
-                    "Resetting array copy instead."
-                )
-                state.wire_temperature = T_vec.copy()
-
-        # Sync damage array to state for logging/visualization
-        state.wire_damage = self._damage.copy()
+        self._position_offset_mm, max_damage = advance_wire_step_inplace(
+            T_vec,
+            self._damage,
+            self.dT_dt,
+            self.conv_loss_coeff,
+            self._position_offset_mm,
+            self._position_wrap_threshold_mm,
+            delta_mm,
+            self.params.spool_T,
+            self.k_cond_coeff,
+            self.temp_update_factor,
+            dielectric_temp,
+            self.temp_ref,
+            self.alpha_rho,
+            int(state.spark_status[0]),
+            bool(has_spark_location),
+            spark_location_mm,
+            state.voltage,
+            I,
+            I_squared,
+            self.segment_len_mm,
+            int(self.zone_start),
+            int(self.zone_end),
+            int(self.contact_bottom_idx),
+            int(self.contact_top_idx),
+            self.params.plasma_efficiency,
+            self.joule_factor_base,
+            self.damage_temperature_threshold_k,
+            self.damage_stress_term_dt,
+            self.damage_activation_scale,
+        )
+        state.wire_max_damage = max_damage
+        if max_damage >= 1.0:
+            state.is_wire_broken = True
+        self._sync_state_views(state, T_vec)
 
         # Compute zone mean only when needed
         if self.params.compute_zone_mean:
             self.zone_mean_counter += 1
             if self.zone_mean_counter >= self.params.zone_mean_interval:
-                self._last_zone_mean = self._compute_zone_mean_fast(T)
+                self._last_zone_mean = self._compute_zone_mean_fast(T_vec)
                 state.wire_average_temperature = self._last_zone_mean
                 self.zone_mean_counter = 0
             else:
                 # Use cached value
                 state.wire_average_temperature = self._last_zone_mean
+
+    def _advance_transport(self, wire_unwind_vel: float) -> None:
+        """Advance the moving-wire transport model and roll in fresh segments."""
+        if not self.params.moving_segments:
+            return
+
+        dt_us = self.env.config.dt
+        v_mm_per_us = wire_unwind_vel * 1e-3
+        delta_mm = v_mm_per_us * dt_us
+        if delta_mm == 0.0:
+            return
+        if self._position_wrap_threshold_mm <= 0.0:
+            raise ValueError("position_wrap_threshold_mm must be positive")
+
+        self._positions_dirty = True
+        self._position_offset_mm += delta_mm
+        rollover_count = 0
+        while self._position_offset_mm > self._position_wrap_threshold_mm:
+            self._position_offset_mm -= self._position_wrap_threshold_mm
+            rollover_count += 1
+        if rollover_count:
+            self._roll_in_fresh_segments(int(rollover_count))
+
+    def _sync_state_views(self, state: EDMState, T_vec: np.ndarray) -> None:
+        """Sync wire diagnostics back into the shared state buffers."""
+        state.wire_head_idx = 0
+        if self._base_positions_mm.size > 0:
+            state.wire_offset_mm = float(self._position_offset_mm)
+            positions = self._ensure_position_buffer()
+            if state.wire_material_positions_mm is not positions:
+                state.wire_material_positions_mm = positions
+        else:
+            state.wire_offset_mm = 0.0
+            state.wire_material_positions_mm = np.array([], dtype=np.float64)
+
+        if state.wire_temperature is not T_vec:
+            state.wire_temperature = T_vec
+
+        if state.wire_damage is not self._damage:
+            state.wire_damage = self._damage
 
     def _update_convection_coefficients(
         self, wire_unwind_vel: float, flow_condition: float
@@ -622,49 +836,14 @@ class WireModule(EDMModule):
 
         # Fill array (per PHYSICAL index order)
         self.h_eff_zone.fill(h_eff_base)
+        self.conv_loss_coeff.fill(h_eff_base * self.A)
         if self.actual_zone_start < self.actual_zone_end:
             self.h_eff_zone[self.actual_zone_start : self.actual_zone_end] = (
                 h_eff_enhanced
             )
-
-    def _accumulate_damage(self, state: EDMState, T: np.ndarray) -> None:
-        """Accumulate damage using thermomechanical model from CIRP-HPC 2026.
-
-        Damage rate: D_dot = k * sigma^n * exp(-Q / (R * T))
-        Wire breaks when any segment reaches D >= 1.0
-        """
-        # Pre-computed constants
-        k = self.params.damage_rate_constant
-        n = self.params.damage_stress_exponent
-        Q = self.params.damage_activation_energy
-        R = self.params.gas_constant
-        sigma = self.wire_stress_mpa
-        dt = self.dt_sim  # Time step in seconds
-
-        # Stress term (constant for all segments)
-        stress_term = k * (sigma**n)
-
-        # Temperature-dependent damage rate for each segment
-        # Only accumulate damage where T > threshold (423K = 150C)
-        # Below this temperature, damage is negligible per the paper
-        T_threshold = 423.0  # K (150C)
-
-        for i in range(self.n_segments):
-            if T[i] > T_threshold:
-                # Arrhenius term
-                arrhenius = np.exp(-Q / (R * T[i]))
-                # Damage increment
-                d_damage = stress_term * arrhenius * dt
-                # Accumulate damage
-                self._damage[i] += d_damage
-                self.segments[i].damage = float(self._damage[i])
-
-        # Check for wire breakage - any segment reaching D >= 1 triggers breakage
-        max_damage = np.max(self._damage)
-        state.wire_max_damage = float(max_damage)
-
-        if max_damage >= 1.0:
-            state.is_wire_broken = True
+            self.conv_loss_coeff[self.actual_zone_start : self.actual_zone_end] = (
+                h_eff_enhanced * self.A
+            )
 
     def _compute_zone_mean_fast(self, T: np.ndarray) -> float:
         """Zone mean over contiguous zone indices (simple)."""

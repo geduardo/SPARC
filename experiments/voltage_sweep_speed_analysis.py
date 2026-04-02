@@ -7,10 +7,11 @@ and measures the average advancing speed for each voltage. The goal is to
 characterize the relationship between voltage setpoint and cutting speed.
 
 Setup:
-- 0.25 mm wire diameter
+- 0.25 mm wire diameter (via EnvironmentConfig.wire_diameter)
 - 38 mm workpiece height
-- 10000 µm segments (minimal thermal resolution)
-- Very high convection coefficient (100000000) to disable thermal effects
+- 10 mm wire segments (~minimal thermal resolution vs default 0.2 mm)
+- Very high WireModuleParameters.base_convection_coefficient to clamp wire
+  temperature to the dielectric (effectively disables thermal transients)
 - Velocity control mode
 
 Speed measurement protocol:
@@ -22,15 +23,20 @@ Speed measurement protocol:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import deque
 from datetime import datetime
 import sys
 import pathlib
 
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+EXPERIMENTS_DIR = REPO_ROOT / "experiments"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from src.wedm.envs import WireEDMEnv
-from src.wedm.core.env_config import EnvironmentConfig
-from src.wedm.modules.wire import WireModuleParameters
+from wedm.envs import WireEDMEnv
+from wedm.core.env_config import EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
 
 
 def create_voltage_controller(target_voltage: float = 30.0):
@@ -48,10 +54,10 @@ def create_voltage_controller(target_voltage: float = 30.0):
         
         # Calculate average voltage over the provided history (last 1ms of data)
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
             # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
         
         # PI control
         error = target_voltage - avg_voltage
@@ -71,7 +77,8 @@ def create_voltage_controller(target_voltage: float = 30.0):
         return {
             "servo": np.array([delta], dtype=np.float32),
             "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
+                # Must match swept setpoint: env applies this to state.target_voltage
+                "target_voltage": np.array([target_voltage], dtype=np.float32),
                 "current_mode": np.array([7], dtype=np.int32),
                 "ON_time": np.array([2.0], dtype=np.float32),
                 "OFF_time": np.array([15.0], dtype=np.float32),
@@ -96,29 +103,27 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         verbose: Print progress information
         
     Returns:
-        dict with 'avg_speed_um_s', 'avg_speed_mm_min', 'avg_voltage', 'ssoll'
+        dict with avg_speed_um_s, avg_speed_mm_min, avg_voltage, target_voltage,
+        distance_traveled, time_elapsed
     """
     
-    # Configure wire parameters with very large segments and high convection
+    # Configure wire parameters: coarse segments + extreme convection (see wire module)
     wire_params = WireModuleParameters()
-    wire_params.segment_len = 10.0  # 10000 µm = 10 mm segments
-    wire_params.wire_diameter = 0.25  # mm
-    
-    # Configure environment
+    wire_params.segment_len = 10.0  # [mm] = 10_000 µm segments
+    wire_params.base_convection_coefficient = 1.0e8  # [W/m²·K] pulls T → dielectric T
+
+    # Configure environment (wire diameter lives on config, not WireModuleParameters)
     env_config = EnvironmentConfig()
     env_config.workpiece_height = 38.0  # mm
-    
+    env_config.wire_diameter = 0.25  # mm
+
     # Initialize environment in velocity control mode
     env = WireEDMEnv(
         mechanics_control_mode="velocity",
         wire_params=wire_params,
-        config=env_config
+        config=env_config,
     )
     env.reset(seed=0)
-    
-    # Override convection coefficient to disable thermal effects
-    # Access the wire module and set extreme convection
-    env.wire.h_conv = 100000000.0  # W/(m²·K) - extremely high
     
     # Set initial conditions
     env.state.workpiece_position = 30.0  # µm - start at 30 µm
@@ -135,8 +140,8 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     controller = create_voltage_controller(target_voltage)
     
     # Voltage history tracking (for last 1ms)
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
     
     # Initialize action
     action = controller(env, None)
@@ -150,23 +155,23 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         obs, reward, terminated, truncated, info = env.step(action)
         
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
         
         # Keep only last 1ms of data
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
         
         # Update action on control steps
         if info.get("control_step", False):
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
         
         if terminated or truncated:
             if verbose:
-                print(f"  WARNING: Simulation terminated during stabilization at t={env.state.time} µs")
+                print(f"  WARNING: Simulation terminated during stabilization at t={env.state.time} us")
             return None
     
     # Record starting position and time for measurement phase
@@ -175,7 +180,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     
     if verbose:
         print(f"  Phase 2: Measuring for {stabilization_time/1000:.1f} ms...")
-        print(f"    Start position: {start_position:.2f} µm")
+        print(f"    Start position: {start_position:.2f} um")
     
     # Phase 2: Measurement (0.5 seconds = 500,000 µs)
     measurement_time = 500_000  # µs
@@ -185,7 +190,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         obs, reward, terminated, truncated, info = env.step(action)
         
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
         voltage_samples.append(current_voltage)
@@ -193,16 +198,16 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         # Keep only last 1ms of data
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
         
         # Update action on control steps
         if info.get("control_step", False):
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
         
         if terminated or truncated:
             if verbose:
-                print(f"  WARNING: Simulation terminated during measurement at t={env.state.time} µs")
+                print(f"  WARNING: Simulation terminated during measurement at t={env.state.time} us")
             # Use partial measurement if we got some data
             if i > 100_000:  # At least 0.1 seconds
                 break
@@ -221,25 +226,19 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     avg_voltage = np.mean(voltage_samples) if voltage_samples else 0.0
     
     if verbose:
-        print(f"    End position: {end_position:.2f} µm")
-        print(f"    Distance traveled: {distance_traveled:.2f} µm")
+        print(f"    End position: {end_position:.2f} um")
+        print(f"    Distance traveled: {distance_traveled:.2f} um")
         print(f"    Time elapsed: {time_elapsed/1000:.2f} ms")
-        print(f"    Average speed: {avg_speed_mm_min:.3f} mm/min ({avg_speed_um_s:.1f} µm/s)")
+        print(f"    Average speed: {avg_speed_mm_min:.3f} mm/min ({avg_speed_um_s:.1f} um/s)")
         print(f"    Average voltage: {avg_voltage:.2f} V")
     
-    # Calculate SSoil parameter (this might be related to the voltage or some other metric)
-    # For now, we'll store the target voltage as a placeholder
-    # You may need to adjust this based on what SSoil actually represents
-    ssoll = target_voltage  # Placeholder - adjust as needed
-    
     return {
-        'avg_speed_um_s': avg_speed_um_s,
-        'avg_speed_mm_min': avg_speed_mm_min,
-        'avg_voltage': avg_voltage,
-        'target_voltage': target_voltage,
-        'ssoll': ssoll,
-        'distance_traveled': distance_traveled,
-        'time_elapsed': time_elapsed,
+        "avg_speed_um_s": avg_speed_um_s,
+        "avg_speed_mm_min": avg_speed_mm_min,
+        "avg_voltage": avg_voltage,
+        "target_voltage": target_voltage,
+        "distance_traveled": distance_traveled,
+        "time_elapsed": time_elapsed,
     }
 
 
@@ -253,8 +252,8 @@ def main():
     print("Configuration:")
     print("  Wire diameter: 0.25 mm")
     print("  Workpiece height: 38 mm")
-    print("  Segment length: 10000 µm (10 mm)")
-    print("  Convection coefficient: 100000000 W/(m²·K) (thermal effects disabled)")
+    print("  Segment length: 10 mm (10_000 um)")
+    print("  Wire base_convection_coefficient: 1e8 W/(m^2*K) (thermal transients quenched)")
     print("  Control mode: Velocity")
     print("  Voltage range: 5V to 80V in steps of 5V")
     print("  Measurement protocol: 0.5s stabilization + 0.5s measurement")
@@ -276,30 +275,28 @@ def main():
         
         if result is not None:
             results.append(result)
-            print(f"✓ Success: {result['avg_speed_mm_min']:.3f} mm/min")
+            print(f"[ok] Success: {result['avg_speed_mm_min']:.3f} mm/min")
         else:
-            print(f"✗ Failed: Simulation terminated prematurely")
+            print(f"[FAIL] Simulation terminated prematurely")
         
         print()
     
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    npz_filename = f"experiments/voltage_sweep_results_{timestamp}.npz"
+    EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    npz_path = EXPERIMENTS_DIR / f"voltage_sweep_results_{timestamp}.npz"
     
     # Convert results to arrays
     target_voltages = np.array([r['target_voltage'] for r in results])
     avg_voltages = np.array([r['avg_voltage'] for r in results])
     avg_speeds_um_s = np.array([r['avg_speed_um_s'] for r in results])
     avg_speeds_mm_min = np.array([r['avg_speed_mm_min'] for r in results])
-    ssoll_values = np.array([r['ssoll'] for r in results])
-    
     np.savez(
-        npz_filename,
+        npz_path,
         target_voltages=target_voltages,
         avg_voltages=avg_voltages,
         avg_speeds_um_s=avg_speeds_um_s,
         avg_speeds_mm_min=avg_speeds_mm_min,
-        ssoll_values=ssoll_values,
         results=results,
     )
     
@@ -307,12 +304,12 @@ def main():
     print("Results Summary")
     print("=" * 70)
     print()
-    print(f"{'Voltage (V)':<15} {'Avg Speed (mm/min)':<20} {'Avg Speed (µm/s)':<20}")
+    print(f"{'Voltage (V)':<15} {'Avg Speed (mm/min)':<20} {'Avg Speed (um/s)':<20}")
     print("-" * 70)
     for r in results:
         print(f"{r['target_voltage']:<15.1f} {r['avg_speed_mm_min']:<20.3f} {r['avg_speed_um_s']:<20.1f}")
     print()
-    print(f"Results saved to: {npz_filename}")
+    print(f"Results saved to: {npz_path}")
     print()
     
     # Create plot
@@ -321,13 +318,20 @@ def main():
     fig, ax = plt.subplots(figsize=(12, 8))
     
     # Plot with markers and labels
-    ax.plot(ssoll_values, avg_speeds_mm_min, 'o-', 
-            markersize=10, linewidth=2, color='steelblue',
-            markeredgecolor='darkblue', markeredgewidth=2,
-            label='Average Advancing Speed')
-    
+    ax.plot(
+        target_voltages,
+        avg_speeds_mm_min,
+        "o-",
+        markersize=10,
+        linewidth=2,
+        color="steelblue",
+        markeredgecolor="darkblue",
+        markeredgewidth=2,
+        label="Average advancing speed",
+    )
+
     # Add value labels on each point
-    for i, (x, y) in enumerate(zip(ssoll_values, avg_speeds_mm_min)):
+    for i, (x, y) in enumerate(zip(target_voltages, avg_speeds_mm_min)):
         ax.annotate(f'{y:.3f}', 
                    xy=(x, y), 
                    xytext=(0, 10),
@@ -339,18 +343,22 @@ def main():
                            edgecolor='black',
                            alpha=0.7))
     
-    ax.set_xlabel('SSoil Parameter', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Average Advancing Speed (mm/min)', fontsize=14, fontweight='bold')
-    ax.set_title('Average Advancing Speed vs SSoil Parameter\nCUT P350 Analysis', 
-                fontsize=16, fontweight='bold')
+    ax.set_xlabel("Target generator voltage (V)", fontsize=14, fontweight="bold")
+    ax.set_ylabel("Average advancing speed (mm/min)", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "Average advancing speed vs target voltage\n"
+        "(0.5 s stabilization + 0.5 s measurement per setpoint)",
+        fontsize=16,
+        fontweight="bold",
+    )
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     
     # Save plot
-    plot_filename = f"experiments/voltage_sweep_plot_{timestamp}.png"
+    plot_path = EXPERIMENTS_DIR / f"voltage_sweep_plot_{timestamp}.png"
     plt.tight_layout()
-    plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    print(f"Plot saved to: {plot_filename}")
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    print(f"Plot saved to: {plot_path}")
     
     plt.show()
     

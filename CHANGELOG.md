@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Improved simulation performance with optimized Numba implementations
 - Enhanced documentation and examples
+- **BREAKING:** `EDMState.voltage` and `EDMState.current` are now `float` (default `0.0`) instead of `Optional[float]`. Downstream code must no longer treat these fields as optional or use `None`-checks to detect an "unset" state.
+- **BREAKING:** `EnvironmentConfig` no longer has `max_wire_temperature`, `min_gap_for_operation`, or `max_cutting_force` fields. Wire failure is now determined by the accumulated damage model in `WireMaterial`, not a temperature threshold.
+- `HotStateBundle.apply_to_env()` now copies array data into the target env's buffers via `np.copyto` instead of rebinding references, preventing shared-buffer aliasing across env instances.
+- `_advance_discharge_state()` now enforces `voltage=0` for short circuits internally, removing a fragile caller precondition.
 
 ### Fixed
 - Various bug fixes and performance improvements

@@ -1,14 +1,11 @@
 #!/usr/bin/env python
-# experiments/smoke_test.py
 """
-Quick-n-dirty simulation run to be sure everything wires together.
-Run:
-    python experiments/smoke_test.py --steps 200000 --plot
-    python experiments/smoke_test.py --steps 200000 --plot --mode velocity
+Shared simulation-runner implementation used by the canonical CLI entry point.
 """
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import time
 from typing import Dict, Any, Tuple, Optional
 from datetime import datetime
@@ -18,12 +15,17 @@ import numpy as np
 import sys
 import pathlib
 
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from src.wedm.envs import WireEDMEnv
-from src.wedm.utils.logger import SimulationLogger, LoggerConfig
-from src.wedm.modules.wire import WireModuleParameters
-from src.wedm.core.env_config import EnvironmentConfig
+from wedm import WireEDMEnv, EnvironmentConfig
+from wedm.envs.wire_edm import build_scalar_action
+from wedm.modules.material import MaterialModuleParameters
+from wedm.modules.wire import WireModuleParameters
+from wedm.utils.logger import SimulationLogger, LoggerConfig
+from wedm.utils.performance import print_realtime_summary
 
 
 def create_gap_controller(
@@ -31,6 +33,7 @@ def create_gap_controller(
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
+    generator_voltage: float = 80.0,
 ):  # µm
     """Create adaptive gap controller that works with both control modes."""
 
@@ -46,26 +49,23 @@ def create_gap_controller(
             delta = error * 50.0  # Higher gain for velocity control
             delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
 
-        return {
-            "servo": np.array([delta], dtype=np.float32),
-            "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
-                # Current mode selection (1-19 maps directly to I1-I19):
-                # Mode 13 = I13 = 215A machine current → mapped to 5A crater data
-                "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([on_time], dtype=np.float32),
-                "OFF_time": np.array([off_time], dtype=np.float32),
-            },
-        }
+        return build_scalar_action(
+            servo=delta,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
 
     return controller
 
 
 def create_voltage_controller(
-    target_voltage: float = 30.0,
+    target_avg_voltage: float = 30.0,
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
+    generator_voltage: float = 80.0,
 ):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
 
@@ -81,13 +81,13 @@ def create_voltage_controller(
 
         # Calculate average voltage over the provided history (last 1ms of data)
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
             # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
 
         # PI control
-        error = target_voltage - avg_voltage
+        error = target_avg_voltage - avg_voltage
         integral_error += error
 
         # Integral windup protection
@@ -108,15 +108,35 @@ def create_voltage_controller(
             delta = pi_output * 100.0  # Scale for velocity control
             delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
 
-        return {
-            "servo": np.array([delta], dtype=np.float32),
-            "generator_control": {
-                "target_voltage": np.array([80.0], dtype=np.float32),
-                "current_mode": np.array([current_mode], dtype=np.int32),
-                "ON_time": np.array([on_time], dtype=np.float32),
-                "OFF_time": np.array([off_time], dtype=np.float32),
-            },
-        }
+        return build_scalar_action(
+            servo=delta,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
+
+    return controller
+
+
+def create_fixed_servo_controller(
+    servo: float = 0.25,
+    current_mode: int = 7,
+    on_time: float = 2.0,
+    off_time: float = 33.0,
+    generator_voltage: float = 80.0,
+):
+    """Create a controller that keeps a constant servo command."""
+
+    def controller(env: WireEDMEnv) -> Dict[str, Any]:
+        del env
+        return build_scalar_action(
+            servo=servo,
+            target_voltage=generator_voltage,
+            current_mode=current_mode,
+            ON_time=on_time,
+            OFF_time=off_time,
+        )
 
     return controller
 
@@ -207,8 +227,9 @@ def initialize_environment(
     control_mode: str,
     seed: int = 0,
     log_strategy: str = "full_field",
-    segment_len_um: float = 200.0,
-    workpiece_height_mm: float = 20.0,
+    segment_len_um: float = 500.0,
+    workpiece_height_mm: float = 10.0,
+    enable_analysis_tracking: bool = False,
 ) -> WireEDMEnv:
     """
     Initialize and setup the EDM environment with appropriate wire configuration.
@@ -219,9 +240,13 @@ def initialize_environment(
         log_strategy: "full_field", "zone_mean", or "both"
         segment_len_um: Length of each wire segment in micrometers
         workpiece_height_mm: Height of workpiece in mm
+        enable_analysis_tracking: Whether to keep analysis-only crater history
     """
     # Configure wire parameters
     wire_params = WireModuleParameters()
+    material_params = MaterialModuleParameters(
+        enable_analysis_tracking=enable_analysis_tracking
+    )
     wire_params.segment_len = segment_len_um / 1000.0  # Convert µm to mm
 
     # Configure environment
@@ -243,7 +268,10 @@ def initialize_environment(
 
     # Initialize environment with custom parameters
     env = WireEDMEnv(
-        mechanics_control_mode=control_mode, wire_params=wire_params, config=env_config
+        mechanics_control_mode=control_mode,
+        wire_params=wire_params,
+        material_params=material_params,
+        config=env_config,
     )
     env.reset(seed=seed)
 
@@ -266,8 +294,12 @@ def run_simulation(
     max_steps: int,
     verbose: bool,
     logger_config: LoggerConfig,
+    engine: str = "modular",
     controller_type: str = "gap",
-    target_voltage: float = 30.0,
+    target_gap: float = 5.0,
+    target_avg_voltage: float = 30.0,
+    generator_voltage: float = 80.0,
+    fixed_servo: float = 0.25,
     current_mode: int = 7,
     on_time: float = 2.0,
     off_time: float = 33.0,
@@ -276,99 +308,174 @@ def run_simulation(
     print(
         f"[RUN] Running smoke test with {env.mechanics.control_mode.upper()} control mode"
     )
+    print(f"[ENG] Engine: {engine.upper()}")
 
     if controller_type == "gap":
-        print(f"[CTRL] Using GAP controller (target: 5.0 µm)")
-    else:
+        print(f"[CTRL] Using GAP controller (target: {target_gap:.1f} um)")
+    elif controller_type == "voltage":
         print(
-            f"[CTRL] Using VOLTAGE controller (target: {target_voltage:.1f} V average over 1ms)"
+            "[CTRL] Using VOLTAGE controller "
+            f"(target: {target_avg_voltage:.1f} V average over 1ms)"
         )
+    else:
+        print(f"[CTRL] Using FIXED-SERVO controller (servo: {fixed_servo:.3f})")
+    print(f"[GEN] Generator voltage setpoint: {generator_voltage:.1f} V")
 
-    logger = SimulationLogger(config=logger_config, env_reference=env)
-    logger.reset()
+    use_logger = engine != "compiled-fast"
+    logger = None
+    if use_logger:
+        logger = SimulationLogger(config=logger_config, env_reference=env)
+        logger.reset()
+
+    if engine in {"compiled", "compiled-fast"}:
+        env.init_compiled_scheduler()
 
     # Create the appropriate controller
     if controller_type == "gap":
         controller = create_gap_controller(
-            current_mode=current_mode, on_time=on_time, off_time=off_time
-        )
-    else:  # voltage
-        controller = create_voltage_controller(
-            target_voltage,
+            desired_gap=target_gap,
             current_mode=current_mode,
             on_time=on_time,
             off_time=off_time,
+            generator_voltage=generator_voltage,
+        )
+    elif controller_type == "voltage":
+        controller = create_voltage_controller(
+            target_avg_voltage=target_avg_voltage,
+            current_mode=current_mode,
+            on_time=on_time,
+            off_time=off_time,
+            generator_voltage=generator_voltage,
+        )
+    else:
+        controller = create_fixed_servo_controller(
+            servo=fixed_servo,
+            current_mode=current_mode,
+            on_time=on_time,
+            off_time=off_time,
+            generator_voltage=generator_voltage,
         )
 
     # For voltage controller, maintain voltage history over last 1ms
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
 
-    action = (
-        controller(env)
-        if controller_type == "gap"
-        else controller(env, voltage_history)
+    if controller_type == "voltage":
+        action = controller(env, voltage_history)
+    else:
+        action = controller(env)
+    step_action = (
+        env.compile_action(action) if engine in {"compiled", "compiled-fast"} else action
     )
 
     # Print simulation start message
-    print(f"[START] Starting simulation for {max_steps:,} µs...")
-    start_time = time.time()
+    print(f"[START] Starting simulation for {max_steps:,} us...")
+    run_start_time = time.perf_counter()
 
     for step in range(max_steps):
         # Run the simulation step
-        obs, reward, terminated, truncated, info = env.step(action)
-        logger.collect(env.state, info)
+        if engine == "compiled":
+            obs, reward, terminated, truncated, info = env.step_compiled(step_action)
+        elif engine == "compiled-fast":
+            terminated, truncated = env.step_compiled_fast(step_action)
+            hs = env._hot_state
+            info = {
+                "wire_broken": bool(hs.is_wire_broken),
+                "target_reached": bool(hs.is_target_distance_reached),
+                "spark_state": int(hs.spark_state),
+                "time": int(hs.time),
+                "control_step": hs.time_since_servo == env.dt,
+            }
+            obs = None
+            reward = 0.0
+        else:
+            obs, reward, terminated, truncated, info = env.step(step_action)
+        if use_logger:
+            logger.collect(env.state, info)
 
         # For voltage controller, collect voltage history every µs
         if controller_type == "voltage":
-            current_voltage = (
-                env.state.voltage if env.state.voltage is not None else 0.0
-            )
+            if engine == "compiled-fast":
+                current_voltage = float(env._hot_state.voltage)
+                current_time_us = int(env._hot_state.time)
+            else:
+                current_voltage = env.state.voltage
+                current_time_us = int(env.state.time)
             voltage_history.append(current_voltage)
-            time_history.append(env.state.time)
+            time_history.append(current_time_us)
 
             # Keep only last 1ms of data (1000 µs)
-            cutoff_time = env.state.time - 1000.0
+            cutoff_time = current_time_us - 1000.0
             while time_history and time_history[0] < cutoff_time:
-                voltage_history.pop(0)
-                time_history.pop(0)
+                voltage_history.popleft()
+                time_history.popleft()
 
         # Update action on control steps
         if info.get("control_step", False):
+            if engine == "compiled-fast":
+                env.sync_compiled_to_state()
             if controller_type == "gap":
                 action = controller(env)
-            else:  # voltage - pass the collected voltage history
-                action = controller(
-                    env, voltage_history.copy()
-                )  # Pass copy to avoid modification
+            elif controller_type == "voltage":
+                action = controller(env, list(voltage_history))
+            else:
+                action = controller(env)
+            step_action = (
+                env.compile_action(action)
+                if engine in {"compiled", "compiled-fast"}
+                else action
+            )
 
             if verbose:
                 # Calculate true average for display
                 if controller_type == "voltage" and voltage_history:
                     true_avg_voltage = np.mean(voltage_history)
                     print_step_info(
-                        env, step, controller_type, target_voltage, true_avg_voltage
+                        env,
+                        step,
+                        controller_type,
+                        target_gap=target_gap,
+                        target_avg_voltage=target_avg_voltage,
+                        fixed_servo=fixed_servo,
+                        true_avg_voltage=true_avg_voltage,
                     )
                 else:
-                    print_step_info(env, step, controller_type, target_voltage)
+                    print_step_info(
+                        env,
+                        step,
+                        controller_type,
+                        target_gap=target_gap,
+                        target_avg_voltage=target_avg_voltage,
+                        fixed_servo=fixed_servo,
+                    )
 
         # Check termination
         if terminated or truncated:
+            if engine == "compiled-fast":
+                env.sync_compiled_to_state()
             reason = get_termination_reason(info, terminated, truncated)
-            print(f"\n[TERM] Terminated at t={env.state.time} µs ({reason}).")
+            print(f"\n[TERM] Terminated at t={env.state.time} us ({reason}).")
             break
 
-    wall_time = time.time() - start_time
+    simulation_wall_time = time.perf_counter() - run_start_time
+    if engine == "compiled-fast":
+        env.sync_compiled_to_state()
+
+    if use_logger:
+        logger.finalize()
+        log_data = logger.get_data()
+    else:
+        log_data = None
+
+    # Calculate simulation time
+    sim_time_us = int(env.state.time) if log_data is None else get_simulation_time(
+        log_data, logger_config
+    )
+    wall_time = time.perf_counter() - run_start_time
 
     # Print simulation completion message
     print(f"[OK] Simulation completed! Took {wall_time:.2f} seconds")
-
-    logger.finalize()
-    log_data = logger.get_data()
-
-    # Calculate simulation time
-    sim_time_us = get_simulation_time(log_data, logger_config)
-    print_performance_summary(sim_time_us, wall_time)
+    print_performance_summary(sim_time_us, simulation_wall_time, wall_time)
 
     return log_data, wall_time, sim_time_us
 
@@ -377,7 +484,9 @@ def print_step_info(
     env: WireEDMEnv,
     step: int,
     controller_type: str = "gap",
-    target_voltage: float = 30.0,
+    target_gap: float = 5.0,
+    target_avg_voltage: float = 30.0,
+    fixed_servo: float = 0.25,
     true_avg_voltage: float = None,
 ) -> None:
     """Print verbose step information."""
@@ -390,26 +499,36 @@ def print_step_info(
     if controller_type == "gap":
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"gap={gap:6.1f} µm   "
+            f"gap={gap:6.1f} µm (target={target_gap:4.1f})   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
-            f"V={env.state.voltage or 0.0:6.1f}  I={env.state.current or 0.0:6.1f}  "
+            f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
-    else:  # voltage controller
-        current_voltage = env.state.voltage or 0.0
+    elif controller_type == "voltage":
+        current_voltage = env.state.voltage
         # Use true average if available, otherwise use current voltage
         display_avg = (
             true_avg_voltage if true_avg_voltage is not None else current_voltage
         )
-        voltage_error = target_voltage - display_avg
+        voltage_error = target_avg_voltage - display_avg
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"Vavg={display_avg:6.1f} (target={target_voltage:4.1f}, err={voltage_error:6.1f})   "
+            f"Vavg={display_avg:6.1f} (target={target_avg_voltage:4.1f}, err={voltage_error:6.1f})   "
             f"gap={gap:6.1f} µm   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
-            f"I={env.state.current or 0.0:6.1f}  "
+            f"I={env.state.current:6.1f}  "
+            f"AvgWireT={avg_wire_temp:6.1f} K"
+        )
+    else:
+        print(
+            f"[{env.state.time/1000:.1f} ms] "
+            f"gap={gap:6.1f} µm   "
+            f"servo={fixed_servo:6.2f}   "
+            f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
+            f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
+            f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
 
@@ -435,7 +554,7 @@ def get_simulation_time(log_data: Any, logger_config: LoggerConfig) -> int:
     else:  # numpy backend
         try:
             data = np.load(log_data) if isinstance(log_data, str) else None
-        except:
+        except Exception:
             data = None
 
     if data and "time" in data and len(data["time"]) > 0:
@@ -443,22 +562,26 @@ def get_simulation_time(log_data: Any, logger_config: LoggerConfig) -> int:
     return 0
 
 
-def print_performance_summary(sim_time_us: int, wall_time: float) -> None:
+def print_performance_summary(
+    sim_time_us: int,
+    simulation_wall_time: float,
+    recorded_run_wall_time: float,
+) -> None:
     """Print simulation performance summary."""
-    if wall_time > 0 and sim_time_us > 0:
-        speed_factor = sim_time_us / wall_time / 1e6  # sim_seconds / real_seconds
-        print(
-            f"Simulated {sim_time_us:,} µs ({sim_time_us / 1e3:.2f} ms) "
-            f"in {wall_time:.2f} s -> {speed_factor:.1f}x realtime."
-        )
-
-        sim_time_s = sim_time_us / 1_000_000.0
-        wall_time_per_sim_time = wall_time / sim_time_s
-        print(
-            f"Performance: {wall_time_per_sim_time:.3f} wall-clock seconds per simulated second."
-        )
-    else:
-        print(f"Simulation completed in {wall_time:.2f} s")
+    print_realtime_summary(
+        sim_time_us,
+        simulation_wall_time,
+        label="Simulation loop",
+    )
+    print_realtime_summary(
+        sim_time_us,
+        recorded_run_wall_time,
+        label="Recorded run",
+    )
+    print(
+        "Logging/finalization overhead: "
+        f"{recorded_run_wall_time - simulation_wall_time:.2f} s."
+    )
 
 
 def load_simulation_data(log_data: Any, logger_config: LoggerConfig) -> Optional[Any]:
@@ -505,7 +628,7 @@ def plot_simulation_results(data: Any, control_mode: str) -> None:
             elif hasattr(mngr.window, "setGeometry"):
                 # Qt backend
                 mngr.window.setGeometry(100, 50, 1000, 800)  # x, y, width, height
-    except:
+    except Exception:
         # If positioning fails, just continue without it
         pass
 
@@ -719,6 +842,13 @@ def plot_crater_histogram(env: WireEDMEnv) -> None:
     """Create histogram of crater volumes generated during simulation."""
     import matplotlib.pyplot as plt
 
+    if not env.material.params.enable_analysis_tracking:
+        print(
+            "Crater history tracking is disabled. Rerun with "
+            "`--enable-analysis-tracking` to generate the histogram."
+        )
+        return
+
     # Get crater statistics from the material removal module
     crater_stats = env.material.get_crater_statistics()
 
@@ -739,7 +869,7 @@ def plot_crater_histogram(env: WireEDMEnv) -> None:
                 mngr.window.wm_geometry("+150+100")
             elif hasattr(mngr.window, "setGeometry"):
                 mngr.window.setGeometry(150, 100, 1400, 600)
-    except:
+    except Exception:
         pass
 
     # Histogram 1: Linear scale
@@ -804,7 +934,9 @@ def generate_output_filename(
     workpiece_height: float,
     current_mode: int,
     controller: str,
-    target_voltage: float = None,
+    target_avg_voltage: float = None,
+    generator_voltage: float = 80.0,
+    fixed_servo: float = None,
     on_time: float = 2.0,
     off_time: float = 33.0,
     mode: str = "position",
@@ -819,11 +951,14 @@ def generate_output_filename(
     parts.append(f"seg{segment_len:.0f}um")
     parts.append(f"h{workpiece_height:.0f}mm")
     parts.append(f"I{current_mode}")
+    parts.append(f"Vgen{generator_voltage:.0f}")
     parts.append(f"Ton{on_time:.1f}us")
     parts.append(f"Toff{off_time:.1f}us")
     parts.append(controller)
-    if controller == "voltage" and target_voltage is not None:
-        parts.append(f"V{target_voltage:.0f}")
+    if controller == "voltage" and target_avg_voltage is not None:
+        parts.append(f"Vavg{target_avg_voltage:.0f}")
+    if controller == "fixed-servo" and fixed_servo is not None:
+        parts.append(f"servo{fixed_servo:.2f}")
     parts.append(mode)
 
     # Add timestamp to avoid overwrites
@@ -841,13 +976,30 @@ def generate_output_filename(
 
 def main():
     """Main entry point with clean CLI handling."""
-    parser = argparse.ArgumentParser(description="Wire-EDM smoke test")
+    parser = argparse.ArgumentParser(
+        description="Run recorded or benchmark-style Wire EDM simulations."
+    )
     parser.add_argument(
         "--steps", type=int, default=200_000, help="µs to simulate (default: 200,000)"
     )
     parser.add_argument("--plot", action="store_true", help="Show plots at the end")
     parser.add_argument(
+        "--enable-analysis-tracking",
+        action="store_true",
+        help="Enable crater-history and similar analysis-only accumulators",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="Print verbose output during simulation"
+    )
+    parser.add_argument(
+        "--engine",
+        type=str,
+        choices=["modular", "compiled", "compiled-fast"],
+        default="modular",
+        help=(
+            "Stepping engine: modular reference path, compiled engine with normal "
+            "logging/state sync, or compiled-fast for lowest-overhead no-log timing runs"
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -861,25 +1013,47 @@ def main():
         type=str,
         choices=["full_field", "zone_mean", "both"],
         default="full_field",
-        help="Temperature logging strategy (default: full_field)",
+        help="Logging detail: full_field for rich arrays, zone_mean for lighter runs, both for maximum detail",
     )
     parser.add_argument(
         "--no-log",
         action="store_true",
-        help="Disable saving log files (keep only minimal data in memory)",
+        help=(
+            "Disable log-file generation. Use this for timing runs; required for "
+            "compiled-fast."
+        ),
     )
     parser.add_argument(
         "--controller",
         type=str,
-        choices=["gap", "voltage"],
+        choices=["gap", "voltage", "fixed-servo"],
         default="gap",
-        help="Control strategy: 'gap' for constant gap control, 'voltage' for average voltage control (default: gap)",
+        help="Servo control strategy: gap target, average-voltage target, or fixed command",
     )
     parser.add_argument(
-        "--target-voltage",
+        "--target-gap",
+        type=float,
+        default=5.0,
+        help="Target gap for gap controller in um (default: 5.0)",
+    )
+    parser.add_argument(
+        "--target-avg-voltage",
         type=float,
         default=30.0,
         help="Target average voltage for voltage controller in V (default: 30.0)",
+    )
+    parser.add_argument(
+        "--target-voltage",
+        dest="legacy_target_voltage",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--servo",
+        type=float,
+        default=0.25,
+        help="Fixed servo command used by fixed-servo controller (default: 0.25)",
     )
     parser.add_argument(
         "--segment-len",
@@ -915,14 +1089,46 @@ def main():
         help="Pulse OFF time in µs (default: 33.0)",
     )
     parser.add_argument(
+        "--generator-voltage",
+        type=float,
+        default=80.0,
+        help="Generator target voltage in V (default: 80.0)",
+    )
+    parser.add_argument(
         "--output",
         "-o",
         type=str,
         default="visualization/data/smoke_test_results.npz",
-        help="Output filepath for log data (default: visualization/data/smoke_test_results.npz)",
+        help=(
+            "Output filepath for log data, resolved relative to the current working "
+            "directory. Ignored when --no-log is used."
+        ),
     )
 
     args = parser.parse_args()
+
+    if args.legacy_target_voltage is not None:
+        parser.error(
+            "`--target-voltage` is ambiguous. Use `--generator-voltage` for the "
+            "generator setpoint or `--target-avg-voltage` for voltage control."
+        )
+
+    if args.target_avg_voltage < 0.0:
+        parser.error("`--target-avg-voltage` must be non-negative.")
+
+    if args.generator_voltage < 0.0:
+        parser.error("`--generator-voltage` must be non-negative.")
+
+    if args.engine == "compiled-fast" and not args.no_log:
+        parser.error(
+            "`--engine compiled-fast` requires `--no-log`. "
+            "This mode is intended for benchmark-style stepping without per-step logging."
+        )
+
+    if args.engine == "compiled-fast" and args.plot:
+        parser.error(
+            "`--engine compiled-fast` cannot be used with `--plot` because no log data is collected."
+        )
 
     # Process flexible -I argument
     current_mode = 7
@@ -936,23 +1142,26 @@ def main():
                 f"[INFO] Energy level set via -I: Mode {current_mode}, Ton {on_time} µs"
             )
 
-    # Generate output filename if not explicitly provided
     output_filepath = args.output
-    if output_filepath == "visualization/data/smoke_test_results.npz":
-        # Default filename was used, generate parameterized filename
-        output_filepath = generate_output_filename(
-            steps=args.steps,
-            segment_len=args.segment_len,
-            workpiece_height=args.workpiece_height,
-            current_mode=current_mode,
-            controller=args.controller,
-            target_voltage=(
-                args.target_voltage if args.controller == "voltage" else None
-            ),
-            on_time=on_time,
-            off_time=args.off_time,
-            mode=args.mode,
-        )
+    if args.no_log:
+        print("[INFO] Logging: DISABLED (--no-log); no output file will be written.")
+    else:
+        if output_filepath == "visualization/data/smoke_test_results.npz":
+            output_filepath = generate_output_filename(
+                steps=args.steps,
+                segment_len=args.segment_len,
+                workpiece_height=args.workpiece_height,
+                current_mode=current_mode,
+                controller=args.controller,
+                target_avg_voltage=(
+                    args.target_avg_voltage if args.controller == "voltage" else None
+                ),
+                generator_voltage=args.generator_voltage,
+                fixed_servo=(args.servo if args.controller == "fixed-servo" else None),
+                on_time=on_time,
+                off_time=args.off_time,
+                mode=args.mode,
+            )
         print(f"[INFO] Output file: {output_filepath}")
 
     # Setup
@@ -969,6 +1178,7 @@ def main():
         log_strategy=args.log_strategy,
         segment_len_um=args.segment_len,
         workpiece_height_mm=args.workpiece_height,
+        enable_analysis_tracking=args.enable_analysis_tracking,
     )
 
     # Run simulation
@@ -977,8 +1187,12 @@ def main():
         args.steps,
         args.verbose,
         logger_config,
+        args.engine,
         args.controller,
-        args.target_voltage,
+        args.target_gap,
+        args.target_avg_voltage,
+        args.generator_voltage,
+        args.servo,
         current_mode,
         on_time,
         args.off_time,
@@ -1003,7 +1217,7 @@ def main():
             # Convert µm/s to mm/min: 1 µm/s = 0.06 mm/min
             avg_velocity_mm_min = avg_velocity_um_s * 0.06
             print(
-                f"\n📈 Average wire speed (last 100ms): {avg_velocity_mm_min:.2f} mm/min ({avg_velocity_um_s:.1f} µm/s)"
+                f"\n[INFO] Average wire speed (last 100ms): {avg_velocity_mm_min:.2f} mm/min ({avg_velocity_um_s:.1f} µm/s)"
             )
         else:
             print(f"\n[INFO] Insufficient data for last 100ms speed calculation")

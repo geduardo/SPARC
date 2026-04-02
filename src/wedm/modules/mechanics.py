@@ -24,7 +24,25 @@ class MechanicsModuleParameters:
 
 
 class MechanicsModule(EDMModule):
-    """Optimized servo axis with configurable position or velocity control modes."""
+    """Servo axis with configurable position or velocity control modes.
+
+    In position mode, ``target_delta`` is treated as a commanded relative
+    position increment rather than an absolute position setpoint.
+
+    Position mode (default):
+        ``target_delta`` is a relative position increment [µm].  A second-order
+        closed-loop controller computes acceleration from position error using
+        pre-computed damping (``2·ζ·ωn``) and stiffness (``ωn²``) coefficients.
+
+    Velocity mode:
+        ``target_delta`` is a target velocity [µm/s].  A first-order
+        proportional controller drives wire velocity toward the setpoint.
+
+    Both modes enforce hard kinematic limits (max acceleration, max jerk,
+    max speed) via scalar clipping each timestep.  There are no explicit
+    position bounds; termination is handled by the environment when the wire
+    overshoots the workpiece.
+    """
 
     def __init__(
         self,
@@ -66,10 +84,16 @@ class MechanicsModule(EDMModule):
         else:  # velocity
             self._compute_nominal_accel = self._compute_velocity_accel
 
-    def _compute_position_accel(self, state: EDMState, x: float, v: float) -> float:
-        """Optimized position control using pre-computed coefficients."""
-        x_error = x - (x + state.target_delta)  # x - x_target
-        return self.damping_coeff * v + self.stiffness_coeff * x_error
+    def reset(self, state: EDMState) -> None:
+        """Clear episode-local controller history."""
+        self.prev_accel = 0.0
+        state.target_delta = 0.0
+        state.wire_velocity = 0.0
+
+    def _compute_position_accel(self, state: EDMState, _x: float, v: float) -> float:
+        """Compute acceleration from the commanded relative position increment."""
+        target_offset = -state.target_delta
+        return self.damping_coeff * v + self.stiffness_coeff * target_offset
 
     def _compute_velocity_accel(self, state: EDMState, x: float, v: float) -> float:
         """Optimized velocity control."""
