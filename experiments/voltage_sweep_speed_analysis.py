@@ -28,11 +28,15 @@ from datetime import datetime
 import sys
 import pathlib
 
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+EXPERIMENTS_DIR = REPO_ROOT / "experiments"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from src.wedm.envs import WireEDMEnv
-from src.wedm.core.env_config import EnvironmentConfig
-from src.wedm.modules.wire import WireModuleParameters
+from wedm.envs import WireEDMEnv
+from wedm.core.env_config import EnvironmentConfig
+from wedm.modules.wire import WireModuleParameters
 
 
 def create_voltage_controller(target_voltage: float = 30.0):
@@ -279,7 +283,8 @@ def main():
     
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    npz_filename = f"experiments/voltage_sweep_results_{timestamp}.npz"
+    EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    npz_path = EXPERIMENTS_DIR / f"voltage_sweep_results_{timestamp}.npz"
     
     # Convert results to arrays
     target_voltages = np.array([r['target_voltage'] for r in results])
@@ -287,7 +292,7 @@ def main():
     avg_speeds_um_s = np.array([r['avg_speed_um_s'] for r in results])
     avg_speeds_mm_min = np.array([r['avg_speed_mm_min'] for r in results])
     np.savez(
-        npz_filename,
+        npz_path,
         target_voltages=target_voltages,
         avg_voltages=avg_voltages,
         avg_speeds_um_s=avg_speeds_um_s,
@@ -304,7 +309,7 @@ def main():
     for r in results:
         print(f"{r['target_voltage']:<15.1f} {r['avg_speed_mm_min']:<20.3f} {r['avg_speed_um_s']:<20.1f}")
     print()
-    print(f"Results saved to: {npz_filename}")
+    print(f"Results saved to: {npz_path}")
     print()
     
     # Create plot
@@ -350,10 +355,10 @@ def main():
     ax.grid(True, alpha=0.3)
     
     # Save plot
-    plot_filename = f"experiments/voltage_sweep_plot_{timestamp}.png"
+    plot_path = EXPERIMENTS_DIR / f"voltage_sweep_plot_{timestamp}.png"
     plt.tight_layout()
-    plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    print(f"Plot saved to: {plot_filename}")
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    print(f"Plot saved to: {plot_path}")
     
     plt.show()
     

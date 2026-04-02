@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+MALFORMED_SPARK_STATUS_SENTINEL = np.int8(-128)
 
 # --- Configuration Types ---
 
@@ -441,6 +442,7 @@ class SimulationLogger:
                                 continue
                             if not isinstance(item, (list, tuple, np.ndarray)):
                                 malformed_entries += 1
+                                state[i] = MALFORMED_SPARK_STATUS_SENTINEL
                                 logger.warning(
                                     "Malformed spark_status entry at index %s: expected sequence, got %s. Skipping.",
                                     i,
@@ -448,14 +450,23 @@ class SimulationLogger:
                                 )
                                 continue
                             try:
+                                parsed_state = np.int8(0)
+                                parsed_loc_mm = np.nan
+                                parsed_extra = np.nan
                                 if len(item) > 0 and item[0] is not None:
-                                    state[i] = int(item[0])
+                                    parsed_state = np.int8(int(item[0]))
                                 if len(item) > 1 and item[1] is not None:
-                                    loc_mm[i] = float(item[1])
+                                    parsed_loc_mm = float(item[1])
                                 if len(item) > 2 and item[2] is not None:
-                                    extra[i] = float(item[2])
+                                    parsed_extra = float(item[2])
+                                state[i] = parsed_state
+                                loc_mm[i] = parsed_loc_mm
+                                extra[i] = parsed_extra
                             except (TypeError, ValueError, IndexError) as e:
                                 malformed_entries += 1
+                                state[i] = MALFORMED_SPARK_STATUS_SENTINEL
+                                loc_mm[i] = np.nan
+                                extra[i] = np.nan
                                 logger.warning(
                                     "Malformed spark_status entry at index %s: %s. Skipping.",
                                     i,

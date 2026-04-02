@@ -1,5 +1,7 @@
+import io
 import numpy as np
 import pytest
+import zipfile
 
 from wedm.core.state import EDMState
 from wedm.utils.logger import SimulationLogger
@@ -92,3 +94,12 @@ def test_logger_warns_on_malformed_spark_status(tmp_path, caplog):
     assert "Malformed spark_status entry" in caplog.text
     assert "Ignored 2 malformed spark_status entries" in caplog.text
     assert output_path.exists()
+    with zipfile.ZipFile(output_path) as zf:
+        packed_state = np.load(
+            io.BytesIO(zf.read("spark_status_state.npy")), allow_pickle=False
+        )
+
+    np.testing.assert_array_equal(
+        packed_state,
+        np.array([1, -128, -128], dtype=np.int8),
+    )
