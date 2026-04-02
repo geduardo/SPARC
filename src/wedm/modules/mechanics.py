@@ -26,6 +26,9 @@ class MechanicsModuleParameters:
 class MechanicsModule(EDMModule):
     """Servo axis with configurable position or velocity control modes.
 
+    In position mode, ``target_delta`` is treated as a commanded relative
+    position increment rather than an absolute position setpoint.
+
     Position mode (default):
         ``target_delta`` is a relative position increment [µm].  A second-order
         closed-loop controller computes acceleration from position error using
@@ -87,10 +90,10 @@ class MechanicsModule(EDMModule):
         state.target_delta = 0.0
         state.wire_velocity = 0.0
 
-    def _compute_position_accel(self, state: EDMState, x: float, v: float) -> float:
-        """Optimized position control using pre-computed coefficients."""
-        x_error = x - (x + state.target_delta)  # x - x_target
-        return self.damping_coeff * v + self.stiffness_coeff * x_error
+    def _compute_position_accel(self, state: EDMState, _x: float, v: float) -> float:
+        """Compute acceleration from the commanded relative position increment."""
+        target_offset = -state.target_delta
+        return self.damping_coeff * v + self.stiffness_coeff * target_offset
 
     def _compute_velocity_accel(self, state: EDMState, x: float, v: float) -> float:
         """Optimized velocity control."""

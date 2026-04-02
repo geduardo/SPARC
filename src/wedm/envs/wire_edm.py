@@ -11,6 +11,7 @@ from ..core.compiled_step import (
     SchedulerConstants,
     compiled_microstep,
 )
+from ..core.constants import WIRE_BREAK_POSITION_MARGIN_UM
 from ..core.state import EDMState
 from ..core.env_config import EnvironmentConfig
 from ..modules.dielectric import DielectricModule, DielectricModuleParameters
@@ -83,7 +84,7 @@ class WireEDMEnv(gym.Env):
         *,
         render_mode: str | None = None,
         mechanics_control_mode: str = "position",
-        config: EnvironmentConfig = None,
+        config: EnvironmentConfig | None = None,
         # Module parameter overrides
         ignition_params: IgnitionModuleParameters = None,
         wire_params: WireModuleParameters = None,
@@ -396,7 +397,10 @@ class WireEDMEnv(gym.Env):
         self.state.current_mode = self._resolve_mode_str(mode_int)
 
     def _check_termination(self) -> bool:
-        if self.state.wire_position > self.state.workpiece_position + 100:
+        if (
+            self.state.wire_position
+            > self.state.workpiece_position + WIRE_BREAK_POSITION_MARGIN_UM
+        ):
             self.state.is_wire_broken = True
             return True
         if self.state.workpiece_position >= self.state.target_position:

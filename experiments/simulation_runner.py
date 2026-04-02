@@ -5,6 +5,7 @@ Shared simulation-runner implementation used by the canonical CLI entry point.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import time
 from typing import Dict, Any, Tuple, Optional
 from datetime import datetime
@@ -80,10 +81,10 @@ def create_voltage_controller(
 
         # Calculate average voltage over the provided history (last 1ms of data)
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
             # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
 
         # PI control
         error = target_avg_voltage - avg_voltage
@@ -356,8 +357,8 @@ def run_simulation(
         )
 
     # For voltage controller, maintain voltage history over last 1ms
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
 
     if controller_type == "voltage":
         action = controller(env, voltage_history)
@@ -398,9 +399,7 @@ def run_simulation(
                 current_voltage = float(env._hot_state.voltage)
                 current_time_us = int(env._hot_state.time)
             else:
-                current_voltage = (
-                    env.state.voltage if env.state.voltage is not None else 0.0
-                )
+                current_voltage = env.state.voltage
                 current_time_us = int(env.state.time)
             voltage_history.append(current_voltage)
             time_history.append(current_time_us)
@@ -408,8 +407,8 @@ def run_simulation(
             # Keep only last 1ms of data (1000 µs)
             cutoff_time = current_time_us - 1000.0
             while time_history and time_history[0] < cutoff_time:
-                voltage_history.pop(0)
-                time_history.pop(0)
+                voltage_history.popleft()
+                time_history.popleft()
 
         # Update action on control steps
         if info.get("control_step", False):
@@ -418,9 +417,7 @@ def run_simulation(
             if controller_type == "gap":
                 action = controller(env)
             elif controller_type == "voltage":
-                action = controller(
-                    env, voltage_history.copy()
-                )  # Pass copy to avoid modification
+                action = controller(env, list(voltage_history))
             else:
                 action = controller(env)
             step_action = (
@@ -505,11 +502,11 @@ def print_step_info(
             f"gap={gap:6.1f} µm (target={target_gap:4.1f})   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
-            f"V={env.state.voltage or 0.0:6.1f}  I={env.state.current or 0.0:6.1f}  "
+            f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
     elif controller_type == "voltage":
-        current_voltage = env.state.voltage or 0.0
+        current_voltage = env.state.voltage
         # Use true average if available, otherwise use current voltage
         display_avg = (
             true_avg_voltage if true_avg_voltage is not None else current_voltage
@@ -521,7 +518,7 @@ def print_step_info(
             f"gap={gap:6.1f} µm   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
-            f"I={env.state.current or 0.0:6.1f}  "
+            f"I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
     else:
@@ -531,7 +528,7 @@ def print_step_info(
             f"servo={fixed_servo:6.2f}   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
-            f"V={env.state.voltage or 0.0:6.1f}  I={env.state.current or 0.0:6.1f}  "
+            f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
 
@@ -557,7 +554,7 @@ def get_simulation_time(log_data: Any, logger_config: LoggerConfig) -> int:
     else:  # numpy backend
         try:
             data = np.load(log_data) if isinstance(log_data, str) else None
-        except:
+        except Exception:
             data = None
 
     if data and "time" in data and len(data["time"]) > 0:
@@ -631,7 +628,7 @@ def plot_simulation_results(data: Any, control_mode: str) -> None:
             elif hasattr(mngr.window, "setGeometry"):
                 # Qt backend
                 mngr.window.setGeometry(100, 50, 1000, 800)  # x, y, width, height
-    except:
+    except Exception:
         # If positioning fails, just continue without it
         pass
 
@@ -872,7 +869,7 @@ def plot_crater_histogram(env: WireEDMEnv) -> None:
                 mngr.window.wm_geometry("+150+100")
             elif hasattr(mngr.window, "setGeometry"):
                 mngr.window.setGeometry(150, 100, 1400, 600)
-    except:
+    except Exception:
         pass
 
     # Histogram 1: Linear scale

@@ -17,6 +17,7 @@ too similar in their thermal histories.
 
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import deque
 from datetime import datetime
 from wedm import WireEDMEnv, EnvironmentConfig
 from wedm.utils.logger import SimulationLogger
@@ -32,9 +33,9 @@ def create_voltage_controller(target_voltage: float = 47.0):
         nonlocal integral_error
 
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
 
         error = target_voltage - avg_voltage
         integral_error += error
@@ -219,8 +220,8 @@ def main():
     controller = create_voltage_controller(target_voltage)
 
     # Voltage history tracking
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
 
     # Reset environment
     obs, info = env.reset()
@@ -318,15 +319,15 @@ def main():
         obs, reward, terminated, truncated, info = env.step(action)
 
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
 
         # Keep only last 1ms
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
 
         # Increment simulation step counter
         step_count += 1
@@ -368,7 +369,7 @@ def main():
         # Update action on control steps
         if info.get("control_step", False):
             control_step_count += 1
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
 
         # Progress update every 10,000 simulation steps
         if step_count % 10000 == 0:

@@ -23,6 +23,7 @@ Speed measurement protocol:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import deque
 from datetime import datetime
 import sys
 import pathlib
@@ -49,10 +50,10 @@ def create_voltage_controller(target_voltage: float = 30.0):
         
         # Calculate average voltage over the provided history (last 1ms of data)
         if voltage_history and len(voltage_history) > 0:
-            avg_voltage = np.mean(voltage_history)
+            avg_voltage = float(np.mean(tuple(voltage_history)))
         else:
             # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+            avg_voltage = env.state.voltage
         
         # PI control
         error = target_voltage - avg_voltage
@@ -135,8 +136,8 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
     controller = create_voltage_controller(target_voltage)
     
     # Voltage history tracking (for last 1ms)
-    voltage_history = []
-    time_history = []
+    voltage_history: deque[float] = deque()
+    time_history: deque[int] = deque()
     
     # Initialize action
     action = controller(env, None)
@@ -150,19 +151,19 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         obs, reward, terminated, truncated, info = env.step(action)
         
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
         
         # Keep only last 1ms of data
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
         
         # Update action on control steps
         if info.get("control_step", False):
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
         
         if terminated or truncated:
             if verbose:
@@ -185,7 +186,7 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         obs, reward, terminated, truncated, info = env.step(action)
         
         # Track voltage history
-        current_voltage = env.state.voltage if env.state.voltage is not None else 0.0
+        current_voltage = env.state.voltage
         voltage_history.append(current_voltage)
         time_history.append(env.state.time)
         voltage_samples.append(current_voltage)
@@ -193,12 +194,12 @@ def measure_speed_at_voltage(target_voltage: float, verbose: bool = True):
         # Keep only last 1ms of data
         cutoff_time = env.state.time - 1000.0
         while time_history and time_history[0] < cutoff_time:
-            voltage_history.pop(0)
-            time_history.pop(0)
+            voltage_history.popleft()
+            time_history.popleft()
         
         # Update action on control steps
         if info.get("control_step", False):
-            action = controller(env, voltage_history.copy())
+            action = controller(env, list(voltage_history))
         
         if terminated or truncated:
             if verbose:

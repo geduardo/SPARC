@@ -171,6 +171,18 @@ class TestCompiledStepParity:
             comp.state.debris_density, abs=1e-6
         )
 
+    def test_debris_concentration(self, envs):
+        mod, comp = envs
+        assert mod.state.debris_concentration == pytest.approx(
+            comp.state.debris_concentration, abs=1e-6
+        )
+
+    def test_dielectric_flow_rate(self, envs):
+        mod, comp = envs
+        assert mod.state.dielectric_flow_rate == pytest.approx(
+            comp.state.dielectric_flow_rate, abs=1e-12
+        )
+
     def test_wire_max_damage(self, envs):
         mod, comp = envs
         assert mod.state.wire_max_damage == pytest.approx(

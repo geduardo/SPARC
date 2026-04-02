@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit
 
+from ..core.constants import WIRE_BREAK_POSITION_MARGIN_UM
 from ..modules.dielectric import advance_dielectric_state
 from ..modules.ignition import (
     _advance_discharge_state,
@@ -63,6 +64,7 @@ class SchedulerConstants:
 
     # dielectric
     dielectric_temperature: float
+    dielectric_base_flow_rate: float
     cavity_volume_coeff: float
     reference_gap: float
     debris_obstruction_coeff: float
@@ -131,6 +133,7 @@ class SchedulerConstants:
             self.kerf_width_mm,
             self.workpiece_height_for_material,
             self.dielectric_temperature,
+            self.dielectric_base_flow_rate,
             self.cavity_volume_coeff,
             self.reference_gap,
             self.debris_obstruction_coeff,
@@ -206,6 +209,7 @@ class SchedulerConstants:
             kerf_width_mm=kerf_width_mm,
             workpiece_height_for_material=env.config.workpiece_height,
             dielectric_temperature=diel.params.dielectric_temperature,
+            dielectric_base_flow_rate=diel.params.base_flow_rate,
             cavity_volume_coeff=diel.cavity_volume_coeff,
             reference_gap=diel.params.reference_gap,
             debris_obstruction_coeff=diel.params.debris_obstruction_coeff,
@@ -271,8 +275,8 @@ def _compiled_mechanics(
     v = wire_velocity
 
     if mode_is_position:
-        x_error = -target_delta  # x - (x + target_delta)
-        a_nom = damping_coeff * v + stiffness_coeff * x_error
+        target_offset = -target_delta
+        a_nom = damping_coeff * v + stiffness_coeff * target_offset
     else:
         v_error = v - target_delta
         a_nom = -omega_n * v_error
@@ -484,6 +488,9 @@ def _run_compiled_microstep(
         sc.ion_channel_duration,
     )
     hs.flow_rate = flow_condition
+    hs.debris_concentration = hs.debris_density
+    hs.dielectric_flow_rate = (flow_condition * sc.dielectric_base_flow_rate) / 1e9
+    hs.dielectric_temperature = sc.dielectric_temperature
 
     # Wire thermal update.
     if (
@@ -566,7 +573,7 @@ def _run_compiled_microstep(
         hs.time_since_spark_end += dt_int
         hs.time_since_spark_ignition = 0
 
-    if hs.wire_position_um > hs.workpiece_position_um + 100.0:
+    if hs.wire_position_um > hs.workpiece_position_um + WIRE_BREAK_POSITION_MARGIN_UM:
         hs.is_wire_broken = 1
         return 1
 

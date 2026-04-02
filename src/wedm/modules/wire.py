@@ -536,13 +536,13 @@ class WireModule(EDMModule):
         self.dt_sim = 1e-6  # [s]
         self.temp_ref = 293.15  # [K]
 
-        # Pre-compute combined scaling factor
-        self.temp_update_factor = self.dt_sim / self.denominator
-
         if self.denominator == 0:
             raise ValueError(
                 "Denominator for dT/dt is zero. Check wire/segment properties."
             )
+
+        # Pre-compute combined scaling factor
+        self.temp_update_factor = self.dt_sim / self.denominator
 
         # ── Pre-allocate Arrays ──
         self.dT_dt = np.zeros(self.n_segments, dtype=np.float32)
