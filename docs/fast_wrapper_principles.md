@@ -78,7 +78,7 @@ Examples from the current code:
 The wrapper may encode these as numeric buffers with sentinels, but only inside the hot path.
 
 2. Batched randomness must be deterministic.
-The wrapper may not call Python RNG inside the hot loop. Random values for a batch must be pre-generated from `env.np_random` and consumed through a documented cursor/layout so same-seed modular-vs-wrapper comparisons remain possible.
+For batched execution, the wrapper may not call Python RNG inside the per-microstep hot loop. Random values for a batch must be pre-generated from `env.np_random` and consumed through a documented cursor/layout so same-seed modular-vs-wrapper comparisons remain possible. The current per-step compiled scheduler path may still draw scalar values from `env.np_random` each microstep to preserve branch-consumption parity with the modular reference path.
 
 ## Success Criteria
 

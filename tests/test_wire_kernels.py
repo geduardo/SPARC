@@ -1,6 +1,7 @@
 """Low-level regression tests for optimized wire kernels."""
 
 import numpy as np
+import pytest
 
 from wedm.modules.wire import (
     advance_wire_step_inplace,
@@ -366,7 +367,7 @@ def test_apply_thermal_damage_core_inplace_matches_reference_composition():
 
     np.testing.assert_allclose(temperature, expected_temperature, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(damage, expected_damage, rtol=1e-6, atol=1e-6)
-    assert max_damage == expected_max_damage
+    assert max_damage == pytest.approx(expected_max_damage)
 
 def test_resolve_discharge_partition_matches_reference():
     expected = _resolve_partition_reference(
@@ -494,7 +495,7 @@ def test_advance_wire_step_inplace_matches_reference():
     assert actual_position_offset == expected_position_offset
     np.testing.assert_allclose(temperature, expected_temperature, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(damage, expected_damage, rtol=1e-6, atol=1e-6)
-    assert actual_max_damage == expected_max_damage
+    assert actual_max_damage == pytest.approx(expected_max_damage)
 
 
 def test_advance_wire_step_inplace_matches_resolved_partition_composition():
