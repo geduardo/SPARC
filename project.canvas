@@ -1,0 +1,37 @@
+{
+	"nodes":[
+		{"id":"31bbee9459bcbfc8","type":"group","x":1350,"y":460,"width":1520,"height":1260,"label":"Dashboard"},
+		{"id":"19fa566c73d65303","type":"group","x":240,"y":460,"width":1030,"height":1260,"label":"Backend"},
+		{"id":"908580f0be857af2","type":"group","x":240,"y":2020,"width":540,"height":1040,"label":"Validation"},
+		{"id":"30b03eff8906f73f","type":"group","x":240,"y":-320,"width":540,"height":440,"label":"Architecture"},
+		{"id":"canvas-errors","type":"text","text":"## Errors\n✓ None","x":-540,"y":-750,"width":380,"height":200,"color":"1"},
+		{"id":"legend","type":"text","text":"## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent","x":-540,"y":-310,"width":380,"height":230,"color":"0"},
+		{"id":"canvas-warnings","type":"text","text":"## Warnings\n✓ None","x":-540,"y":-530,"width":380,"height":200,"color":"3"},
+		{"id":"88ee9be598eb5c6c","type":"text","text":"## BA-01 Realtime runner with pacing and lifecycle\nImplement the long-lived realtime runner around the compiled-fast path. Own session lifecycle, pause/resume/stop, playback ratio pacing, and periodic state publication at control-step boundaries.","x":300,"y":500,"width":420,"height":220,"color":"0"},
+		{"id":"5378006f2b182995","type":"text","text":"## BA-03 WebSocket server, schema, and serialization\nImplement the server transport, the bidirectional message schema, and payload serialization. Keep control/session messages lightweight and define two data tiers: low-rate process frames and oscilloscope pulse chunks.","x":300,"y":1280,"width":420,"height":220,"color":"0"},
+		{"id":"9bf613b39c7d933b","type":"text","text":"## BA-02 Refactor closure-captured control state\nRefactor the existing controller/setpoint handling so target gap, target average voltage, fixed servo, generator voltage, current mode, and ON/OFF timing can be mutated safely while a session is running.","x":790,"y":500,"width":420,"height":220,"color":"0"},
+		{"id":"041eb41491ffd347","type":"text","text":"## VA-01 End-to-end integration test\nVerify the live path end-to-end: session startup, frame delivery, panel rendering, command propagation within one control step, pause/resume behavior, and stable playback under bounded buffering.","x":300,"y":2060,"width":420,"height":220,"color":"0"},
+		{"id":"5b21e739de83033a","type":"text","text":"## VA-02 Launch script and docs\nAdd a single entrypoint for launching realtime mode and document the merged architecture, supported live parameters, pacing options, and known performance limits in the project docs.","x":300,"y":2840,"width":420,"height":180,"color":"0"},
+		{"id":"99a7fe3336c6c053","type":"text","text":"## DA-01 Live data source abstraction and websocket client\nAdd a dashboard data-source abstraction that supports both the existing file-backed flow and a live append-only flow. Include the browser WebSocket client, ring buffers, reconnect handling, and backpressure strategy.","x":1410,"y":500,"width":420,"height":280,"color":"0"},
+		{"id":"47e851f4e4a2a67e","type":"text","text":"## DA-02 Adapt process panels for append-only data\nUpdate side view, top view, and thermal profile flows that currently assume complete preloaded arrays so they render correctly from bounded live history and incremental metadata.","x":1410,"y":1280,"width":420,"height":220,"color":"0"},
+		{"id":"a8be8e4710ab2c3e","type":"text","text":"## DA-03 Rework oscilloscope for chunked pulse traces\nModify the oscilloscope to consume chunked voltage/current pulse history from the live buffer instead of assuming one global microsecond-indexed array. Preserve trigger behavior, rolling windows, and channel controls.","x":1900,"y":1280,"width":420,"height":280,"color":"0"},
+		{"id":"50759d9ff8147fcb","type":"text","text":"## DA-04 Live parameter controls UI\nAdd runtime controls for the live session: servo command or setpoint, target gap or target average voltage, generator voltage, current mode, and ON/OFF timing. Send debounced updates and surface echoed applied values and connection state.","x":2390,"y":1280,"width":420,"height":280,"color":"0"},
+		{"id":"3e82fd6c968fde66","type":"text","text":"## AR-01 Define realtime session contract\nLock the merged realtime MVP contract before coding: compiled-fast base loop, supported live-editable parameters versus restart-only parameters, process-frame versus pulse-chunk streaming, pacing semantics, and browser/server message responsibilities.","x":300,"y":-280,"width":420,"height":260,"color":"1"}
+	],
+	"edges":[
+		{"id":"0acb5da8a5cfe8d6","fromNode":"3e82fd6c968fde66","fromSide":"bottom","toNode":"88ee9be598eb5c6c","toSide":"top"},
+		{"id":"8f7fb7487f221500","fromNode":"3e82fd6c968fde66","fromSide":"bottom","toNode":"9bf613b39c7d933b","toSide":"top"},
+		{"id":"1666c23f6283364f","fromNode":"3e82fd6c968fde66","fromSide":"bottom","toNode":"99a7fe3336c6c053","toSide":"top"},
+		{"id":"42ef75e05415f361","fromNode":"88ee9be598eb5c6c","fromSide":"bottom","toNode":"5378006f2b182995","toSide":"top"},
+		{"id":"f90f5e8518824124","fromNode":"9bf613b39c7d933b","fromSide":"bottom","toNode":"5378006f2b182995","toSide":"top"},
+		{"id":"0ffba061cf83b851","fromNode":"9bf613b39c7d933b","fromSide":"bottom","toNode":"50759d9ff8147fcb","toSide":"top"},
+		{"id":"973611ed3d7ffe07","fromNode":"99a7fe3336c6c053","fromSide":"bottom","toNode":"47e851f4e4a2a67e","toSide":"top"},
+		{"id":"94cc62fbf117a3a7","fromNode":"99a7fe3336c6c053","fromSide":"bottom","toNode":"a8be8e4710ab2c3e","toSide":"top"},
+		{"id":"a87b6d72a91f4e27","fromNode":"99a7fe3336c6c053","fromSide":"bottom","toNode":"50759d9ff8147fcb","toSide":"top"},
+		{"id":"c630859e327fec40","fromNode":"5378006f2b182995","fromSide":"bottom","toNode":"041eb41491ffd347","toSide":"top"},
+		{"id":"47291b0b95292c9a","fromNode":"47e851f4e4a2a67e","fromSide":"bottom","toNode":"041eb41491ffd347","toSide":"top"},
+		{"id":"bbf5ca3946e1cf61","fromNode":"a8be8e4710ab2c3e","fromSide":"bottom","toNode":"041eb41491ffd347","toSide":"top"},
+		{"id":"ae3879edf1749452","fromNode":"50759d9ff8147fcb","fromSide":"bottom","toNode":"041eb41491ffd347","toSide":"top"},
+		{"id":"9db3e4644ae56d10","fromNode":"041eb41491ffd347","fromSide":"bottom","toNode":"5b21e739de83033a","toSide":"top"}
+	]
+}
