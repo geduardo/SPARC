@@ -4,6 +4,7 @@
  */
 
 import { loadSparcPack } from './utils/dataLoader.js';
+import { FileDashboardDataSource, LiveDashboardDataSource } from './utils/dataSource.js';
 import {
     DEFAULT_PLAYBACK_SPEED,
     TARGET_FPS,
@@ -21,6 +22,7 @@ import { ThermalProfilePanel } from './panels/ThermalProfilePanel.js';
 export class DashboardController {
     constructor() {
         this.data = null;
+        this.dataSource = null;
         this.currentFrame = 0;
         this.isPlaying = false;
         this.animationId = null;
@@ -28,6 +30,8 @@ export class DashboardController {
         this.lastFrameTime = 0;
         this.frameAccumulator = 0;
         this.viewsLinked = true;
+        this.followLiveTail = true;
+        this.dataSourceSubscription = null;
 
         // Panel instances
         this.panels = {
@@ -38,6 +42,91 @@ export class DashboardController {
         };
 
         this.init();
+    }
+
+    setDataSource(dataSource) {
+        if (this.dataSource && this.dataSourceSubscription) {
+            this.dataSourceSubscription();
+            this.dataSourceSubscription = null;
+        }
+        if (this.dataSource && this.dataSource.isLive) {
+            this.dataSource.disconnect();
+        }
+
+        this.dataSource = dataSource;
+        this.data = dataSource ? dataSource.getData() : null;
+
+        if (this.dataSource && this.dataSource.subscribe) {
+            this.dataSourceSubscription = this.dataSource.subscribe((event) => this.handleDataSourceEvent(event));
+        }
+
+        Object.values(this.panels).forEach(panel => {
+            if (panel.setData) {
+                panel.setData(this.data);
+            }
+        });
+
+        this.refreshTimelineBounds();
+    }
+
+    handleDataSourceEvent(event) {
+        if (!event) return;
+
+        if (event.type === 'header') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            Object.values(this.panels).forEach(panel => {
+                if (panel.setData) {
+                    panel.setData(this.data);
+                }
+            });
+            this.refreshTimelineBounds();
+            return;
+        }
+
+        if (event.type === 'process_frame') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.refreshTimelineBounds();
+            if (this.dataSource && this.dataSource.isLive && this.followLiveTail && !this.isPlaying) {
+                this.currentFrame = Math.max(0, this.getTotalFrames() - 1);
+                this.elements.timeline.value = this.currentFrame;
+                this.drawFrame(this.currentFrame);
+                this.updateTimeDisplay();
+            }
+            return;
+        }
+
+        if (event.type === 'reconnecting' || event.type === 'connected' || event.type === 'disconnected' || event.type === 'error') {
+            console.info('Dashboard data source event:', event);
+        }
+    }
+
+    async connectLiveStream(url, options = {}) {
+        const source = new LiveDashboardDataSource(url, options);
+        this.setDataSource(source);
+        await source.connect();
+        return source;
+    }
+
+    disconnectLiveStream() {
+        if (this.dataSource && this.dataSource.isLive) {
+            this.dataSource.disconnect();
+        }
+    }
+
+    getTotalFrames() {
+        if (this.dataSource) {
+            return this.dataSource.getFrameCount();
+        }
+        if (!this.data || !this.data.time) return 0;
+        return this.data.time.length || 0;
+    }
+
+    refreshTimelineBounds() {
+        const totalFrames = this.getTotalFrames();
+        const maxFrame = Math.max(0, totalFrames - 1);
+        this.elements.timeline.max = maxFrame;
+        this.currentFrame = Math.max(0, Math.min(this.currentFrame, maxFrame));
+        this.elements.timeline.value = this.currentFrame;
     }
 
     init() {
@@ -483,7 +572,7 @@ export class DashboardController {
         if (!this.data || !this.data.wire_material_positions_mm) return trace;
 
         const positionsData = this.data.wire_material_positions_mm;
-        const numFrames = this.data.time.length;
+        const numFrames = this.getTotalFrames();
         const isTyped = positionsData.data && positionsData.shape;
         const numCols = isTyped ? positionsData.shape[1] : 0;
 
@@ -735,18 +824,12 @@ export class DashboardController {
                 throw new Error('Invalid data format: missing time array');
             }
 
-            const maxFrame = (this.data.time.length || 0) - 1;
-            this.elements.timeline.max = maxFrame;
+            this.setDataSource(new FileDashboardDataSource(this.data));
             this.currentFrame = 0;
-
-            Object.values(this.panels).forEach(panel => {
-                if (panel.setData) {
-                    panel.setData(this.data);
-                }
-            });
-
-            this.drawFrame(0);
-            this.updateTimeDisplay();
+            if (this.getTotalFrames() > 0) {
+                this.drawFrame(0);
+                this.updateTimeDisplay();
+            }
 
         } catch (error) {
             console.error('Error loading data:', error);
@@ -766,7 +849,7 @@ export class DashboardController {
     }
 
     togglePlayPause() {
-        if (!this.data) {
+        if (!this.data || this.getTotalFrames() === 0) {
             alert('Please load data first');
             return;
         }
@@ -815,7 +898,7 @@ export class DashboardController {
                 const oldFrame = this.currentFrame;
                 this.currentFrame += framesToAdvance;
 
-                if (this.currentFrame >= this.data.time.length) {
+                if (this.currentFrame >= this.getTotalFrames()) {
                     this.currentFrame = 0;
                 }
 
@@ -862,14 +945,14 @@ export class DashboardController {
     nextFrame() {
         if (!this.data) return;
         const frameStep = Math.max(1, Math.round(this.playbackSpeed / TARGET_FPS));
-        const nextFrame = Math.min(this.currentFrame + frameStep, this.data.time.length - 1);
+        const nextFrame = Math.min(this.currentFrame + frameStep, this.getTotalFrames() - 1);
         this.seekToWithAccumulation(nextFrame);
     }
 
     seekTo(frame) {
-        if (!this.data) return;
+        if (!this.data || this.getTotalFrames() === 0) return;
 
-        this.currentFrame = Math.max(0, Math.min(frame, this.data.time.length - 1));
+        this.currentFrame = Math.max(0, Math.min(frame, this.getTotalFrames() - 1));
         this.elements.timeline.value = this.currentFrame;
         this.drawFrame(this.currentFrame);
         this.updateTimeDisplay();
@@ -879,7 +962,7 @@ export class DashboardController {
         if (!this.data) return;
 
         const oldFrame = this.currentFrame;
-        this.currentFrame = Math.max(0, Math.min(targetFrame, this.data.time.length - 1));
+        this.currentFrame = Math.max(0, Math.min(targetFrame, this.getTotalFrames() - 1));
         this.elements.timeline.value = this.currentFrame;
 
         if (this.currentFrame > oldFrame) {
@@ -937,7 +1020,7 @@ export class DashboardController {
         const frameData = {
             time: ArrayBuffer.isView(timeSeries) ? timeSeries[frameIndex] : timeSeries[frameIndex],
             frameIndex: frameIndex,
-            totalFrames: this.data.time.length
+            totalFrames: this.getTotalFrames()
         };
 
         const isSeries = (v) => Array.isArray(v) || ArrayBuffer.isView(v);
@@ -978,7 +1061,7 @@ export class DashboardController {
         if (!this.data) return;
 
         const currentTime = Number(this.data.time[this.currentFrame]) / 1000;
-        const totalTime = Number(this.data.time[this.data.time.length - 1]) / 1000;
+        const totalTime = Number(this.data.time[this.getTotalFrames() - 1]) / 1000;
 
         const formatTime = (ms) => {
             const seconds = Math.floor(ms / 1000);
@@ -987,7 +1070,7 @@ export class DashboardController {
         };
 
         this.elements.frameCounter.textContent =
-            `Frame: ${this.currentFrame + 1} / ${this.data.time.length}`;
+            `Frame: ${this.currentFrame + 1} / ${this.getTotalFrames()}`;
 
         this.elements.timeDisplay.textContent =
             `${formatTime(currentTime)} / ${formatTime(totalTime)}`;

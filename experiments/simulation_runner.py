@@ -24,6 +24,7 @@ from wedm import WireEDMEnv, EnvironmentConfig
 from wedm.envs.wire_edm import build_scalar_action
 from wedm.modules.material import MaterialModuleParameters
 from wedm.modules.wire import WireModuleParameters
+from wedm.realtime import RuntimeControlSnapshot, RuntimeControlState, RuntimeController
 from wedm.utils.logger import SimulationLogger, LoggerConfig
 from wedm.utils.performance import print_realtime_summary
 
@@ -36,28 +37,15 @@ def create_gap_controller(
     generator_voltage: float = 80.0,
 ):  # µm
     """Create adaptive gap controller that works with both control modes."""
-
-    def controller(env: WireEDMEnv) -> Dict[str, Any]:
-        gap = env.state.workpiece_position - env.state.wire_position
-        error = gap - desired_gap
-
-        if env.mechanics.control_mode == "position":
-            # Position control: return position increment [µm]
-            delta = error * 0.1  # Conservative proportional gain
-        else:  # velocity control
-            # Velocity control: return target velocity [µm/s]
-            delta = error * 50.0  # Higher gain for velocity control
-            delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
-
-        return build_scalar_action(
-            servo=delta,
-            target_voltage=generator_voltage,
-            current_mode=current_mode,
-            ON_time=on_time,
-            OFF_time=off_time,
-        )
-
-    return controller
+    control_state = RuntimeControlState(
+        controller_type="gap",
+        target_gap=desired_gap,
+        generator_voltage=generator_voltage,
+        current_mode=current_mode,
+        on_time=on_time,
+        off_time=off_time,
+    )
+    return RuntimeController(control_state)
 
 
 def create_voltage_controller(
@@ -68,55 +56,15 @@ def create_voltage_controller(
     generator_voltage: float = 80.0,
 ):  # V
     """Create PI voltage controller that targets average voltage over last 1ms."""
-
-    # PI controller state
-    integral_error = 0.0
-
-    # PI gains
-    Kp = 0.05  # Proportional gain
-    Ki = 0.1  # Integral gain
-
-    def controller(env: WireEDMEnv, voltage_history: list = None) -> Dict[str, Any]:
-        nonlocal integral_error
-
-        # Calculate average voltage over the provided history (last 1ms of data)
-        if voltage_history and len(voltage_history) > 0:
-            avg_voltage = float(np.mean(tuple(voltage_history)))
-        else:
-            # Fallback to current voltage if no history provided
-            avg_voltage = env.state.voltage
-
-        # PI control
-        error = target_avg_voltage - avg_voltage
-        integral_error += error
-
-        # Integral windup protection
-        integral_error = np.clip(integral_error, -100.0, 100.0)
-
-        # PI output - FIXED SIGN: when voltage is too high (negative error),
-        # we want positive delta to move wire closer and reduce gap
-        pi_output = -(
-            Kp * error + Ki * integral_error * 0.001
-        )  # Negated to fix direction
-
-        if env.mechanics.control_mode == "position":
-            # Position control: return position increment [µm]
-            delta = pi_output
-            delta = np.clip(delta, -5.0, 5.0)  # Limit position command
-        else:  # velocity control
-            # Velocity control: return target velocity [µm/s]
-            delta = pi_output * 100.0  # Scale for velocity control
-            delta = np.clip(delta, -1000.0, 1000.0)  # Limit velocity command
-
-        return build_scalar_action(
-            servo=delta,
-            target_voltage=generator_voltage,
-            current_mode=current_mode,
-            ON_time=on_time,
-            OFF_time=off_time,
-        )
-
-    return controller
+    control_state = RuntimeControlState(
+        controller_type="voltage",
+        target_avg_voltage=target_avg_voltage,
+        generator_voltage=generator_voltage,
+        current_mode=current_mode,
+        on_time=on_time,
+        off_time=off_time,
+    )
+    return RuntimeController(control_state)
 
 
 def create_fixed_servo_controller(
@@ -127,18 +75,15 @@ def create_fixed_servo_controller(
     generator_voltage: float = 80.0,
 ):
     """Create a controller that keeps a constant servo command."""
-
-    def controller(env: WireEDMEnv) -> Dict[str, Any]:
-        del env
-        return build_scalar_action(
-            servo=servo,
-            target_voltage=generator_voltage,
-            current_mode=current_mode,
-            ON_time=on_time,
-            OFF_time=off_time,
-        )
-
-    return controller
+    control_state = RuntimeControlState(
+        controller_type="fixed-servo",
+        fixed_servo=servo,
+        generator_voltage=generator_voltage,
+        current_mode=current_mode,
+        on_time=on_time,
+        off_time=off_time,
+    )
+    return RuntimeController(control_state)
 
 
 def setup_logger(
@@ -356,14 +301,15 @@ def run_simulation(
             generator_voltage=generator_voltage,
         )
 
+    control_snapshot = controller.control_state.snapshot()
+
     # For voltage controller, maintain voltage history over last 1ms
     voltage_history: deque[float] = deque()
     time_history: deque[int] = deque()
 
-    if controller_type == "voltage":
-        action = controller(env, voltage_history)
-    else:
-        action = controller(env)
+    action = controller(
+        env, list(voltage_history) if controller.requires_voltage_history else None
+    )
     step_action = (
         env.compile_action(action) if engine in {"compiled", "compiled-fast"} else action
     )
@@ -394,7 +340,7 @@ def run_simulation(
             logger.collect(env.state, info)
 
         # For voltage controller, collect voltage history every µs
-        if controller_type == "voltage":
+        if controller.requires_voltage_history:
             if engine == "compiled-fast":
                 current_voltage = float(env._hot_state.voltage)
                 current_time_us = int(env._hot_state.time)
@@ -414,12 +360,11 @@ def run_simulation(
         if info.get("control_step", False):
             if engine == "compiled-fast":
                 env.sync_compiled_to_state()
-            if controller_type == "gap":
-                action = controller(env)
-            elif controller_type == "voltage":
-                action = controller(env, list(voltage_history))
-            else:
-                action = controller(env)
+            action = controller(
+                env,
+                list(voltage_history) if controller.requires_voltage_history else None,
+            )
+            control_snapshot = controller.control_state.snapshot()
             step_action = (
                 env.compile_action(action)
                 if engine in {"compiled", "compiled-fast"}
@@ -433,20 +378,14 @@ def run_simulation(
                     print_step_info(
                         env,
                         step,
-                        controller_type,
-                        target_gap=target_gap,
-                        target_avg_voltage=target_avg_voltage,
-                        fixed_servo=fixed_servo,
+                        control_snapshot,
                         true_avg_voltage=true_avg_voltage,
                     )
                 else:
                     print_step_info(
                         env,
                         step,
-                        controller_type,
-                        target_gap=target_gap,
-                        target_avg_voltage=target_avg_voltage,
-                        fixed_servo=fixed_servo,
+                        control_snapshot,
                     )
 
         # Check termination
@@ -483,38 +422,36 @@ def run_simulation(
 def print_step_info(
     env: WireEDMEnv,
     step: int,
-    controller_type: str = "gap",
-    target_gap: float = 5.0,
-    target_avg_voltage: float = 30.0,
-    fixed_servo: float = 0.25,
+    control_snapshot: RuntimeControlSnapshot,
     true_avg_voltage: float = None,
 ) -> None:
     """Print verbose step information."""
+    del step
     gap = env.state.workpiece_position - env.state.wire_position
     target_unit = "µm" if env.mechanics.control_mode == "position" else "µm/s"
 
     # Compute wire average temperature only when needed for printing
     avg_wire_temp = env.wire.compute_zone_mean_temperature(env.state.wire_temperature)
 
-    if controller_type == "gap":
+    if control_snapshot.controller_type == "gap":
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"gap={gap:6.1f} µm (target={target_gap:4.1f})   "
+            f"gap={gap:6.1f} µm (target={control_snapshot.target_gap:4.1f})   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
             f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
             f"AvgWireT={avg_wire_temp:6.1f} K"
         )
-    elif controller_type == "voltage":
+    elif control_snapshot.controller_type == "voltage":
         current_voltage = env.state.voltage
         # Use true average if available, otherwise use current voltage
         display_avg = (
             true_avg_voltage if true_avg_voltage is not None else current_voltage
         )
-        voltage_error = target_avg_voltage - display_avg
+        voltage_error = control_snapshot.target_avg_voltage - display_avg
         print(
             f"[{env.state.time/1000:.1f} ms] "
-            f"Vavg={display_avg:6.1f} (target={target_avg_voltage:4.1f}, err={voltage_error:6.1f})   "
+            f"Vavg={display_avg:6.1f} (target={control_snapshot.target_avg_voltage:4.1f}, err={voltage_error:6.1f})   "
             f"gap={gap:6.1f} µm   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
@@ -525,7 +462,7 @@ def print_step_info(
         print(
             f"[{env.state.time/1000:.1f} ms] "
             f"gap={gap:6.1f} µm   "
-            f"servo={fixed_servo:6.2f}   "
+            f"servo={control_snapshot.fixed_servo:6.2f}   "
             f"target_delta={env.state.target_delta:6.1f} {target_unit}   "
             f"wire_vel={env.state.wire_velocity:6.1f} µm/s   "
             f"V={env.state.voltage:6.1f}  I={env.state.current:6.1f}  "
