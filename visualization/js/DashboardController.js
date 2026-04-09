@@ -19,6 +19,14 @@ import { OscilloscopePanel } from './panels/OscilloscopePanel.js';
 import { TopViewPanel } from './panels/TopViewPanel.js';
 import { ThermalProfilePanel } from './panels/ThermalProfilePanel.js';
 
+const REALTIME_SCHEMA_VERSION = 1;
+
+const LIVE_SETPOINT_CONFIG = {
+    gap: { param: 'target_gap', label: 'Target Gap (um)', min: '0', step: '0.1' },
+    voltage: { param: 'target_avg_voltage', label: 'Target Vavg (V)', min: '0', step: '0.1' },
+    'fixed-servo': { param: 'fixed_servo', label: 'Servo Command', step: '0.01' }
+};
+
 export class DashboardController {
     constructor() {
         this.data = null;
@@ -26,12 +34,17 @@ export class DashboardController {
         this.currentFrame = 0;
         this.isPlaying = false;
         this.animationId = null;
+        this.liveAnimationId = null;
         this.playbackSpeed = DEFAULT_PLAYBACK_SPEED;
         this.lastFrameTime = 0;
         this.frameAccumulator = 0;
         this.viewsLinked = true;
         this.followLiveTail = true;
         this.dataSourceSubscription = null;
+        this.liveControlTimers = new Map();
+        this.liveLastError = null;
+        this.liveLastProcessFrameWallMs = null;
+        this.currentMode = 'file';
 
         // Panel instances
         this.panels = {
@@ -45,6 +58,7 @@ export class DashboardController {
     }
 
     setDataSource(dataSource) {
+        this.clearLiveControlTimers();
         if (this.dataSource && this.dataSourceSubscription) {
             this.dataSourceSubscription();
             this.dataSourceSubscription = null;
@@ -55,6 +69,7 @@ export class DashboardController {
 
         this.dataSource = dataSource;
         this.data = dataSource ? dataSource.getData() : null;
+        this.liveLastError = null;
 
         if (this.dataSource && this.dataSource.subscribe) {
             this.dataSourceSubscription = this.dataSource.subscribe((event) => this.handleDataSourceEvent(event));
@@ -67,6 +82,8 @@ export class DashboardController {
         });
 
         this.refreshTimelineBounds();
+        this.updateModeLayout();
+        this.updateLiveControls();
     }
 
     handleDataSourceEvent(event) {
@@ -74,18 +91,25 @@ export class DashboardController {
 
         if (event.type === 'header') {
             this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastError = null;
             Object.values(this.panels).forEach(panel => {
                 if (panel.setData) {
                     panel.setData(this.data);
                 }
             });
             this.refreshTimelineBounds();
+            this.updateLiveControls();
             return;
         }
 
         if (event.type === 'process_frame') {
             this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastProcessFrameWallMs = performance.now();
+            if (event.droppedFrames > 0) {
+                this.handleHistoryTrim(event.droppedFrames);
+            }
             this.refreshTimelineBounds();
+            this.updateLiveControls();
             if (this.dataSource && this.dataSource.isLive && this.followLiveTail && !this.isPlaying) {
                 this.currentFrame = Math.max(0, this.getTotalFrames() - 1);
                 this.elements.timeline.value = this.currentFrame;
@@ -95,9 +119,61 @@ export class DashboardController {
             return;
         }
 
+        if (event.type === 'pulse_chunk') {
+            if (this.dataSource && this.dataSource.isLive && !this.isPlaying && this.getTotalFrames() > 0) {
+                const latestFrame = Math.max(0, this.getTotalFrames() - 1);
+                if (this.followLiveTail || this.currentFrame >= latestFrame) {
+                    this.drawFrame(this.currentFrame);
+                }
+            }
+            return;
+        }
+
+        if (event.type === 'session_state') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastError = null;
+            this.updateLiveControls();
+            return;
+        }
+
         if (event.type === 'reconnecting' || event.type === 'connected' || event.type === 'disconnected' || event.type === 'error') {
+            if (event.type === 'error') {
+                this.liveLastError = this.extractLiveErrorMessage(event.error);
+            } else if (event.type === 'connected') {
+                this.liveLastError = null;
+            }
+            this.updateLiveControls();
             console.info('Dashboard data source event:', event);
         }
+    }
+
+    handleHistoryTrim(droppedFrames) {
+        if (!Number.isFinite(droppedFrames) || droppedFrames <= 0) return;
+
+        if (!this.followLiveTail) {
+            this.currentFrame = Math.max(0, this.currentFrame - droppedFrames);
+        }
+
+        if (this.selectedMaterialTrace) {
+            const shiftedTrace = new Map();
+            for (const [frameIndex, segmentIndex] of this.selectedMaterialTrace.entries()) {
+                const shiftedFrame = frameIndex - droppedFrames;
+                if (shiftedFrame >= 0) {
+                    shiftedTrace.set(shiftedFrame, segmentIndex);
+                }
+            }
+            this.selectedMaterialTrace = shiftedTrace.size > 0 ? shiftedTrace : null;
+            this.damagePlotCache = null;
+            if (!this.selectedMaterialTrace && this.elements.damageWindow) {
+                this.elements.damageWindow.style.display = 'none';
+            }
+        }
+
+        Object.values(this.panels).forEach(panel => {
+            if (panel && panel.onHistoryTrim) {
+                panel.onHistoryTrim(droppedFrames);
+            }
+        });
     }
 
     async connectLiveStream(url, options = {}) {
@@ -132,6 +208,8 @@ export class DashboardController {
     init() {
         // Get DOM elements
         this.elements = {
+            modeBadge: document.getElementById('modeBadge'),
+            recordingControls: document.getElementById('recordingControls'),
             loadData: document.getElementById('loadData'),
             fileInput: document.getElementById('fileInput'),
             playPause: document.getElementById('playPause'),
@@ -141,6 +219,23 @@ export class DashboardController {
             timeline: document.getElementById('timeline'),
             frameCounter: document.getElementById('frameCounter'),
             timeDisplay: document.getElementById('timeDisplay'),
+            liveControls: document.getElementById('liveControls'),
+            liveConnectionState: document.getElementById('liveConnectionState'),
+            liveSessionState: document.getElementById('liveSessionState'),
+            liveControllerType: document.getElementById('liveControllerType'),
+            liveSimTime: document.getElementById('liveSimTime'),
+            liveFrameBuffer: document.getElementById('liveFrameBuffer'),
+            liveControllerSelect: document.getElementById('liveControllerSelect'),
+            liveSetpointLabel: document.getElementById('liveSetpointLabel'),
+            liveSetpointValue: document.getElementById('liveSetpointValue'),
+            liveSlowdownFactor: document.getElementById('liveSlowdownFactor'),
+            livePaceSummary: document.getElementById('livePaceSummary'),
+            liveGeneratorVoltage: document.getElementById('liveGeneratorVoltage'),
+            liveCurrentMode: document.getElementById('liveCurrentMode'),
+            liveOffTime: document.getElementById('liveOffTime'),
+            livePauseResume: document.getElementById('livePauseResume'),
+            liveStop: document.getElementById('liveStop'),
+            liveControlNote: document.getElementById('liveControlNote'),
             loadingOverlay: document.getElementById('loadingOverlay'),
             speedControl: document.getElementById('speedControl'),
             timebaseControl: document.getElementById('timebaseControl'),
@@ -233,6 +328,8 @@ export class DashboardController {
             this.elements.iPerDiv.addEventListener('change', onScaleChange);
         }
 
+        this.setupLiveControls();
+
         // Initialize panels
         this.initializePanels();
 
@@ -244,6 +341,450 @@ export class DashboardController {
 
         // Setup damage window controls
         this.setupDamageWindow();
+        this.updateModeLayout();
+    }
+
+    setupLiveControls() {
+        const bindDebouncedNumberInput = (element, key, callback, delayMs = 180) => {
+            if (!element) return;
+
+            const dispatch = () => {
+                const value = parseFloat(element.value);
+                if (!Number.isFinite(value)) return;
+                callback(value);
+            };
+
+            element.addEventListener('input', () => {
+                this.scheduleLiveControl(key, dispatch, delayMs);
+            });
+            element.addEventListener('change', () => {
+                this.cancelLiveControl(key);
+                dispatch();
+            });
+        };
+
+        bindDebouncedNumberInput(
+            this.elements.liveSlowdownFactor,
+            'slowdown_factor',
+            (value) => this.sendLiveSpeed(value)
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveGeneratorVoltage,
+            'generator_voltage',
+            (value) => this.sendLiveParam('generator_voltage', value)
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveOffTime,
+            'off_time',
+            (value) => this.sendLiveParam('off_time', value)
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveSetpointValue,
+            'active_setpoint',
+            (value) => {
+                const config = this.getActiveLiveSetpointConfig();
+                if (config) {
+                    this.sendLiveParam(config.param, value);
+                }
+            }
+        );
+
+        if (this.elements.liveControllerSelect) {
+            this.elements.liveControllerSelect.addEventListener('change', () => {
+                const value = this.elements.liveControllerSelect.value;
+                if (value) {
+                    this.sendLiveParam('controller_type', value);
+                }
+            });
+        }
+
+        if (this.elements.liveCurrentMode) {
+            this.elements.liveCurrentMode.addEventListener('change', () => {
+                const value = parseInt(this.elements.liveCurrentMode.value, 10);
+                if (Number.isFinite(value)) {
+                    this.sendLiveParam('current_mode', value);
+                }
+            });
+        }
+
+        if (this.elements.livePauseResume) {
+            this.elements.livePauseResume.addEventListener('click', () => this.handleLivePauseResume());
+        }
+        if (this.elements.liveStop) {
+            this.elements.liveStop.addEventListener('click', () => this.sendLiveCommand('stop'));
+        }
+
+        this.updateLiveControls();
+    }
+
+    scheduleLiveControl(key, callback, delayMs = 180) {
+        this.cancelLiveControl(key);
+        const timer = setTimeout(() => {
+            this.liveControlTimers.delete(key);
+            callback();
+        }, delayMs);
+        this.liveControlTimers.set(key, timer);
+    }
+
+    cancelLiveControl(key) {
+        if (!this.liveControlTimers.has(key)) return;
+        clearTimeout(this.liveControlTimers.get(key));
+        this.liveControlTimers.delete(key);
+    }
+
+    clearLiveControlTimers() {
+        this.liveControlTimers.forEach((timerId) => clearTimeout(timerId));
+        this.liveControlTimers.clear();
+    }
+
+    sendLiveCommand(type, payload = {}) {
+        if (!this.dataSource || !this.dataSource.isLive || typeof this.dataSource.send !== 'function') {
+            return false;
+        }
+
+        const sent = this.dataSource.send({
+            v: REALTIME_SCHEMA_VERSION,
+            type,
+            payload
+        });
+        if (!sent) {
+            this.liveLastError = 'live websocket is not connected';
+            this.updateLiveControls();
+        }
+        return sent;
+    }
+
+    sendLiveParam(name, value) {
+        return this.sendLiveCommand('set_param', { name, value });
+    }
+
+    sendLiveSpeed(simUsPerWallSecond) {
+        const pace = Number(simUsPerWallSecond);
+        if (!Number.isFinite(pace) || pace <= 0) {
+            return false;
+        }
+        return this.sendLiveCommand('set_speed', { slowdown_factor: 1000000 / pace });
+    }
+
+    handleLivePauseResume() {
+        const sessionState = this.data && this.data.live_session ? this.data.live_session.sessionState : 'stopped';
+        if (sessionState === 'paused') {
+            return this.sendLiveCommand('resume');
+        }
+        if (sessionState === 'stopped') {
+            return false;
+        }
+        return this.sendLiveCommand('pause');
+    }
+
+    getActiveLiveSetpointConfig() {
+        const currentParams = this.data && this.data.live_session ? this.data.live_session.currentParams || {} : {};
+        const controllerType =
+            currentParams.controller_type ||
+            (this.data && this.data.metadata ? this.data.metadata.controller_strategy : null);
+        return LIVE_SETPOINT_CONFIG[controllerType] || null;
+    }
+
+    extractLiveErrorMessage(error) {
+        if (!error) return null;
+        if (typeof error === 'string') return error;
+        if (error.payload && typeof error.payload.message === 'string') return error.payload.message;
+        if (typeof error.message === 'string') return error.message;
+        return 'live session error';
+    }
+
+    formatLiveControlValue(value, digits = 3) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return '';
+        if (Number.isInteger(numeric)) {
+            return String(numeric);
+        }
+        return String(Number(numeric.toFixed(digits)));
+    }
+
+    isLiveMode() {
+        return !!(this.dataSource && this.dataSource.isLive);
+    }
+
+    updateModeLayout() {
+        const isLiveMode = this.isLiveMode();
+        const nextMode = isLiveMode ? 'live' : 'file';
+        const modeChanged = nextMode !== this.currentMode;
+        this.currentMode = nextMode;
+        if (document.body) {
+            document.body.classList.toggle('mode-live', isLiveMode);
+            document.body.classList.toggle('mode-file', !isLiveMode);
+        }
+
+        if (this.elements.modeBadge) {
+            this.elements.modeBadge.textContent = isLiveMode ? 'Live' : 'Recording';
+            this.elements.modeBadge.classList.toggle('mode-badge-live', isLiveMode);
+            this.elements.modeBadge.classList.toggle('mode-badge-file', !isLiveMode);
+        }
+
+        if (isLiveMode) {
+            this.followLiveTail = true;
+            if (this.isPlaying) {
+                this.pause();
+                this.isPlaying = false;
+                this.updatePlayPauseIcon();
+            }
+            this.startLiveRenderLoop();
+        } else {
+            this.stopLiveRenderLoop();
+            this.liveLastProcessFrameWallMs = null;
+        }
+
+        if (modeChanged) {
+            requestAnimationFrame(() => this.handleResize());
+        }
+    }
+
+    startLiveRenderLoop() {
+        if (this.liveAnimationId) return;
+
+        const render = (renderTimeMs) => {
+            if (!this.isLiveMode()) {
+                this.liveAnimationId = null;
+                return;
+            }
+
+            if (this.data && this.getTotalFrames() > 0) {
+                if (this.followLiveTail) {
+                    this.currentFrame = Math.max(0, this.getTotalFrames() - 1);
+                }
+                this.drawFrame(this.currentFrame, { renderTimeMs });
+            }
+
+            this.liveAnimationId = requestAnimationFrame(render);
+        };
+
+        this.liveAnimationId = requestAnimationFrame(render);
+    }
+
+    stopLiveRenderLoop() {
+        if (!this.liveAnimationId) return;
+        cancelAnimationFrame(this.liveAnimationId);
+        this.liveAnimationId = null;
+    }
+
+    formatSimTimeShort(timeUs) {
+        const numeric = Number(timeUs);
+        if (!Number.isFinite(numeric) || numeric < 0) return '--';
+        if (numeric >= 1000000) {
+            return `${this.formatLiveControlValue(numeric / 1000000, 3)} s`;
+        }
+        if (numeric >= 1000) {
+            return `${this.formatLiveControlValue(numeric / 1000, 3)} ms`;
+        }
+        return `${this.formatLiveControlValue(numeric, 1)} us`;
+    }
+
+    getLivePaceMetrics(slowdownFactor) {
+        const slowdown = Number(slowdownFactor);
+        const servoIntervalUs = Number(this.data?.metadata?.servo_interval_us) || 1000;
+
+        if (!Number.isFinite(slowdown) || slowdown <= 0) {
+            return {
+                controlStepSimUs: servoIntervalUs,
+                wallMsPerControlStep: null,
+                updatesPerWallSecond: null,
+                simUsPerWallSecond: null
+            };
+        }
+
+        return {
+            controlStepSimUs: servoIntervalUs,
+            wallMsPerControlStep: (servoIntervalUs * slowdown) / 1000,
+            updatesPerWallSecond: 1000000 / (servoIntervalUs * slowdown),
+            simUsPerWallSecond: 1000000 / slowdown
+        };
+    }
+
+    formatSimUsPerWallSecond(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) return '--';
+        return `${this.formatLiveControlValue(numeric, 0)} us/s`;
+    }
+
+    getPaceHelpText(slowdownFactor) {
+        return '';
+    }
+
+    getLiveRenderableFrameData(frameIndex, renderTimeMs = performance.now()) {
+        const frameData = this.getFrameData(frameIndex);
+        frameData.isLiveMode = true;
+        frameData.liveRenderTimeMs = renderTimeMs;
+
+        const totalFrames = this.getTotalFrames();
+        if (frameIndex !== totalFrames - 1) {
+            return frameData;
+        }
+
+        const liveSession = this.data?.live_session || {};
+        const currentParams = liveSession.currentParams || {};
+        const slowdownFactor = Number(currentParams.slowdown_factor);
+        const sessionState = liveSession.sessionState || 'created';
+        const connectionState = liveSession.connectionState || 'disconnected';
+        const servoIntervalUs = Number(this.data?.metadata?.servo_interval_us) || 1000;
+
+        if (
+            sessionState !== 'running' ||
+            connectionState !== 'connected' ||
+            !Number.isFinite(slowdownFactor) ||
+            slowdownFactor <= 0 ||
+            !Number.isFinite(this.liveLastProcessFrameWallMs)
+        ) {
+            return frameData;
+        }
+
+        const elapsedWallMs = Math.max(0, renderTimeMs - this.liveLastProcessFrameWallMs);
+        const extrapolatedSimUs = Math.min(servoIntervalUs, (elapsedWallMs * 1000) / slowdownFactor);
+        if (!Number.isFinite(extrapolatedSimUs) || extrapolatedSimUs <= 0) {
+            return frameData;
+        }
+
+        const wirePosition = Number(frameData.wire_position);
+        const wireVelocity = Number(frameData.wire_velocity);
+        if (Number.isFinite(wirePosition) && Number.isFinite(wireVelocity)) {
+            frameData.wire_position = wirePosition + wireVelocity * (extrapolatedSimUs / 1000000);
+        }
+
+        const timeUs = Number(frameData.time);
+        if (Number.isFinite(timeUs)) {
+            frameData.time = timeUs + extrapolatedSimUs;
+        }
+        frameData.liveExtrapolatedSimUs = extrapolatedSimUs;
+
+        return frameData;
+    }
+
+    setLiveBadgeState(element, prefix, value) {
+        if (!element) return;
+        const normalized = String(value || 'unknown');
+        const stateClass = `state-${normalized.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
+        element.className = `live-status-badge ${stateClass}`;
+        element.textContent = `${prefix} ${normalized}`;
+    }
+
+    syncLiveInputValue(element, value, digits = 3) {
+        if (!element) return;
+        if (document.activeElement === element) return;
+        element.value = this.formatLiveControlValue(value, digits);
+    }
+
+    updateLiveControls() {
+        const liveSession = this.data && this.data.live_session ? this.data.live_session : {};
+        const isLiveSource = this.isLiveMode();
+        const connectionState = liveSession.connectionState || (isLiveSource ? 'disconnected' : 'file');
+        const sessionState = liveSession.sessionState || (isLiveSource ? 'created' : 'stopped');
+        const supportedParams = Array.isArray(liveSession.supportedParams) ? liveSession.supportedParams : [];
+        const currentParams = liveSession.currentParams || {};
+        const controllerType =
+            currentParams.controller_type ||
+            (this.data && this.data.metadata ? this.data.metadata.controller_strategy : null);
+        const setpointConfig = LIVE_SETPOINT_CONFIG[controllerType] || null;
+        const isConnected = isLiveSource && connectionState === 'connected';
+        const solverLimited = !!liveSession.solverLimited;
+        const lastError = liveSession.lastError || this.liveLastError;
+
+        if (this.elements.liveControls) {
+            this.elements.liveControls.classList.toggle('live-disabled', !isConnected);
+        }
+
+        this.setLiveBadgeState(this.elements.liveConnectionState, 'WS', connectionState);
+        this.setLiveBadgeState(this.elements.liveSessionState, 'Session', sessionState);
+
+        if (this.elements.liveControllerType) {
+            this.elements.liveControllerType.textContent = controllerType
+                ? `Strategy: ${controllerType}`
+                : 'Strategy: unavailable';
+        }
+
+        if (this.elements.liveSimTime) {
+            const latestTimeSeries = this.data && this.data.time;
+            const latestTimeUs = latestTimeSeries && latestTimeSeries.length > 0
+                ? latestTimeSeries[latestTimeSeries.length - 1]
+                : null;
+            this.elements.liveSimTime.textContent = `Sim: ${this.formatSimTimeShort(latestTimeUs)}`;
+        }
+        if (this.elements.liveFrameBuffer) {
+            this.elements.liveFrameBuffer.textContent = `Buffered frames: ${this.getTotalFrames()}`;
+        }
+
+        if (this.elements.liveSetpointLabel) {
+            this.elements.liveSetpointLabel.textContent = setpointConfig ? setpointConfig.label : 'Setpoint';
+        }
+        if (this.elements.liveSetpointValue && setpointConfig) {
+            if (setpointConfig.min !== undefined) {
+                this.elements.liveSetpointValue.min = setpointConfig.min;
+            } else {
+                this.elements.liveSetpointValue.removeAttribute('min');
+            }
+            if (setpointConfig.step !== undefined) {
+                this.elements.liveSetpointValue.step = setpointConfig.step;
+            }
+        }
+
+        const currentPace = this.getLivePaceMetrics(currentParams.slowdown_factor).simUsPerWallSecond;
+        this.syncLiveInputValue(this.elements.liveSlowdownFactor, currentPace, 0);
+        this.syncLiveInputValue(this.elements.liveGeneratorVoltage, currentParams.generator_voltage, 2);
+        this.syncLiveInputValue(this.elements.liveOffTime, currentParams.off_time, 3);
+        if (this.elements.liveControllerSelect && document.activeElement !== this.elements.liveControllerSelect) {
+            const nextControllerType = controllerType || 'gap';
+            this.elements.liveControllerSelect.value = nextControllerType;
+        }
+        if (setpointConfig) {
+            this.syncLiveInputValue(this.elements.liveSetpointValue, currentParams[setpointConfig.param], 3);
+        }
+        if (this.elements.liveCurrentMode && document.activeElement !== this.elements.liveCurrentMode) {
+            const currentMode = currentParams.current_mode;
+            this.elements.liveCurrentMode.value = Number.isFinite(Number(currentMode)) ? String(currentMode) : '';
+        }
+
+        const setDisabled = (element, disabled) => {
+            if (element) {
+                element.disabled = disabled;
+            }
+        };
+
+        setDisabled(this.elements.liveControllerSelect, !isConnected || !supportedParams.includes('controller_type'));
+        setDisabled(this.elements.liveSlowdownFactor, !isConnected || !supportedParams.includes('slowdown_factor'));
+        setDisabled(this.elements.liveGeneratorVoltage, !isConnected || !supportedParams.includes('generator_voltage'));
+        setDisabled(this.elements.liveCurrentMode, !isConnected || !supportedParams.includes('current_mode'));
+        setDisabled(this.elements.liveOffTime, !isConnected || !supportedParams.includes('off_time'));
+        setDisabled(
+            this.elements.liveSetpointValue,
+            !isConnected || !setpointConfig || !supportedParams.includes(setpointConfig.param)
+        );
+
+        if (this.elements.livePauseResume) {
+            this.elements.livePauseResume.textContent = sessionState === 'paused' ? 'Resume' : 'Pause';
+            this.elements.livePauseResume.disabled = !isConnected || sessionState === 'stopped';
+        }
+        if (this.elements.liveStop) {
+            this.elements.liveStop.disabled = !isConnected || sessionState === 'stopped';
+        }
+
+        if (this.elements.livePaceSummary) {
+            this.elements.livePaceSummary.textContent = this.getPaceHelpText(currentParams.slowdown_factor);
+        }
+
+        if (this.elements.liveControlNote) {
+            if (!isLiveSource) {
+                this.elements.liveControlNote.textContent = 'Load a live session to enable runtime controls.';
+            } else if (lastError) {
+                this.elements.liveControlNote.textContent = `Last error: ${lastError}`;
+            } else if (connectionState === 'connecting') {
+                this.elements.liveControlNote.textContent = 'Connecting to live session...';
+            } else if (connectionState === 'disconnected') {
+                this.elements.liveControlNote.textContent = 'Live controls are disabled until the websocket reconnects.';
+            } else if (solverLimited) {
+                this.elements.liveControlNote.textContent = 'Session is solver-limited. Commands still apply on the next control step, but the solver cannot sustain the requested pace.';
+            } else {
+                this.elements.liveControlNote.textContent = '';
+            }
+        }
     }
 
     setupDamageWindow() {
@@ -849,6 +1390,9 @@ export class DashboardController {
     }
 
     togglePlayPause() {
+        if (this.isLiveMode()) {
+            return;
+        }
         if (!this.data || this.getTotalFrames() === 0) {
             alert('Please load data first');
             return;
@@ -929,6 +1473,9 @@ export class DashboardController {
     }
 
     resetTimeline() {
+        if (this.isLiveMode()) {
+            return;
+        }
         this.pause();
         this.isPlaying = false;
         this.updatePlayPauseIcon();
@@ -936,6 +1483,7 @@ export class DashboardController {
     }
 
     previousFrame() {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
         const frameStep = Math.max(1, Math.round(this.playbackSpeed / TARGET_FPS));
         const prevFrame = Math.max(this.currentFrame - frameStep, 0);
@@ -943,6 +1491,7 @@ export class DashboardController {
     }
 
     nextFrame() {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
         const frameStep = Math.max(1, Math.round(this.playbackSpeed / TARGET_FPS));
         const nextFrame = Math.min(this.currentFrame + frameStep, this.getTotalFrames() - 1);
@@ -950,6 +1499,7 @@ export class DashboardController {
     }
 
     seekTo(frame) {
+        if (this.isLiveMode()) return;
         if (!this.data || this.getTotalFrames() === 0) return;
 
         this.currentFrame = Math.max(0, Math.min(frame, this.getTotalFrames() - 1));
@@ -959,6 +1509,7 @@ export class DashboardController {
     }
 
     seekToWithAccumulation(targetFrame) {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
 
         const oldFrame = this.currentFrame;
@@ -974,10 +1525,13 @@ export class DashboardController {
         this.updateTimeDisplay();
     }
 
-    drawFrame(frameIndex) {
+    drawFrame(frameIndex, options = {}) {
         if (!this.data) return;
 
-        const frameData = this.getFrameData(frameIndex);
+        const renderTimeMs = Number.isFinite(options.renderTimeMs) ? options.renderTimeMs : performance.now();
+        const frameData = this.isLiveMode()
+            ? this.getLiveRenderableFrameData(frameIndex, renderTimeMs)
+            : this.getFrameData(frameIndex);
 
         Object.values(this.panels).forEach(panel => {
             panel.draw(frameData, frameIndex);
@@ -995,10 +1549,23 @@ export class DashboardController {
 
         for (let f = startFrame + 1; f <= endFrame; f++) {
             const frameData = this.getFrameData(f);
-            if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const gapUM = (frameData.workpiece_position || 0) - (frameData.wire_position || 0);
+
+            if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
+                frameData.spark_events.forEach((sparkEvent) => {
+                    accumulatedSparks.push({
+                        locationMM: sparkEvent.locationMM,
+                        frameIndex: f,
+                        timeUS: sparkEvent.timeUS,
+                        gapUM
+                    });
+                });
+            } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
                 accumulatedSparks.push({
                     locationMM: frameData.spark_status[1],
-                    frameIndex: f
+                    frameIndex: f,
+                    timeUS: Number(frameData.time),
+                    gapUM
                 });
             }
         }

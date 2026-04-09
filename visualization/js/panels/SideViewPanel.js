@@ -9,6 +9,7 @@ import {
     DEFAULT_WORKPIECE_THICKNESS,
     DEFAULT_ZOOM_LEVEL,
     BASE_SPARK_PERSISTENCE_FRAMES,
+    SPARK_VISIBILITY_MS,
     TARGET_FPS,
     NOZZLE_WIDTH_MM,
     NOZZLE_HEIGHT_MM,
@@ -46,12 +47,28 @@ export class SideViewPanel extends BasePanel {
         this.activeSparks = []; // Array of {locationMM, startFrame, intensity}
         this.baseSparkPersistenceFrames = BASE_SPARK_PERSISTENCE_FRAMES;
         this.lastFrameIndex = -1; // Track frame changes for detecting backward seeks
+        this.lastProcessedSparkTimeUs = -Infinity;
 
         // Spark visibility toggle
         this.showSparks = true;
 
         // Setup controls
         this.setupControls();
+    }
+
+    onHistoryTrim(droppedFrames) {
+        if (!Number.isFinite(droppedFrames) || droppedFrames <= 0) return;
+
+        this.activeSparks = this.activeSparks
+            .map((spark) => ({
+                ...spark,
+                startFrame: spark.startFrame - droppedFrames
+            }))
+            .filter((spark) => spark.startFrame >= 0);
+        this.lastFrameIndex = Math.max(-1, this.lastFrameIndex - droppedFrames);
+        if (this.activeSparks.length === 0) {
+            this.lastProcessedSparkTimeUs = -Infinity;
+        }
     }
 
     setData(data) {
@@ -210,41 +227,79 @@ export class SideViewPanel extends BasePanel {
         // Handle spark persistence
         if (frameIndex < this.lastFrameIndex) {
             this.activeSparks = [];
+            this.lastProcessedSparkTimeUs = -Infinity;
         }
         this.lastFrameIndex = frameIndex;
+        const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
+        const isLiveRender = Number.isFinite(liveRenderTimeMs);
 
         if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
             frameData.accumulatedSparks.forEach(spark => {
-                this.activeSparks.push({
-                    locationMM: spark.locationMM,
-                    startFrame: spark.frameIndex,
-                    intensity: 1.0
-                });
+                if (!Number.isFinite(spark.timeUS) || spark.timeUS > this.lastProcessedSparkTimeUs) {
+                    this.activeSparks.push({
+                        locationMM: spark.locationMM,
+                        startFrame: spark.frameIndex,
+                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                        intensity: 1.0
+                    });
+                    if (Number.isFinite(spark.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, spark.timeUS);
+                    }
+                }
             });
         }
 
-        if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
-            const sparkLocationMM = frameData.spark_status[1];
-            this.activeSparks.push({
-                locationMM: sparkLocationMM,
-                startFrame: frameIndex,
-                intensity: 1.0
+        if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
+            frameData.spark_events.forEach((sparkEvent) => {
+                if (!Number.isFinite(sparkEvent.timeUS) || sparkEvent.timeUS > this.lastProcessedSparkTimeUs) {
+                    this.activeSparks.push({
+                        locationMM: sparkEvent.locationMM,
+                        startFrame: frameIndex,
+                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                        intensity: 1.0
+                    });
+                    if (Number.isFinite(sparkEvent.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkEvent.timeUS);
+                    }
+                }
             });
+        } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const sparkLocationMM = frameData.spark_status[1];
+            const sparkSeed = Number.isFinite(frameData.time) ? Number(frameData.time) : frameIndex;
+            if (sparkSeed > this.lastProcessedSparkTimeUs) {
+                this.activeSparks.push({
+                    locationMM: sparkLocationMM,
+                    startFrame: frameIndex,
+                    startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                    intensity: 1.0
+                });
+                this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkSeed);
+            }
         }
 
         const playbackSpeed = this.controller ? this.controller.playbackSpeed : TARGET_FPS;
         const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / TARGET_FPS));
         const sparkPersistenceFrames = Math.max(this.baseSparkPersistenceFrames, framesPerDisplayFrame * 12);
+        const sparkPersistenceMs = SPARK_VISIBILITY_MS;
 
-        this.activeSparks = this.activeSparks.filter(
-            spark => (frameIndex - spark.startFrame) < sparkPersistenceFrames
-        );
+        this.activeSparks = this.activeSparks.filter((spark) => {
+            if (isLiveRender && Number.isFinite(spark.startRenderTimeMs)) {
+                return (liveRenderTimeMs - spark.startRenderTimeMs) < sparkPersistenceMs;
+            }
+            return (frameIndex - spark.startFrame) < sparkPersistenceFrames;
+        });
 
         if (this.showSparks) {
             const gap = (frameData.workpiece_position || 0) - (frameData.wire_position || 0);
             this.activeSparks.forEach(spark => {
-                const age = frameIndex - spark.startFrame;
-                const decayFactor = 1.0 - (age / sparkPersistenceFrames);
+                let decayFactor;
+                if (isLiveRender && Number.isFinite(spark.startRenderTimeMs)) {
+                    const ageMs = liveRenderTimeMs - spark.startRenderTimeMs;
+                    decayFactor = 1.0 - (ageMs / sparkPersistenceMs);
+                } else {
+                    const age = frameIndex - spark.startFrame;
+                    decayFactor = 1.0 - (age / sparkPersistenceFrames);
+                }
                 this.drawSpark(wireCenterX, wireRadius, workpieceEdgeX, scale, spark.locationMM, gap, decayFactor);
             });
         }

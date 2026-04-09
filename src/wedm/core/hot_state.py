@@ -84,6 +84,7 @@ class HotStateBundle:
     wire_last_flow_condition: float
     wire_zone_mean_counter: int
     wire_last_zone_mean: float
+    wire_material_positions_mm: np.ndarray
     wire_temperature: np.ndarray
     wire_damage: np.ndarray
     wire_d_t_dt: np.ndarray
@@ -162,6 +163,11 @@ class HotStateBundle:
             wire_last_flow_condition=_encode_optional_float(wire._last_flow_condition),
             wire_zone_mean_counter=int(wire.zone_mean_counter),
             wire_last_zone_mean=_encode_optional_float(wire._last_zone_mean),
+            wire_material_positions_mm=(
+                wire._ensure_position_buffer().copy()
+                if copy_arrays
+                else wire._ensure_position_buffer()
+            ),
             wire_temperature=wire._temperature.copy() if copy_arrays else wire._temperature,
             wire_damage=wire._damage.copy() if copy_arrays else wire._damage,
             wire_d_t_dt=wire.dT_dt.copy() if copy_arrays else wire.dT_dt,
@@ -176,6 +182,11 @@ class HotStateBundle:
         never silently share the same underlying memory.
         """
         wire = env.wire
+        position_buffer = wire._ensure_position_buffer()
+        if position_buffer.shape != self.wire_material_positions_mm.shape:
+            raise ValueError(
+                "HotStateBundle wire_material_positions_mm shape is incompatible"
+            )
         if wire._temperature.shape != self.wire_temperature.shape:
             raise ValueError("HotStateBundle wire_temperature shape is incompatible")
         if wire._damage.shape != self.wire_damage.shape:
@@ -259,11 +270,13 @@ class HotStateBundle:
         wire._last_flow_condition = _decode_optional_float(self.wire_last_flow_condition)
         wire.zone_mean_counter = self.wire_zone_mean_counter
         wire._last_zone_mean = _decode_optional_float(self.wire_last_zone_mean)
+        np.copyto(position_buffer, self.wire_material_positions_mm)
+        wire._positions_dirty = False
         np.copyto(wire._temperature, self.wire_temperature)
         np.copyto(wire._damage, self.wire_damage)
         np.copyto(wire.dT_dt, self.wire_d_t_dt)
         np.copyto(wire.conv_loss_coeff, self.wire_conv_loss_coeff)
 
+        state.wire_material_positions_mm = position_buffer
         state.wire_temperature = wire._temperature
         state.wire_damage = wire._damage
-        state.wire_material_positions_mm = wire._ensure_position_buffer()

@@ -14,6 +14,7 @@ const PROCESS_FRAME_FIELDS = {
     current_mode: ['current_mode'],
     ON_time: ['ON_time', 'on_time_us'],
     OFF_time: ['OFF_time', 'off_time_us'],
+    spark_events: ['spark_events'],
     is_short_circuit: ['is_short_circuit'],
     flow_rate: ['flow_rate'],
     debris_density: ['debris_density'],
@@ -38,6 +39,7 @@ function createEmptyDataShape() {
         current_mode: [],
         ON_time: [],
         OFF_time: [],
+        spark_events: [],
         spark_status: [],
         is_short_circuit: [],
         flow_rate: [],
@@ -51,8 +53,20 @@ function createEmptyDataShape() {
             connectionState: 'disconnected',
             sessionState: 'created',
             supportedParams: [],
-            currentParams: {}
+            currentParams: {},
+            solverLimited: false,
+            lastError: null
         }
+    };
+}
+
+function createEmptyPulseHistory() {
+    return {
+        baseTimeUs: 0,
+        dtUs: 1,
+        voltage: [],
+        current: [],
+        sparkState: []
     };
 }
 
@@ -82,8 +96,29 @@ function normalizeSparkStatus(frame) {
     return [state, location, extra];
 }
 
+function normalizeSparkEvents(frame) {
+    const rawEvents = pickFirstDefined(frame, ['spark_events'], []);
+    if (!Array.isArray(rawEvents)) return [];
+
+    return rawEvents
+        .map((event) => {
+            if (!event || typeof event !== 'object') return null;
+            const timeUS = Number(pickFirstDefined(event, ['time_us', 'timeUS'], NaN));
+            const locationMM = Number(pickFirstDefined(event, ['location_mm', 'locationMM'], NaN));
+            if (!Number.isFinite(timeUS) || !Number.isFinite(locationMM)) {
+                return null;
+            }
+            return { timeUS, locationMM };
+        })
+        .filter(Boolean);
+}
+
 function appendProcessFrame(data, frame) {
     for (const [targetKey, aliases] of Object.entries(PROCESS_FRAME_FIELDS)) {
+        if (targetKey === 'spark_events') {
+            data.spark_events.push(normalizeSparkEvents(frame));
+            continue;
+        }
         const rawValue = pickFirstDefined(frame, aliases);
         if (targetKey === 'wire_temperature' || targetKey === 'wire_damage' || targetKey === 'wire_material_positions_mm') {
             data[targetKey].push(cloneVector(rawValue));
@@ -168,6 +203,10 @@ export class DashboardDataSource {
         return [];
     }
 
+    getPulseHistory() {
+        return null;
+    }
+
     disconnect() {}
 }
 
@@ -183,9 +222,39 @@ export class FileDashboardDataSource extends DashboardDataSource {
                 connectionState: 'file',
                 sessionState: 'stopped',
                 supportedParams: [],
-                currentParams: {}
+                currentParams: {},
+                solverLimited: false,
+                lastError: null
             };
         }
+    }
+
+    getPulseHistory() {
+        const voltage = this.data && this.data.voltage;
+        const current = this.data && this.data.current;
+        if (!(Array.isArray(voltage) || ArrayBuffer.isView(voltage)) ||
+            !(Array.isArray(current) || ArrayBuffer.isView(current))) {
+            return null;
+        }
+
+        const time = this.data && this.data.time;
+        const baseTimeUs = time && time.length > 0 ? Number(time[0]) : 0;
+        let dtUs = 1;
+        if (time && time.length > 1) {
+            const inferredDt = Number(time[1]) - Number(time[0]);
+            if (Number.isFinite(inferredDt) && inferredDt > 0) {
+                dtUs = inferredDt;
+            }
+        }
+
+        const sparkState = this.data.spark_status_state || this.data.sparkState || [];
+        return {
+            baseTimeUs,
+            dtUs,
+            voltage,
+            current,
+            sparkState
+        };
     }
 }
 
@@ -200,6 +269,7 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         this.WebSocketImpl = options.WebSocketImpl || WebSocket;
         this.socket = null;
         this.pulseChunks = [];
+        this.pulseHistory = createEmptyPulseHistory();
         this.totalPulseSamples = 0;
         this.manualDisconnect = false;
         this.reconnectTimer = null;
@@ -213,6 +283,10 @@ export class LiveDashboardDataSource extends DashboardDataSource {
 
     getPulseChunks() {
         return this.pulseChunks;
+    }
+
+    getPulseHistory() {
+        return this.pulseHistory;
     }
 
     disconnect() {
@@ -322,6 +396,7 @@ export class LiveDashboardDataSource extends DashboardDataSource {
                 this.handleSessionState(message);
                 break;
             case 'error':
+                this.data.live_session.lastError = message.payload?.message || message.message || 'live session error';
                 this.emit({ type: 'error', error: message });
                 break;
             default:
@@ -336,6 +411,7 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         this.data.live_session.supportedParams = header.supportedParams;
         this.data.live_session.currentParams = header.currentParams;
         this.data.live_session.sessionState = header.sessionState;
+        this.data.live_session.lastError = null;
         this.emit({ type: 'header', header });
     }
 
@@ -356,25 +432,54 @@ export class LiveDashboardDataSource extends DashboardDataSource {
 
     handlePulseChunk(message) {
         const chunk = normalizePulseChunk(message);
+        let droppedSamples = 0;
+
         this.pulseChunks.push(chunk);
+        this.pulseHistory.dtUs = chunk.dt_us || this.pulseHistory.dtUs || 1;
+        if (this.totalPulseSamples === 0) {
+            this.pulseHistory.baseTimeUs = chunk.base_time_us;
+        }
+        this.pulseHistory.voltage.push(...chunk.voltage);
+        this.pulseHistory.current.push(...chunk.current);
+        this.pulseHistory.sparkState.push(...chunk.spark_state);
         this.totalPulseSamples += chunk.voltage.length;
 
         while (this.totalPulseSamples > this.maxPulseSamples && this.pulseChunks.length > 0) {
             const dropped = this.pulseChunks.shift();
             this.totalPulseSamples -= dropped.voltage.length;
+            droppedSamples += dropped.voltage.length;
+        }
+
+        if (droppedSamples > 0) {
+            this.pulseHistory.voltage.splice(0, droppedSamples);
+            this.pulseHistory.current.splice(0, droppedSamples);
+            this.pulseHistory.sparkState.splice(0, droppedSamples);
+        }
+
+        if (this.pulseChunks.length > 0) {
+            this.pulseHistory.baseTimeUs = this.pulseChunks[0].base_time_us;
+        } else if (this.totalPulseSamples === 0) {
+            this.pulseHistory.baseTimeUs = 0;
         }
 
         this.emit({
             type: 'pulse_chunk',
             chunk,
-            totalPulseSamples: this.totalPulseSamples
+            totalPulseSamples: this.totalPulseSamples,
+            droppedSamples
         });
     }
 
     handleSessionState(message) {
         const payload = message.payload || message.data || message;
         const state = payload.state || payload.session_state || payload.status || 'running';
+        const currentParams = payload.current_params || payload.currentParams;
         this.data.live_session.sessionState = state;
+        if (currentParams && typeof currentParams === 'object') {
+            this.data.live_session.currentParams = currentParams;
+        }
+        this.data.live_session.solverLimited = !!(payload.solver_limited || payload.solverLimited);
+        this.data.live_session.lastError = null;
         this.emit({ type: 'session_state', state, payload });
     }
 }

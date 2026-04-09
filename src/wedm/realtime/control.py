@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 ControllerType = Literal["gap", "voltage", "fixed-servo"]
 
-_LIVE_GENERATOR_FIELDS = {"generator_voltage", "current_mode", "on_time", "off_time"}
+_LIVE_GENERATOR_FIELDS = {"generator_voltage", "current_mode", "off_time"}
 _LIVE_SETPOINT_FIELDS = {
     "gap": {"target_gap"},
     "voltage": {"target_avg_voltage"},
@@ -80,10 +80,7 @@ class RuntimeControlState:
 
             normalized = dict(kwargs)
             if "controller_type" in normalized:
-                new_controller_type = str(normalized["controller_type"])
-                if new_controller_type != self._snapshot.controller_type:
-                    raise ValueError("controller_type is restart-only for a live session")
-                normalized["controller_type"] = new_controller_type
+                normalized["controller_type"] = str(normalized["controller_type"])
 
             for field_name in ("target_gap", "target_avg_voltage", "fixed_servo", "generator_voltage", "on_time", "off_time"):
                 if field_name in normalized:
@@ -97,8 +94,11 @@ class RuntimeControlState:
             self._snapshot = next_snapshot
             return next_snapshot
 
-    def set_param(self, name: str, value: float | int) -> RuntimeControlSnapshot:
+    def set_param(self, name: str, value: float | int | str) -> RuntimeControlSnapshot:
         """Update one live-editable parameter and reject inactive setpoints."""
+        if name == "controller_type":
+            return self.update(controller_type=value)
+
         if name in _LIVE_GENERATOR_FIELDS:
             return self.update(**{name: value})
 
@@ -110,9 +110,6 @@ class RuntimeControlState:
             raise ValueError(
                 f"{name} is not active for controller_type={self.controller_type!r}"
             )
-
-        if name == "controller_type":
-            raise ValueError("controller_type is restart-only for a live session")
 
         raise KeyError(f"Unknown live control parameter: {name}")
 
@@ -163,6 +160,14 @@ class RuntimeController:
 
     def reset(self) -> None:
         self._integral_error = 0.0
+
+    def set_param(self, name: str, value: float | int | str) -> RuntimeControlSnapshot:
+        """Update one runtime control parameter and reset internal state if needed."""
+        previous_type = self.control_state.controller_type
+        snapshot = self.control_state.set_param(name, value)
+        if name == "controller_type" and snapshot.controller_type != previous_type:
+            self.reset()
+        return snapshot
 
     def __call__(
         self, env: WireEDMEnv, voltage_history: Sequence[float] | None = None

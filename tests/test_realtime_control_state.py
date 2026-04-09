@@ -35,14 +35,13 @@ def test_gap_controller_uses_mutated_runtime_state(env: WireEDMEnv) -> None:
     state.set_param("target_gap", 50.0)
     state.set_param("generator_voltage", 91.0)
     state.set_param("current_mode", 17)
-    state.set_param("on_time", 2.5)
     state.set_param("off_time", 17.0)
 
     updated_action = controller(env)
     assert updated_action.servo == pytest.approx(1.0)
     assert updated_action.generator_control.target_voltage == pytest.approx(91.0)
     assert updated_action.generator_control.current_mode == 17
-    assert updated_action.generator_control.ON_time == pytest.approx(2.5)
+    assert updated_action.generator_control.ON_time == pytest.approx(2.0)
     assert updated_action.generator_control.OFF_time == pytest.approx(17.0)
 
 
@@ -65,14 +64,13 @@ def test_voltage_controller_uses_mutated_target_and_generator_state(
     state.set_param("target_avg_voltage", 20.0)
     state.set_param("generator_voltage", 95.0)
     state.set_param("current_mode", 17)
-    state.set_param("on_time", 3.0)
     state.set_param("off_time", 10.0)
 
     updated_action = controller(env, [40.0, 40.0])
     assert updated_action.servo == pytest.approx(1.003)
     assert updated_action.generator_control.target_voltage == pytest.approx(95.0)
     assert updated_action.generator_control.current_mode == 17
-    assert updated_action.generator_control.ON_time == pytest.approx(3.0)
+    assert updated_action.generator_control.ON_time == pytest.approx(2.0)
     assert updated_action.generator_control.OFF_time == pytest.approx(10.0)
 
 
@@ -86,14 +84,36 @@ def test_fixed_servo_controller_uses_mutated_servo(env: WireEDMEnv) -> None:
     assert controller(env).servo == pytest.approx(-0.75)
 
 
-def test_inactive_setpoint_updates_are_rejected() -> None:
+def test_controller_type_can_switch_live_and_changes_active_setpoint() -> None:
     state = RuntimeControlState(controller_type="gap")
 
-    with pytest.raises(ValueError, match="not active"):
-        state.set_param("target_avg_voltage", 25.0)
+    updated = state.set_param("controller_type", "voltage")
+    assert updated.controller_type == "voltage"
 
-    with pytest.raises(ValueError, match="restart-only"):
-        state.set_param("controller_type", "voltage")
+    with pytest.raises(ValueError, match="not active"):
+        state.set_param("target_gap", 25.0)
+
+    updated = state.set_param("target_avg_voltage", 25.0)
+    assert updated.target_avg_voltage == pytest.approx(25.0)
 
     with pytest.raises(KeyError, match="Unknown live control parameter"):
         state.set_param("missing_param", 1)
+
+    with pytest.raises(KeyError, match="Unknown live control parameter"):
+        state.set_param("on_time", 2.5)
+
+
+def test_runtime_controller_resets_integral_when_switching_controller_type(
+    env: WireEDMEnv,
+) -> None:
+    state = RuntimeControlState(controller_type="voltage", target_avg_voltage=30.0)
+    controller = RuntimeController(state)
+
+    first_action = controller(env, [40.0, 40.0])
+    assert first_action.servo == pytest.approx(0.501)
+
+    controller.set_param("controller_type", "gap")
+    controller.set_param("controller_type", "voltage")
+
+    second_action = controller(env, [40.0, 40.0])
+    assert second_action.servo == pytest.approx(0.501)

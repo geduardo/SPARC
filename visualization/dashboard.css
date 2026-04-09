@@ -66,14 +66,55 @@ body {
     border-radius: 8px;
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     box-shadow: var(--shadow);
     border: 1px solid var(--border);
 }
 
+.controls-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+}
+
 #logo {
     height: 48px;
     width: auto;
+}
+
+.mode-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.mode-badge-file {
+    background: var(--accent-light);
+    color: var(--accent);
+}
+
+.mode-badge-live {
+    background: rgba(40, 167, 69, 0.14);
+    color: #1f7a34;
+}
+
+.recording-controls {
+    flex: 1 1 520px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.shared-view-controls {
+    flex: 0 0 auto;
 }
 
 .control-group {
@@ -570,4 +611,138 @@ canvas {
 #controls label {
     font-size: 0.8rem;
     color: var(--text-muted);
+}
+
+.live-controls {
+    flex: 1 1 640px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.live-controls.live-disabled {
+    opacity: 0.7;
+}
+
+.live-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.live-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.live-status-badge.state-connected,
+.live-status-badge.state-running {
+    background: rgba(40, 167, 69, 0.14);
+    color: #1f7a34;
+}
+
+.live-status-badge.state-connecting,
+.live-status-badge.state-created,
+.live-status-badge.state-paused {
+    background: rgba(253, 126, 20, 0.14);
+    color: #a85b12;
+}
+
+.live-status-badge.state-disconnected,
+.live-status-badge.state-stopped,
+.live-status-badge.state-error {
+    background: rgba(220, 53, 69, 0.12);
+    color: #b42333;
+}
+
+.live-status-meta {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.live-control-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    align-items: end;
+}
+
+.live-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.live-field label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.live-field-help {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
+.live-field input,
+.live-field select {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.84rem;
+}
+
+.live-field input:disabled,
+.live-field select:disabled,
+.live-session-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.live-session-actions {
+    display: flex;
+    align-items: end;
+    gap: 8px;
+}
+
+.live-session-actions button {
+    min-width: 88px;
+}
+
+.danger-btn {
+    background: var(--danger);
+    color: #ffffff;
+    border-color: transparent;
+}
+
+.danger-btn:hover {
+    background: #c82333;
+    border-color: transparent;
+}
+
+.live-control-note {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+body.mode-file #liveControls {
+    display: none;
+}
+
+body.mode-live #recordingControls {
+    display: none;
 }

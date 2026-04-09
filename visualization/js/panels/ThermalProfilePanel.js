@@ -180,7 +180,9 @@ export class ThermalProfilePanel extends BasePanel {
         super.setData(data);
 
         if (data && data.metadata) {
-            if (data.metadata.workpiece_height !== undefined) {
+            if (data.metadata.workpiece_height_mm !== undefined) {
+                this.workpieceHeightMM = data.metadata.workpiece_height_mm;
+            } else if (data.metadata.workpiece_height !== undefined) {
                 this.workpieceHeightMM = data.metadata.workpiece_height;
             }
             if (data.metadata.buffer_len_bottom !== undefined) {
@@ -194,6 +196,9 @@ export class ThermalProfilePanel extends BasePanel {
             }
             if (data.metadata.contact_offset_top !== undefined) {
                 this.contactOffsetTop = data.metadata.contact_offset_top;
+            }
+            if (data.metadata.wire_diameter !== undefined) {
+                this.wireDiameter = data.metadata.wire_diameter;
             }
         }
 
