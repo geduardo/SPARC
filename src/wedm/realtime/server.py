@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections import deque
 from dataclasses import dataclass
 import threading
@@ -23,8 +24,10 @@ from .schema import (
 )
 from .session import (
     RealtimeControlStep,
+    PulseChunk,
     RealtimeProcessFrame,
     RealtimeSession,
+    RealtimeSessionState,
     RealtimeSessionStatus,
 )
 
@@ -33,6 +36,11 @@ from .session import (
 class _QueuedMessage:
     payload: dict[str, Any]
     droppable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RestartSessionSignal:
+    pass
 
 
 class _DropOldestMessageQueue:
@@ -83,6 +91,11 @@ class _DropOldestMessageQueue:
             self._closed = True
             self._condition.notify_all()
 
+    def clear(self) -> None:
+        with self._condition:
+            self._items.clear()
+            self._condition.notify_all()
+
     def _drop_one_locked(self, *, prefer_droppable: bool) -> bool:
         if not self._items:
             return False
@@ -123,15 +136,13 @@ class RealtimeSessionServer:
         self.include_wire_field_arrays = include_wire_field_arrays
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
-
-        self.session = RealtimeSession(
-            env,
-            controller,
-            slowdown_factor=slowdown_factor,
-            on_control_step=self._on_control_step,
-            on_process_frame=self._on_process_frame,
-            on_status_change=self._on_status_change,
+        self._initial_hot_state = env.build_hot_state_bundle(copy_arrays=True)
+        bit_generator = getattr(getattr(env, "np_random", None), "bit_generator", None)
+        self._initial_rng_state = (
+            copy.deepcopy(bit_generator.state) if bit_generator is not None else None
         )
+
+        self.session = self._build_session(slowdown_factor)
 
         self._server: websockets.asyncio.server.Server | None = None
         self._session_thread: threading.Thread | None = None
@@ -223,7 +234,10 @@ class RealtimeSessionServer:
             self._ensure_session_started()
 
             async for raw_message in websocket:
-                response = self._handle_client_command(raw_message)
+                response = self._handle_client_command(raw_message, queue=queue)
+                if isinstance(response, _RestartSessionSignal):
+                    await websocket.close(code=1012, reason="session restarted")
+                    return
                 if response is not None:
                     self._publish_direct(
                         queue,
@@ -233,10 +247,15 @@ class RealtimeSessionServer:
                     )
         finally:
             queue.close()
-            sender.cancel()
             try:
-                await sender
-            except asyncio.CancelledError:
+                await asyncio.wait_for(sender, timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
+            except websockets.ConnectionClosed:
                 pass
 
             async with self._active_connection_lock:
@@ -269,7 +288,53 @@ class RealtimeSessionServer:
     def _run_session(self) -> None:
         self.session.run(max_control_steps=self.max_control_steps)
 
-    def _handle_client_command(self, raw_message: str | bytes) -> dict[str, Any]:
+    def _build_session(self, slowdown_factor: float) -> RealtimeSession:
+        return RealtimeSession(
+            self.env,
+            self.controller,
+            slowdown_factor=slowdown_factor,
+            on_process_frame=self._on_process_frame,
+            on_pulse_chunk=self._on_pulse_chunk,
+            on_status_change=self._on_status_change,
+        )
+
+    def _reset_env_to_initial_state(self) -> None:
+        self.env.apply_hot_state_bundle(self._initial_hot_state)
+        bit_generator = getattr(getattr(self.env, "np_random", None), "bit_generator", None)
+        if bit_generator is not None and self._initial_rng_state is not None:
+            bit_generator.state = copy.deepcopy(self._initial_rng_state)
+
+    def _restart_session(
+        self, queue: _DropOldestMessageQueue | None = None
+    ) -> _RestartSessionSignal:
+        status = self.session.status()
+        if status.state != RealtimeSessionState.STOPPED:
+            raise ValueError("restart is only available after the live session stops")
+
+        self._session_thread = None
+
+        slowdown_factor = float(status.requested_slowdown_factor)
+        if slowdown_factor <= 0.0:
+            slowdown_factor = float(status.slowdown_factor)
+
+        self._reset_env_to_initial_state()
+        self.session = self._build_session(slowdown_factor)
+
+        with self._transport_lock:
+            self._session_started = False
+
+        if queue is None:
+            queue = self._get_active_queue()
+        if queue is not None:
+            queue.clear()
+        return _RestartSessionSignal()
+
+    def _handle_client_command(
+        self,
+        raw_message: str | bytes,
+        *,
+        queue: _DropOldestMessageQueue | None = None,
+    ) -> dict[str, Any] | _RestartSessionSignal | None:
         if isinstance(raw_message, bytes):
             return serialize_error(
                 "invalid_message",
@@ -278,14 +343,19 @@ class RealtimeSessionServer:
 
         try:
             command = parse_client_message(raw_message)
-            return self._apply_command(command)
+            return self._apply_command(command, queue=queue)
         except Exception as exc:
             return serialize_error(
                 "invalid_message",
                 str(exc),
             )
 
-    def _apply_command(self, command: ClientCommand) -> dict[str, Any]:
+    def _apply_command(
+        self,
+        command: ClientCommand,
+        *,
+        queue: _DropOldestMessageQueue | None = None,
+    ) -> dict[str, Any] | _RestartSessionSignal | None:
         if command.command_type == "set_param":
             param_name = command.payload.get("name")
             if not isinstance(param_name, str):
@@ -307,6 +377,8 @@ class RealtimeSessionServer:
             self.session.resume()
         elif command.command_type == "stop":
             self.session.stop()
+        elif command.command_type == "restart":
+            return self._restart_session(queue=queue)
         else:
             raise ValueError(f"unsupported client command: {command.command_type!r}")
 
@@ -316,13 +388,16 @@ class RealtimeSessionServer:
         )
 
     def _on_control_step(self, update: RealtimeControlStep) -> None:
+        return
+
+    def _on_pulse_chunk(self, chunk: PulseChunk) -> None:
         queue = self._get_active_queue()
         if queue is None:
             return
 
         self._publish_direct(
             queue,
-            serialize_pulse_chunk(update.pulse_chunk),
+            serialize_pulse_chunk(chunk),
             droppable=True,
             priority=False,
         )

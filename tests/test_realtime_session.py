@@ -39,6 +39,19 @@ class IncrementingClock(FakeClock):
         return value
 
 
+class ScriptedClock(FakeClock):
+    def __init__(self, timeline_s: list[float]) -> None:
+        super().__init__()
+        self.timeline_s = list(timeline_s)
+        self.index = 0
+
+    def perf_counter(self) -> float:
+        if self.index < len(self.timeline_s):
+            self.now = self.timeline_s[self.index]
+            self.index += 1
+        return self.now
+
+
 @pytest.fixture
 def env() -> WireEDMEnv:
     env = WireEDMEnv()
@@ -94,10 +107,10 @@ def test_realtime_session_emits_control_steps_and_applies_live_updates(
     assert final_status.control_steps == 2
 
 
-def test_realtime_session_reports_solver_limited_when_execution_is_too_slow(
+def test_realtime_session_caps_pace_to_measured_compute_throughput(
     env: WireEDMEnv,
 ) -> None:
-    clock = IncrementingClock(tick_s=0.02)
+    clock = ScriptedClock([0.0, 0.0, 0.0, 0.01, 0.02, 0.02, 0.02])
     controller = RuntimeController(RuntimeControlState(controller_type="fixed-servo"))
 
     session = RealtimeSession(
@@ -110,7 +123,10 @@ def test_realtime_session_reports_solver_limited_when_execution_is_too_slow(
 
     final_status = session.run(max_control_steps=1)
 
-    assert final_status.solver_limited is True
+    assert final_status.slowdown_factor == pytest.approx(12.5, abs=1e-9)
+    assert final_status.min_slowdown_factor == pytest.approx(12.5, abs=1e-9)
+    assert final_status.max_sim_us_per_wall_second == pytest.approx(80_000.0, abs=1e-6)
+    assert final_status.control_compute_wall_s == pytest.approx(0.02, abs=1e-9)
     assert clock.sleep_calls == []
 
 
@@ -149,6 +165,37 @@ def test_realtime_session_rebases_pacing_when_slowdown_changes(
     assert final_status.state == RealtimeSessionState.STOPPED
     assert len(updates) == 2
     assert sum(clock.sleep_calls) == pytest.approx(0.3, abs=1e-6)
+
+
+def test_realtime_session_clamps_requested_speed_to_known_compute_cap(
+    env: WireEDMEnv,
+) -> None:
+    clock = ScriptedClock([0.0, 0.0, 0.0, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02])
+    controller = RuntimeController(RuntimeControlState(controller_type="fixed-servo"))
+    command_statuses = []
+
+    def on_control_step(update) -> None:
+        if not command_statuses:
+            command_statuses.append(session.set_slowdown_factor(1.0))
+
+    session = RealtimeSession(
+        env,
+        controller,
+        slowdown_factor=20.0,
+        on_control_step=on_control_step,
+        clock=clock.perf_counter,
+        sleep=clock.sleep,
+    )
+
+    final_status = session.run(max_control_steps=1)
+
+    assert len(command_statuses) == 1
+    assert command_statuses[0].slowdown_factor == pytest.approx(
+        12.5, abs=1e-9
+    )
+    assert final_status.slowdown_factor == pytest.approx(
+        12.5, abs=1e-9
+    )
 
 
 def test_realtime_session_pause_resume_and_stop(env: WireEDMEnv) -> None:
@@ -218,6 +265,55 @@ def test_realtime_session_emits_intermediate_process_frames_at_visual_cadence(
     assert len(process_frames) >= 50
     assert process_frames[0].process_state.time == 17
     assert process_frames[-1].process_state.time == env.servo_interval
+    assert sum(clock.sleep_calls) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_realtime_session_streams_pulse_chunks_during_control_interval(
+    env: WireEDMEnv,
+) -> None:
+    clock = FakeClock()
+    controller = RuntimeController(RuntimeControlState(controller_type="fixed-servo"))
+    pulse_chunks = []
+
+    session = RealtimeSession(
+        env,
+        controller,
+        slowdown_factor=1000.0,
+        on_pulse_chunk=pulse_chunks.append,
+        clock=clock.perf_counter,
+        sleep=clock.sleep,
+    )
+
+    final_status = session.run(max_control_steps=1)
+
+    assert final_status.state == RealtimeSessionState.STOPPED
+    assert final_status.control_steps == 1
+    assert len(pulse_chunks) >= 2
+    assert pulse_chunks[0].base_time_us == 1
+    assert all(len(chunk.voltage) > 0 for chunk in pulse_chunks)
+    assert sum(len(chunk.voltage) for chunk in pulse_chunks) == env.servo_interval
+    assert sum(clock.sleep_calls) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_realtime_session_compute_cap_ignores_pacing_sleep(
+    env: WireEDMEnv,
+) -> None:
+    clock = FakeClock()
+    controller = RuntimeController(RuntimeControlState(controller_type="fixed-servo"))
+
+    session = RealtimeSession(
+        env,
+        controller,
+        slowdown_factor=1000.0,
+        clock=clock.perf_counter,
+        sleep=clock.sleep,
+    )
+
+    final_status = session.run(max_control_steps=1)
+
+    assert final_status.min_slowdown_factor == pytest.approx(12.5, abs=1e-9)
+    assert final_status.max_sim_us_per_wall_second == pytest.approx(80_000.0, abs=1e-6)
+    assert final_status.control_compute_wall_s == pytest.approx(0.0, abs=1e-12)
     assert sum(clock.sleep_calls) == pytest.approx(1.0, abs=1e-6)
 
 

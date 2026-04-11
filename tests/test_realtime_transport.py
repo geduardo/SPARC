@@ -69,9 +69,13 @@ def test_schema_serialization_matches_realtime_contract() -> None:
         )
         assert "current_params" in header["payload"]
         assert "controller_type" in header["payload"]["supported_params"]
+        assert "max_sim_us_per_wall_second" in header["payload"]
+        assert "control_compute_wall_s" in header["payload"]
 
         assert state["type"] == "session_state"
         assert state["payload"]["current_params"]["controller_type"] == "gap"
+        assert "max_sim_us_per_wall_second" in state["payload"]
+        assert "control_compute_wall_s" in state["payload"]
 
         assert frame["type"] == "process_frame"
         assert frame["payload"]["time_us"] == env.servo_interval
@@ -205,3 +209,40 @@ def test_realtime_websocket_server_streams_and_applies_commands() -> None:
             await server.stop()
 
     asyncio.run(scenario())
+
+
+def test_realtime_server_restart_rebuilds_stopped_session() -> None:
+    env = build_env()
+    controller = RuntimeController(
+        RuntimeControlState(
+            controller_type="gap",
+            target_gap=5.0,
+            generator_voltage=80.0,
+            current_mode=7,
+            on_time=2.0,
+            off_time=33.0,
+        )
+    )
+    server = RealtimeSessionServer(
+        env,
+        controller,
+        slowdown_factor=1.0,
+        max_pending_messages=512,
+        max_control_steps=1,
+    )
+
+    status = server.session.run(max_control_steps=1)
+    assert status.state.value == "stopped"
+    assert status.termination_reason == "max_control_steps"
+
+    controller.set_param("off_time", 17.0)
+    restart_signal = server._restart_session()
+
+    assert restart_signal is not None
+    assert server.session.status().state.value == "created"
+    assert controller.control_state.snapshot().off_time == pytest.approx(17.0)
+    assert env.state.time == 0
+
+    rerun_status = server.session.run(max_control_steps=1)
+    assert rerun_status.state.value == "stopped"
+    assert rerun_status.termination_reason == "max_control_steps"

@@ -48,6 +48,7 @@ class RealtimeProcessFrame:
 
     process_state: HotStateBundle
     spark_events: tuple[SparkEvent, ...]
+    pulse_chunk: PulseChunk | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +57,11 @@ class RealtimeSessionStatus:
 
     state: RealtimeSessionState
     slowdown_factor: float
+    requested_slowdown_factor: float
     solver_limited: bool
+    min_slowdown_factor: float | None
+    max_sim_us_per_wall_second: float | None
+    control_compute_wall_s: float | None
     simulated_time_us: int
     control_steps: int
     wall_time_s: float
@@ -76,9 +81,13 @@ class RealtimeControlStep:
 
 ControlStepCallback = Callable[[RealtimeControlStep], None]
 ProcessFrameCallback = Callable[[RealtimeProcessFrame], None]
+PulseChunkCallback = Callable[[PulseChunk], None]
 StatusCallback = Callable[[RealtimeSessionStatus], None]
 Clock = Callable[[], float]
 SleepFn = Callable[[float], None]
+
+MAX_SIM_US_PER_WALL_SECOND = 80_000.0
+MIN_SLOWDOWN_FACTOR = 1_000_000.0 / MAX_SIM_US_PER_WALL_SECOND
 
 
 class RealtimeSession:
@@ -92,6 +101,7 @@ class RealtimeSession:
         slowdown_factor: float = 100.0,
         on_control_step: ControlStepCallback | None = None,
         on_process_frame: ProcessFrameCallback | None = None,
+        on_pulse_chunk: PulseChunkCallback | None = None,
         on_status_change: StatusCallback | None = None,
         target_process_fps: float = 60.0,
         clock: Clock = time.perf_counter,
@@ -106,6 +116,7 @@ class RealtimeSession:
         self.controller = controller
         self._on_control_step = on_control_step
         self._on_process_frame = on_process_frame
+        self._on_pulse_chunk = on_pulse_chunk
         self._on_status_change = on_status_change
         self._target_process_fps = float(target_process_fps)
         self._clock = clock
@@ -116,7 +127,11 @@ class RealtimeSession:
         self._pause_requested = False
         self._stop_requested = False
         self._solver_limited = False
-        self._slowdown_factor = float(slowdown_factor)
+        self._slowdown_factor = max(float(slowdown_factor), MIN_SLOWDOWN_FACTOR)
+        self._requested_slowdown_factor = float(slowdown_factor)
+        self._min_slowdown_factor: float | None = MIN_SLOWDOWN_FACTOR
+        self._last_control_compute_wall_s: float | None = None
+        self._pacing_sleep_accumulator_s = 0.0
         self._termination_reason: str | None = None
         self._control_steps = 0
         self._wall_start_s: float | None = None
@@ -129,6 +144,10 @@ class RealtimeSession:
         self._voltage_history: deque[float] = deque()
         self._time_history: deque[int] = deque()
         self._pending_process_frame_spark_events: list[SparkEvent] = []
+        self._pending_pulse_base_time_us: int | None = None
+        self._pending_pulse_voltage: list[float] = []
+        self._pending_pulse_current: list[float] = []
+        self._pending_pulse_spark_state: list[int] = []
         self._step_action: CompiledActionPacket | None = None
 
     def status(self) -> RealtimeSessionStatus:
@@ -143,7 +162,8 @@ class RealtimeSession:
             raise ValueError("slowdown_factor must be positive")
         now = self._clock()
         with self._condition:
-            self._slowdown_factor = float(slowdown_factor)
+            self._requested_slowdown_factor = float(slowdown_factor)
+            self._slowdown_factor = self._resolve_applied_slowdown_factor_locked()
             self._rebase_pacing_locked(now)
             self._rebase_process_frame_schedule_locked()
             return self._status_locked(now)
@@ -180,8 +200,31 @@ class RealtimeSession:
                 if not self._wait_until_running():
                     break
 
+                control_start_wall_s = self._clock()
+                control_start_sim_us = self._current_simulated_time_us()
+                with self._condition:
+                    pacing_sleep_start_s = self._pacing_sleep_accumulator_s
                 update, terminated = self._advance_control_interval()
+                control_end_wall_s = self._clock()
+                with self._condition:
+                    pacing_sleep_delta_s = (
+                        self._pacing_sleep_accumulator_s - pacing_sleep_start_s
+                    )
+                status_update_needed = self._observe_control_step_compute_cost(
+                    simulated_delta_us=max(
+                        0,
+                        int(update.process_state.time) - control_start_sim_us,
+                    ),
+                    compute_wall_s=max(
+                        0.0,
+                        control_end_wall_s - control_start_wall_s - pacing_sleep_delta_s,
+                    ),
+                    now=control_end_wall_s,
+                )
                 self._apply_pacing(update.process_state.time)
+                if status_update_needed:
+                    self._emit_status_change(self.status())
+                self._emit_pending_pulse_chunk()
                 update = RealtimeControlStep(
                     process_state=update.process_state,
                     pulse_chunk=update.pulse_chunk,
@@ -224,6 +267,10 @@ class RealtimeSession:
             self._pause_requested = False
             self._stop_requested = False
             self._solver_limited = False
+            self._requested_slowdown_factor = self._slowdown_factor
+            self._min_slowdown_factor = MIN_SLOWDOWN_FACTOR
+            self._last_control_compute_wall_s = None
+            self._pacing_sleep_accumulator_s = 0.0
             self._termination_reason = None
             self._control_steps = 0
             self._state = RealtimeSessionState.CREATED
@@ -232,6 +279,10 @@ class RealtimeSession:
         self._voltage_history.clear()
         self._time_history.clear()
         self._pending_process_frame_spark_events.clear()
+        self._pending_pulse_base_time_us = None
+        self._pending_pulse_voltage.clear()
+        self._pending_pulse_current.clear()
+        self._pending_pulse_spark_state.clear()
         self.env.init_compiled_scheduler()
 
         action = self.controller(
@@ -301,6 +352,12 @@ class RealtimeSession:
             voltage[sample_count] = hs.voltage
             current[sample_count] = hs.current
             spark_state[sample_count] = hs.spark_state
+            self._append_pending_pulse_sample(
+                int(hs.time),
+                float(hs.voltage),
+                float(hs.current),
+                int(hs.spark_state),
+            )
             if hs.spark_state == 1 and not np.isnan(hs.spark_location_mm):
                 spark_event = SparkEvent(
                     time_us=int(hs.time),
@@ -359,6 +416,45 @@ class RealtimeSession:
             self._time_history.popleft()
             self._voltage_history.popleft()
 
+    def _append_pending_pulse_sample(
+        self,
+        current_time_us: int,
+        voltage: float,
+        current: float,
+        spark_state: int,
+    ) -> None:
+        if self._pending_pulse_base_time_us is None:
+            self._pending_pulse_base_time_us = int(current_time_us)
+        self._pending_pulse_voltage.append(float(voltage))
+        self._pending_pulse_current.append(float(current))
+        self._pending_pulse_spark_state.append(int(spark_state))
+
+    def _consume_pending_pulse_chunk(self) -> PulseChunk | None:
+        if (
+            self._pending_pulse_base_time_us is None
+            or not self._pending_pulse_voltage
+        ):
+            return None
+
+        chunk = PulseChunk(
+            base_time_us=int(self._pending_pulse_base_time_us),
+            dt_us=int(self.env.dt),
+            voltage=np.asarray(self._pending_pulse_voltage, dtype=np.float32),
+            current=np.asarray(self._pending_pulse_current, dtype=np.float32),
+            spark_state=np.asarray(self._pending_pulse_spark_state, dtype=np.int8),
+        )
+        self._pending_pulse_base_time_us = None
+        self._pending_pulse_voltage.clear()
+        self._pending_pulse_current.clear()
+        self._pending_pulse_spark_state.clear()
+        return chunk
+
+    def _emit_pending_pulse_chunk(self) -> PulseChunk | None:
+        chunk = self._consume_pending_pulse_chunk()
+        if chunk is not None and self._on_pulse_chunk is not None:
+            self._on_pulse_chunk(chunk)
+        return chunk
+
     def _apply_pacing(self, simulated_time_us: int) -> None:
         now = self._clock()
         with self._condition:
@@ -373,12 +469,62 @@ class RealtimeSession:
         sleep_s = target_wall_s - now
         if sleep_s > 0.0:
             self._sleep(sleep_s)
+            with self._condition:
+                self._pacing_sleep_accumulator_s += sleep_s
             solver_limited = False
         else:
             solver_limited = True
 
         with self._condition:
             self._solver_limited = solver_limited
+
+    def _observe_control_step_compute_cost(
+        self, *, simulated_delta_us: int, compute_wall_s: float, now: float
+    ) -> bool:
+        with self._condition:
+            previous_applied_slowdown_factor = self._slowdown_factor
+            self._last_control_compute_wall_s = (
+                float(compute_wall_s)
+                if np.isfinite(compute_wall_s) and compute_wall_s >= 0.0
+                else None
+            )
+            self._min_slowdown_factor = MIN_SLOWDOWN_FACTOR
+            self._slowdown_factor = self._resolve_applied_slowdown_factor_locked()
+            applied_changed = self._has_meaningful_cap_change(
+                previous_applied_slowdown_factor,
+                self._slowdown_factor,
+                relative_tolerance=0.001,
+            )
+            if not applied_changed:
+                return False
+
+            self._rebase_pacing_locked(now)
+            self._rebase_process_frame_schedule_locked()
+            return True
+
+    @staticmethod
+    def _minimum_slowdown_factor_for_compute(
+        *, simulated_delta_us: int, compute_wall_s: float
+    ) -> float | None:
+        if simulated_delta_us <= 0 or not np.isfinite(compute_wall_s) or compute_wall_s <= 0.0:
+            return None
+        simulated_delta_s = simulated_delta_us / 1_000_000.0
+        if simulated_delta_s <= 0.0:
+            return None
+        return float(compute_wall_s) / simulated_delta_s
+
+    def _resolve_applied_slowdown_factor_locked(self) -> float:
+        return max(float(self._requested_slowdown_factor), MIN_SLOWDOWN_FACTOR)
+
+    @staticmethod
+    def _has_meaningful_cap_change(
+        previous: float | None, current: float | None, relative_tolerance: float = 0.1
+    ) -> bool:
+        if previous is None or current is None:
+            return previous != current
+        if previous <= 0.0 or current <= 0.0:
+            return previous != current
+        return abs(current - previous) / max(previous, current) >= relative_tolerance
 
     def _rebase_pacing_locked(self, now: float) -> None:
         """Reset pacing origin so speed changes and resumes are continuous."""
@@ -433,12 +579,14 @@ class RealtimeSession:
 
             process_state = self._snapshot_hot_state()
             self._apply_pacing(process_state.time)
+            pulse_chunk = self._emit_pending_pulse_chunk()
 
             if self._on_process_frame is not None:
                 self._on_process_frame(
                     RealtimeProcessFrame(
                         process_state=process_state,
                         spark_events=tuple(self._pending_process_frame_spark_events),
+                        pulse_chunk=pulse_chunk,
                     )
                 )
 
@@ -461,6 +609,7 @@ class RealtimeSession:
                 RealtimeProcessFrame(
                     process_state=process_state,
                     spark_events=tuple(self._pending_process_frame_spark_events),
+                    pulse_chunk=self._emit_pending_pulse_chunk(),
                 )
             )
 
@@ -495,16 +644,28 @@ class RealtimeSession:
             wall_time_s = max(0.0, now - self._wall_start_s)
 
         simulated_time_us = self._current_simulated_time_us_locked()
+        min_slowdown_factor = self._min_slowdown_factor
+        max_sim_us_per_wall_second = None
+        if min_slowdown_factor is not None and min_slowdown_factor > 0.0:
+            max_sim_us_per_wall_second = 1_000_000.0 / min_slowdown_factor
 
         return RealtimeSessionStatus(
             state=self._state,
             slowdown_factor=self._slowdown_factor,
+            requested_slowdown_factor=self._requested_slowdown_factor,
             solver_limited=self._solver_limited,
+            min_slowdown_factor=min_slowdown_factor,
+            max_sim_us_per_wall_second=max_sim_us_per_wall_second,
+            control_compute_wall_s=self._last_control_compute_wall_s,
             simulated_time_us=simulated_time_us,
             control_steps=self._control_steps,
             wall_time_s=wall_time_s,
             termination_reason=self._termination_reason,
         )
+
+    def _current_simulated_time_us(self) -> int:
+        with self._condition:
+            return self._current_simulated_time_us_locked()
 
     def _current_simulated_time_us_locked(self) -> int:
         simulated_time_us = int(getattr(self.env.state, "time", 0))

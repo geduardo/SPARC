@@ -21,7 +21,7 @@ from .session import (
 
 SCHEMA_VERSION = 1
 
-ClientCommandType = Literal["set_param", "set_speed", "pause", "resume", "stop"]
+ClientCommandType = Literal["set_param", "set_speed", "pause", "resume", "stop", "restart"]
 
 LIVE_EDITABLE_PARAMS = (
     "controller_type",
@@ -75,7 +75,7 @@ def parse_client_message(raw_message: str | Mapping[str, Any]) -> ClientCommand:
         raise ValueError(f"unsupported schema version: {version!r}")
 
     command_type = message.get("type")
-    if command_type not in {"set_param", "set_speed", "pause", "resume", "stop"}:
+    if command_type not in {"set_param", "set_speed", "pause", "resume", "stop", "restart"}:
         raise ValueError(f"unsupported client command: {command_type!r}")
 
     payload = message.get("payload", {})
@@ -131,6 +131,14 @@ def serialize_session_header(
         },
         "supported_params": list(LIVE_EDITABLE_PARAMS),
         "current_params": snapshot_to_params(snapshot, status.slowdown_factor),
+        "requested_slowdown_factor": _decode_optional_float(
+            status.requested_slowdown_factor
+        ),
+        "min_slowdown_factor": _decode_optional_float(status.min_slowdown_factor),
+        "max_sim_us_per_wall_second": _decode_optional_float(
+            status.max_sim_us_per_wall_second
+        ),
+        "control_compute_wall_s": _decode_optional_float(status.control_compute_wall_s),
     }
     return build_envelope("session_header", payload)
 
@@ -143,7 +151,15 @@ def serialize_session_state(
     payload = {
         "state": _serialize_session_state(status.state),
         "slowdown_factor": status.slowdown_factor,
+        "requested_slowdown_factor": _decode_optional_float(
+            status.requested_slowdown_factor
+        ),
         "solver_limited": bool(status.solver_limited),
+        "min_slowdown_factor": _decode_optional_float(status.min_slowdown_factor),
+        "max_sim_us_per_wall_second": _decode_optional_float(
+            status.max_sim_us_per_wall_second
+        ),
+        "control_compute_wall_s": _decode_optional_float(status.control_compute_wall_s),
         "simulated_time_us": int(status.simulated_time_us),
         "control_steps": int(status.control_steps),
         "wall_time_s": float(status.wall_time_s),
@@ -181,6 +197,7 @@ def serialize_process_frame(
         "flow_rate": float(state.flow_rate),
         "wire_head_idx": int(state.wire_head_idx),
         "wire_offset_mm": float(state.wire_offset_mm),
+        "is_wire_broken": bool(state.is_wire_broken),
         "spark_events": [
             {
                 "time_us": int(event.time_us),
@@ -228,7 +245,9 @@ def _serialize_session_state(state: RealtimeSessionState | str) -> str:
     return str(state)
 
 
-def _decode_optional_float(value: float) -> float | None:
+def _decode_optional_float(value: float | None) -> float | None:
+    if value is None:
+        return None
     return None if math.isnan(value) else float(value)
 
 

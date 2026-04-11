@@ -39,6 +39,8 @@ export class OscilloscopePanel extends BasePanel {
         this.iPerDiv = 'auto';
         // Enable/disable toggle
         this.isEnabled = false; // Default OFF
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
     }
 
     init() {
@@ -49,6 +51,8 @@ export class OscilloscopePanel extends BasePanel {
 
     setTrigger(cfg) {
         this.trigger = Object.assign({}, this.trigger, cfg || {});
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
     }
 
     setOffsets(vOffset, iOffset) {
@@ -73,6 +77,8 @@ export class OscilloscopePanel extends BasePanel {
         super.setData(data);
         this.autoTimebaseUsPerDiv = null;
         this.windowSampleCount = 0;
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
         this.recomputeWindow(this.controller ? this.controller.currentFrame : 0);
     }
 
@@ -86,6 +92,8 @@ export class OscilloscopePanel extends BasePanel {
     recomputeWindow(frameIndex, frameData = null) {
         const signalHistory = this.getSignalHistory();
         if (!signalHistory) return;
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
 
         const voltageSeries = signalHistory.voltage || [];
         const currentSeries = signalHistory.current || [];
@@ -119,20 +127,55 @@ export class OscilloscopePanel extends BasePanel {
 
         if (this.trigger && this.trigger.enabled) {
             const sourceSeries = this.trigger.source === 'ch2' ? currentSeries : voltageSeries;
-            const searchLeft = Math.max(0, right - this.windowSampleCount * 5);
-            const searchRight = Math.min(totalSamples - 1, right + this.windowSampleCount * 5);
-            const trigIdx = this.findTriggerIndex(searchLeft, searchRight, sourceSeries);
+            const preferLatestTrigger = this.shouldUseLiveTailSignalAnchor(frameIndex);
+            const delaySamples = Math.round(Number(this.trigger.delayUs || 0) / dtUs);
+            let trigIdx = null;
+
+            if (preferLatestTrigger) {
+                const preTriggerSamples = Math.floor(this.windowSampleCount / 2);
+                const postTriggerSamples = this.windowSampleCount - preTriggerSamples - 1;
+                const earliestEligibleTriggerIndex = Math.max(1, preTriggerSamples - delaySamples);
+                const latestEligibleTriggerIndex = Math.min(
+                    right,
+                    totalSamples - 1 - postTriggerSamples - delaySamples
+                );
+                if (latestEligibleTriggerIndex >= earliestEligibleTriggerIndex) {
+                    trigIdx = this.findLatestTriggerIndex(
+                        Math.max(0, earliestEligibleTriggerIndex - 1),
+                        latestEligibleTriggerIndex,
+                        sourceSeries
+                    );
+                }
+            } else {
+                const searchLeft = Math.max(0, right - this.windowSampleCount * 5);
+                const searchRight = Math.min(totalSamples - 1, right + this.windowSampleCount * 5);
+                trigIdx = this.findTriggerIndex(searchLeft, searchRight, sourceSeries);
+            }
+
             if (trigIdx !== null) {
                 const half = Math.floor(this.windowSampleCount / 2);
-                const delaySamples = Math.round(Number(this.trigger.delayUs || 0) / dtUs);
                 const centerIdx = trigIdx + delaySamples;
-                let newLeft = Math.max(0, centerIdx - half);
-                let newRight = Math.min(totalSamples - 1, newLeft + this.windowSampleCount - 1);
-                if (newRight - newLeft + 1 < this.windowSampleCount) {
-                    newLeft = Math.max(0, newRight - this.windowSampleCount + 1);
+                let newLeft = centerIdx - half;
+                let newRight = newLeft + this.windowSampleCount - 1;
+
+                if (!preferLatestTrigger) {
+                    newLeft = Math.max(0, newLeft);
+                    newRight = Math.min(totalSamples - 1, newRight);
+                    if (newRight - newLeft + 1 < this.windowSampleCount) {
+                        newLeft = Math.max(0, newRight - this.windowSampleCount + 1);
+                    }
                 }
-                this.sampleStartIndex = newLeft;
-                this.sampleEndIndex = newRight;
+
+                if (
+                    newLeft >= 0 &&
+                    newRight < totalSamples &&
+                    newRight >= newLeft
+                ) {
+                    this.sampleStartIndex = newLeft;
+                    this.sampleEndIndex = newRight;
+                    this.triggerLocked = true;
+                    this.triggerSampleIndex = trigIdx;
+                }
             }
         }
     }
@@ -170,7 +213,52 @@ export class OscilloscopePanel extends BasePanel {
         return this.autoTimebaseUsPerDiv;
     }
 
+    getSignalHistoryLatestTimeUs(signalHistory, totalSamples = null) {
+        if (!signalHistory) return NaN;
+
+        const sampleCount = Number.isFinite(totalSamples)
+            ? totalSamples
+            : Math.max(
+                signalHistory?.voltage?.length || 0,
+                signalHistory?.current?.length || 0
+            );
+        if (sampleCount <= 0) {
+            return NaN;
+        }
+
+        const baseTimeUs = Number(signalHistory.baseTimeUs);
+        const dtUs = Math.max(1, Number(signalHistory.dtUs) || 1);
+        if (!Number.isFinite(baseTimeUs)) {
+            return NaN;
+        }
+
+        return baseTimeUs + Math.max(0, sampleCount - 1) * dtUs;
+    }
+
+    shouldUseLiveTailSignalAnchor(frameIndex) {
+        const controller = this.controller;
+        if (!controller || typeof controller.isLiveMode !== 'function' || !controller.isLiveMode()) {
+            return false;
+        }
+
+        if (controller.followLiveTail) {
+            return true;
+        }
+
+        const totalFrames = typeof controller.getTotalFrames === 'function'
+            ? controller.getTotalFrames()
+            : ((this.data?.time?.length) || 0);
+        return frameIndex >= Math.max(0, totalFrames - 1);
+    }
+
     resolveAnchorTimeUs(frameIndex, frameData, signalHistory, totalSamples) {
+        if (this.shouldUseLiveTailSignalAnchor(frameIndex)) {
+            const latestSignalTimeUs = this.getSignalHistoryLatestTimeUs(signalHistory, totalSamples);
+            if (Number.isFinite(latestSignalTimeUs)) {
+                return latestSignalTimeUs;
+            }
+        }
+
         const frameTime = frameData ? Number(frameData.time) : NaN;
         if (Number.isFinite(frameTime)) {
             return frameTime;
@@ -183,7 +271,7 @@ export class OscilloscopePanel extends BasePanel {
             }
         }
 
-        return signalHistory.baseTimeUs + Math.max(0, totalSamples - 1) * (Number(signalHistory.dtUs) || 1);
+        return this.getSignalHistoryLatestTimeUs(signalHistory, totalSamples);
     }
 
     getSignalHistory() {
@@ -212,6 +300,24 @@ export class OscilloscopePanel extends BasePanel {
         const level = this.trigger.level;
         const rising = this.trigger.slope !== 'falling';
         for (let i = Math.max(start + 1, 1); i <= end; i++) {
+            const prevRaw = sourceSeries[i - 1];
+            const currRaw = sourceSeries[i];
+            const prev = (typeof prevRaw === 'bigint') ? Number(prevRaw) : prevRaw;
+            const curr = (typeof currRaw === 'bigint') ? Number(currRaw) : currRaw;
+            if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
+            if (rising) {
+                if (prev < level && curr >= level) return i;
+            } else {
+                if (prev > level && curr <= level) return i;
+            }
+        }
+        return null;
+    }
+
+    findLatestTriggerIndex(start, end, sourceSeries) {
+        const level = this.trigger.level;
+        const rising = this.trigger.slope !== 'falling';
+        for (let i = Math.min(end, sourceSeries.length - 1); i >= Math.max(start + 1, 1); i--) {
             const prevRaw = sourceSeries[i - 1];
             const currRaw = sourceSeries[i];
             const prev = (typeof prevRaw === 'bigint') ? Number(prevRaw) : prevRaw;
@@ -344,10 +450,10 @@ export class OscilloscopePanel extends BasePanel {
         this.drawSeriesDecimated(currentSeries, start, end, xToPx, cToPx, OSC_CH2_COLOR, 2.0, 'rgba(255,106,160,0.45)');
         this.ctx.restore();
 
-        // Trigger centerline
-        if (this.trigger && this.trigger.enabled) {
-            const centerX = plotX0 + plotW / 2;
-            this.drawCenterTimeAxis(centerX, vTopY0, vTopY1, cBotY0, cBotY1);
+        // Trigger reference line
+        if (this.trigger && this.trigger.enabled && this.triggerLocked && Number.isInteger(this.triggerSampleIndex)) {
+            const triggerX = xToPx(this.triggerSampleIndex);
+            this.drawCenterTimeAxis(triggerX, vTopY0, vTopY1, cBotY0, cBotY1);
         }
 
         // Axis labels

@@ -22,6 +22,7 @@ export class ThermalProfilePanel extends BasePanel {
         this.contactOffsetBottom = 10.0;
         this.contactOffsetTop = 10.0;
         this.wireDiameter = DEFAULT_WIRE_DIAMETER;
+        this.segmentLenMM = 0.2;
 
         // Visualization settings
         this.showEdges = false;
@@ -39,6 +40,7 @@ export class ThermalProfilePanel extends BasePanel {
         this.selectedSegmentIndex = -1;
         this.lastWireMin = null;
         this.lastWireMax = null;
+        this.lastRenderSignature = null;
     }
 
     init() {
@@ -108,19 +110,7 @@ export class ThermalProfilePanel extends BasePanel {
 
         if (Math.abs(mx - wireVisCenterX) > visualThickness / 2) return;
 
-        let segmentLenMM = 0.2;
-        if (nSegments > 1) {
-            const sortedPos = [...positions].sort((a, b) => a - b);
-            const diffs = [];
-            for (let i = 1; i < sortedPos.length; i++) {
-                const diff = sortedPos[i] - sortedPos[i - 1];
-                if (diff > 1e-6) diffs.push(diff);
-            }
-            if (diffs.length > 0) {
-                diffs.sort((a, b) => a - b);
-                segmentLenMM = diffs[Math.floor(diffs.length / 2)];
-            }
-        }
+        const segmentLenMM = this.resolveSegmentLengthMM(positions, nSegments);
 
         const segmentHeightViz = segmentLenMM * yScale * 1.05;
 
@@ -200,11 +190,30 @@ export class ThermalProfilePanel extends BasePanel {
             if (data.metadata.wire_diameter !== undefined) {
                 this.wireDiameter = data.metadata.wire_diameter;
             }
+            if (data.metadata.segment_len_mm !== undefined) {
+                this.segmentLenMM = data.metadata.segment_len_mm;
+            }
         }
 
         this.cameraY = this.bufferBottomMM + this.workpieceHeightMM / 2;
         this.zoomY = 1.0;
         this.enforceZoomAndPanConstraints();
+        this.lastRenderSignature = null;
+    }
+
+    resolveSegmentLengthMM(wirePositions, nSegments) {
+        if (Number.isFinite(this.segmentLenMM) && this.segmentLenMM > 0) {
+            return this.segmentLenMM;
+        }
+
+        if (nSegments > 1) {
+            const spacing = Math.abs(wirePositions[1] - wirePositions[0]);
+            if (Number.isFinite(spacing) && spacing > 1e-6) {
+                return spacing;
+            }
+        }
+
+        return 0.2;
     }
 
     enforceZoomAndPanConstraints() {
@@ -290,11 +299,118 @@ export class ThermalProfilePanel extends BasePanel {
         return { min, max };
     }
 
-    draw(frameData, frameIndex) {
-        this.clear();
+    isWireBrokenFrame(frameData, frameIndex) {
+        if (!frameData) return false;
+        if (Boolean(frameData.is_wire_broken)) {
+            return true;
+        }
 
+        const liveSession = this.controller && this.controller.data
+            ? this.controller.data.live_session
+            : null;
+        const terminationReason = liveSession ? liveSession.terminationReason : null;
+        const totalFrames = this.controller && typeof this.controller.getTotalFrames === 'function'
+            ? this.controller.getTotalFrames()
+            : Number(frameData.totalFrames);
+
+        return (
+            terminationReason === 'wire_broken' &&
+            Number.isInteger(totalFrames) &&
+            totalFrames > 0 &&
+            frameIndex === totalFrames - 1
+        );
+    }
+
+    resolveBrokenSegmentIndex(frameData, frameIndex) {
+        if (!this.isWireBrokenFrame(frameData, frameIndex)) {
+            return null;
+        }
+
+        const nSegments = Number(frameData?.wire_temperature?.length) || 0;
+        if (nSegments <= 0) {
+            return null;
+        }
+
+        const damage = frameData.wire_damage;
+        if (Array.isArray(damage) || ArrayBuffer.isView(damage)) {
+            let bestIndex = -1;
+            let bestDamage = -Infinity;
+            for (let index = 0; index < damage.length; index++) {
+                const candidate = Number(damage[index]);
+                if (Number.isFinite(candidate) && candidate > bestDamage) {
+                    bestDamage = candidate;
+                    bestIndex = index;
+                }
+            }
+            if (bestIndex >= 0) {
+                return bestIndex;
+            }
+        }
+
+        const temperatures = frameData.wire_temperature;
+        if (Array.isArray(temperatures) || ArrayBuffer.isView(temperatures)) {
+            let hottestIndex = -1;
+            let hottestTemp = -Infinity;
+            for (let index = 0; index < temperatures.length; index++) {
+                const candidate = Number(temperatures[index]);
+                if (Number.isFinite(candidate) && candidate > hottestTemp) {
+                    hottestTemp = candidate;
+                    hottestIndex = index;
+                }
+            }
+            if (hottestIndex >= 0) {
+                return hottestIndex;
+            }
+        }
+
+        const headIndex = Number(frameData.wire_head_idx);
+        if (Number.isInteger(headIndex) && headIndex >= 0 && headIndex < nSegments) {
+            return headIndex;
+        }
+
+        return null;
+    }
+
+    buildRenderSignature(frameData, frameIndex, width, height) {
+        const storedTimeSeries = this.controller && this.controller.data ? this.controller.data.time : null;
+        const storedFrameTimeUs =
+            storedTimeSeries && frameIndex >= 0 && frameIndex < storedTimeSeries.length
+                ? Number(storedTimeSeries[frameIndex])
+                : Number(frameData && frameData.time);
+        const trace = this.controller ? this.controller.selectedMaterialTrace : null;
+        const trackedSegmentIndex = trace && trace.has(frameIndex) ? trace.get(frameIndex) : -1;
+        const brokenSegmentIndex = this.resolveBrokenSegmentIndex(frameData, frameIndex);
+        const wireBroken = this.isWireBrokenFrame(frameData, frameIndex) ? '1' : '0';
+
+        return [
+            frameIndex,
+            Number.isFinite(storedFrameTimeUs) ? storedFrameTimeUs : 'na',
+            width,
+            height,
+            this.cameraY.toFixed(4),
+            this.zoomY.toFixed(4),
+            this.showEdges ? '1' : '0',
+            trackedSegmentIndex,
+            wireBroken,
+            brokenSegmentIndex ?? -1
+        ].join('|');
+    }
+
+    draw(frameData, frameIndex) {
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
+
+        if (frameData && frameData.wire_temperature && frameData.wire_material_positions_mm) {
+            const renderSignature = this.buildRenderSignature(frameData, frameIndex, w, h);
+            if (renderSignature === this.lastRenderSignature) {
+                return;
+            }
+            this.lastRenderSignature = renderSignature;
+        } else {
+            this.lastRenderSignature = null;
+        }
+
+        this.clear();
 
         this.ctx.fillStyle = COLORS.bgThermal;
         this.ctx.fillRect(0, 0, w, h);
@@ -318,6 +434,8 @@ export class ThermalProfilePanel extends BasePanel {
         const wireTemperatures = frameData.wire_temperature;
         const wirePositions = frameData.wire_material_positions_mm;
         const nSegments = wireTemperatures.length;
+        const wireBroken = this.isWireBrokenFrame(frameData, frameIndex);
+        const brokenSegmentIndex = this.resolveBrokenSegmentIndex(frameData, frameIndex);
 
         if (nSegments === 0) {
             this.drawText('No wire segments', w / 2, h / 2, {
@@ -364,21 +482,7 @@ export class ThermalProfilePanel extends BasePanel {
         this.lastWireMin = min;
         this.lastWireMax = max;
 
-        let segmentLenMM = 0.2;
-        if (nSegments > 1) {
-            const sortedPos = [...wirePositions].sort((a, b) => a - b);
-            const diffs = [];
-            for (let i = 1; i < sortedPos.length; i++) {
-                const diff = sortedPos[i] - sortedPos[i - 1];
-                if (diff > 1e-6) {
-                    diffs.push(diff);
-                }
-            }
-            if (diffs.length > 0) {
-                diffs.sort((a, b) => a - b);
-                segmentLenMM = diffs[Math.floor(diffs.length / 2)];
-            }
-        }
+        const segmentLenMM = this.resolveSegmentLengthMM(wirePositions, nSegments);
 
         const segmentSizeUm = segmentLenMM * 1000;
 
@@ -399,7 +503,6 @@ export class ThermalProfilePanel extends BasePanel {
             return marginTop + (posMM - visibleMinPos) * yScale;
         };
 
-        const tempsC = wireTemperatures.map(t => t - 273.15);
         this.tempMinC = 0;
         this.tempMaxC = 500;
 
@@ -408,12 +511,17 @@ export class ThermalProfilePanel extends BasePanel {
         const visualThickness = this.wireDiameter * 25 * yScale;
         const segmentHeightViz = segmentLenMM * yScale * 1.05;
 
+        let avgTempAccumulatorC = 0;
+        let actualMaxTempC = -Infinity;
+
         // Draw wire segments
         for (let i = 0; i < nSegments; i++) {
             const pos = wirePositions[i];
-            const tempC = tempsC[i];
+            const tempC = wireTemperatures[i] - 273.15;
             const y = posToY(pos);
             const color = this.getHotColor(tempC, this.tempMinC, this.tempMaxC);
+            avgTempAccumulatorC += tempC;
+            if (tempC > actualMaxTempC) actualMaxTempC = tempC;
 
             this.ctx.fillStyle = color;
             const x = wireVisCenterX - visualThickness / 2;
@@ -501,20 +609,15 @@ export class ThermalProfilePanel extends BasePanel {
         this.ctx.fillStyle = 'rgba(108, 117, 125, 0.1)';
         this.ctx.fillRect(profileX, workpieceTopY, profileWidth, workpieceBottomY - workpieceTopY);
 
-        // Sort for line plot
-        const sortedIndices = [...Array(nSegments).keys()].sort((a, b) =>
-            wirePositions[a] - wirePositions[b]
-        );
-        const sortedPositions = sortedIndices.map(i => wirePositions[i]);
-        const sortedTemps = sortedIndices.map(i => tempsC[i]);
-
         // Temperature profile line
         this.ctx.strokeStyle = COLORS.warning;
         this.ctx.lineWidth = 2.5;
         this.ctx.beginPath();
-        for (let i = 0; i < sortedPositions.length; i++) {
-            const x = tempToX(sortedTemps[i]);
-            const y = posToY(sortedPositions[i]);
+        const increasingPositions = nSegments < 2 || wirePositions[0] <= wirePositions[nSegments - 1];
+        for (let i = 0; i < nSegments; i++) {
+            const idx = increasingPositions ? i : (nSegments - 1 - i);
+            const x = tempToX(wireTemperatures[idx] - 273.15);
+            const y = posToY(wirePositions[idx]);
             if (i === 0) {
                 this.ctx.moveTo(x, y);
             } else {
@@ -630,8 +733,7 @@ export class ThermalProfilePanel extends BasePanel {
         }
 
         // Stats
-        const avgTempC = tempsC.reduce((a, b) => a + b, 0) / tempsC.length;
-        const actualMaxTempC = Math.max(...tempsC);
+        const avgTempC = avgTempAccumulatorC / nSegments;
         const statsText = `Segments: ${nSegments} | Segment size: ${segmentSizeUm.toFixed(1)} um | Avg: ${avgTempC.toFixed(1)}C | Max: ${actualMaxTempC.toFixed(1)}C`;
         const statsX = w - 10;
         const statsY = 10;
@@ -676,6 +778,60 @@ export class ThermalProfilePanel extends BasePanel {
             this.ctx.closePath();
             this.ctx.fillStyle = COLORS.text;
             this.ctx.fill();
+        }
+
+        if (wireBroken) {
+            const bannerWidth = 160;
+            const bannerHeight = 24;
+            const bannerX = (w - bannerWidth) / 2;
+            const bannerY = 8;
+
+            this.ctx.fillStyle = 'rgba(220, 53, 69, 0.18)';
+            this.ctx.fillRect(bannerX, bannerY, bannerWidth, bannerHeight);
+            this.ctx.strokeStyle = COLORS.danger;
+            this.ctx.lineWidth = 1.5;
+            this.ctx.strokeRect(bannerX, bannerY, bannerWidth, bannerHeight);
+            this.drawText('WIRE BROKEN', bannerX + bannerWidth / 2, bannerY + bannerHeight / 2, {
+                color: COLORS.danger,
+                font: 'bold 12px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+        }
+
+        if (brokenSegmentIndex !== null) {
+            const pos = wirePositions[brokenSegmentIndex];
+            if (Number.isFinite(pos)) {
+                const y = posToY(pos);
+                const rectH = Math.ceil(segmentHeightViz) + 2;
+                const x = wireVisCenterX - visualThickness / 2;
+                const centerY = Math.floor(y) + rectH / 2;
+                const wireRightX = Math.floor(x + visualThickness);
+                const arrowStartX = wireRightX + 16;
+                const arrowEndX = wireRightX + 7;
+                const arrowSize = 5;
+
+                this.ctx.fillStyle = COLORS.danger;
+                this.ctx.font = 'bold 11px sans-serif';
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('BROKEN', arrowStartX + 8, centerY);
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(arrowStartX, centerY);
+                this.ctx.lineTo(arrowEndX, centerY);
+                this.ctx.strokeStyle = COLORS.danger;
+                this.ctx.lineWidth = 2;
+                this.ctx.stroke();
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(arrowEndX, centerY);
+                this.ctx.lineTo(arrowEndX + arrowSize, centerY - 4);
+                this.ctx.lineTo(arrowEndX + arrowSize, centerY + 4);
+                this.ctx.closePath();
+                this.ctx.fillStyle = COLORS.danger;
+                this.ctx.fill();
+            }
         }
     }
 }

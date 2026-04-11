@@ -56,6 +56,63 @@ export class SideViewPanel extends BasePanel {
         this.setupControls();
     }
 
+    ingestSparkData(frameData, frameIndex) {
+        if (!frameData) return;
+
+        if (frameIndex < this.lastFrameIndex) {
+            this.activeSparks = [];
+            this.lastProcessedSparkTimeUs = -Infinity;
+        }
+        this.lastFrameIndex = frameIndex;
+
+        const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
+        const isLiveRender = Number.isFinite(liveRenderTimeMs);
+
+        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
+            frameData.accumulatedSparks.forEach(spark => {
+                if (!Number.isFinite(spark.timeUS) || spark.timeUS > this.lastProcessedSparkTimeUs) {
+                    this.activeSparks.push({
+                        locationMM: spark.locationMM,
+                        startFrame: spark.frameIndex,
+                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                        intensity: 1.0
+                    });
+                    if (Number.isFinite(spark.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, spark.timeUS);
+                    }
+                }
+            });
+        }
+
+        if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
+            frameData.spark_events.forEach((sparkEvent) => {
+                if (!Number.isFinite(sparkEvent.timeUS) || sparkEvent.timeUS > this.lastProcessedSparkTimeUs) {
+                    this.activeSparks.push({
+                        locationMM: sparkEvent.locationMM,
+                        startFrame: frameIndex,
+                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                        intensity: 1.0
+                    });
+                    if (Number.isFinite(sparkEvent.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkEvent.timeUS);
+                    }
+                }
+            });
+        } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const sparkLocationMM = frameData.spark_status[1];
+            const sparkSeed = Number.isFinite(frameData.time) ? Number(frameData.time) : frameIndex;
+            if (sparkSeed > this.lastProcessedSparkTimeUs) {
+                this.activeSparks.push({
+                    locationMM: sparkLocationMM,
+                    startFrame: frameIndex,
+                    startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
+                    intensity: 1.0
+                });
+                this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkSeed);
+            }
+        }
+    }
+
     onHistoryTrim(droppedFrames) {
         if (!Number.isFinite(droppedFrames) || droppedFrames <= 0) return;
 
@@ -73,6 +130,9 @@ export class SideViewPanel extends BasePanel {
 
     setData(data) {
         super.setData(data);
+        this.activeSparks = [];
+        this.lastFrameIndex = -1;
+        this.lastProcessedSparkTimeUs = -Infinity;
 
         // Extract metadata if available
         if (data && data.metadata) {
@@ -225,57 +285,9 @@ export class SideViewPanel extends BasePanel {
         this.drawWire(wireCenterX, wireRadius, scale, frameData);
 
         // Handle spark persistence
-        if (frameIndex < this.lastFrameIndex) {
-            this.activeSparks = [];
-            this.lastProcessedSparkTimeUs = -Infinity;
-        }
-        this.lastFrameIndex = frameIndex;
+        this.ingestSparkData(frameData, frameIndex);
         const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
         const isLiveRender = Number.isFinite(liveRenderTimeMs);
-
-        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
-            frameData.accumulatedSparks.forEach(spark => {
-                if (!Number.isFinite(spark.timeUS) || spark.timeUS > this.lastProcessedSparkTimeUs) {
-                    this.activeSparks.push({
-                        locationMM: spark.locationMM,
-                        startFrame: spark.frameIndex,
-                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
-                        intensity: 1.0
-                    });
-                    if (Number.isFinite(spark.timeUS)) {
-                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, spark.timeUS);
-                    }
-                }
-            });
-        }
-
-        if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
-            frameData.spark_events.forEach((sparkEvent) => {
-                if (!Number.isFinite(sparkEvent.timeUS) || sparkEvent.timeUS > this.lastProcessedSparkTimeUs) {
-                    this.activeSparks.push({
-                        locationMM: sparkEvent.locationMM,
-                        startFrame: frameIndex,
-                        startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
-                        intensity: 1.0
-                    });
-                    if (Number.isFinite(sparkEvent.timeUS)) {
-                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkEvent.timeUS);
-                    }
-                }
-            });
-        } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
-            const sparkLocationMM = frameData.spark_status[1];
-            const sparkSeed = Number.isFinite(frameData.time) ? Number(frameData.time) : frameIndex;
-            if (sparkSeed > this.lastProcessedSparkTimeUs) {
-                this.activeSparks.push({
-                    locationMM: sparkLocationMM,
-                    startFrame: frameIndex,
-                    startRenderTimeMs: isLiveRender ? liveRenderTimeMs : null,
-                    intensity: 1.0
-                });
-                this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkSeed);
-            }
-        }
 
         const playbackSpeed = this.controller ? this.controller.playbackSpeed : TARGET_FPS;
         const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / TARGET_FPS));

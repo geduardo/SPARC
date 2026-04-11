@@ -689,12 +689,6 @@ canvas {
     color: var(--text-muted);
 }
 
-.live-field-help {
-    font-size: 0.72rem;
-    color: var(--text-muted);
-    line-height: 1.35;
-}
-
 .live-field input,
 .live-field select {
     width: 100%;
@@ -737,6 +731,7 @@ canvas {
 .live-control-note {
     font-size: 0.78rem;
     color: var(--text-muted);
+    min-height: 1.25em;
 }
 
 body.mode-file #liveControls {

@@ -104,6 +104,9 @@ export class TopViewPanel extends BasePanel {
 
     setData(data) {
         super.setData(data);
+        this.activeSparks = [];
+        this.lastFrameIndex = -1;
+        this.lastProcessedSparkTimeUs = -Infinity;
 
         if (data.metadata) {
             this.wireDiameter = data.metadata.wire_diameter || DEFAULT_WIRE_DIAMETER;
@@ -195,63 +198,18 @@ export class TopViewPanel extends BasePanel {
         };
     }
 
-    draw(frameData, frameIndex) {
-        this.clear();
+    ingestSparkData(frameData, frameIndex) {
+        if (!frameData) return;
 
-        const w = this.canvas.width / window.devicePixelRatio;
-        const h = this.canvas.height / window.devicePixelRatio;
-
-        // Background
-        this.ctx.fillStyle = COLORS.bgCanvas;
-        this.ctx.fillRect(0, 0, w, h);
-
-        // Auto-scale based on zoom level
-        const viewWidth = this.wireDiameter * this.zoomLevel;
-        this.scale = (w * 0.8) / viewWidth;
-
-        if (!frameData) {
-            this.drawText('Top View - No Data', w / 2, h / 2, {
-                color: COLORS.textMuted,
-                font: '14px sans-serif',
-                align: 'center',
-                baseline: 'middle'
-            });
-            return;
-        }
-
-        const wireEdgePos = frameData.wire_position || 0;
-        const workpieceEdgePos = frameData.workpiece_position || 0;
-        const wireRadius = this.wireDiameter / 2;
-        const kerfWidth = ((this.baseOvercut || 0.05)) + this.wireDiameter + 0.01;
-        const frontierRadius = kerfWidth / 2;
-        const wireCenterX = (wireEdgePos / 1000) - wireRadius;
-        const frontierCenterX = (workpieceEdgePos / 1000) - frontierRadius;
-        const gapUM = workpieceEdgePos - wireEdgePos;
-
-        // Auto-pan
-        if (this.autoPan) {
-            const wireScreenX = (wireCenterX - this.cameraX) * this.scale + w / 2;
-            const edgeThreshold = w * 0.1;
-
-            if (wireScreenX < edgeThreshold) {
-                this.cameraX = wireCenterX - (edgeThreshold / this.scale) + (w / 2 / this.scale);
-            } else if (wireScreenX > w - edgeThreshold) {
-                this.cameraX = wireCenterX + (edgeThreshold / this.scale) - (w / 2 / this.scale);
-            }
-        }
-
-        this.ctx.save();
-        this.ctx.translate(w / 2, h / 2);
-        this.ctx.translate(-this.cameraX * this.scale, 0);
-
-        // Handle spark persistence
         if (frameIndex < this.lastFrameIndex) {
             this.activeSparks = [];
             this.lastProcessedSparkTimeUs = -Infinity;
         }
         this.lastFrameIndex = frameIndex;
+
         const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
         const isLiveRender = Number.isFinite(liveRenderTimeMs);
+        const gapUM = (frameData.workpiece_position || 0) - (frameData.wire_position || 0);
 
         if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
             frameData.accumulatedSparks.forEach(spark => {
@@ -305,6 +263,61 @@ export class TopViewPanel extends BasePanel {
                 this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkSeed);
             }
         }
+    }
+
+    draw(frameData, frameIndex) {
+        this.clear();
+
+        const w = this.canvas.width / window.devicePixelRatio;
+        const h = this.canvas.height / window.devicePixelRatio;
+
+        // Background
+        this.ctx.fillStyle = COLORS.bgCanvas;
+        this.ctx.fillRect(0, 0, w, h);
+
+        // Auto-scale based on zoom level
+        const viewWidth = this.wireDiameter * this.zoomLevel;
+        this.scale = (w * 0.8) / viewWidth;
+
+        if (!frameData) {
+            this.drawText('Top View - No Data', w / 2, h / 2, {
+                color: COLORS.textMuted,
+                font: '14px sans-serif',
+                align: 'center',
+                baseline: 'middle'
+            });
+            return;
+        }
+
+        const wireEdgePos = frameData.wire_position || 0;
+        const workpieceEdgePos = frameData.workpiece_position || 0;
+        const wireRadius = this.wireDiameter / 2;
+        const kerfWidth = ((this.baseOvercut || 0.05)) + this.wireDiameter + 0.01;
+        const frontierRadius = kerfWidth / 2;
+        const wireCenterX = (wireEdgePos / 1000) - wireRadius;
+        const frontierCenterX = (workpieceEdgePos / 1000) - frontierRadius;
+        const gapUM = workpieceEdgePos - wireEdgePos;
+
+        // Auto-pan
+        if (this.autoPan) {
+            const wireScreenX = (wireCenterX - this.cameraX) * this.scale + w / 2;
+            const edgeThreshold = w * 0.1;
+
+            if (wireScreenX < edgeThreshold) {
+                this.cameraX = wireCenterX - (edgeThreshold / this.scale) + (w / 2 / this.scale);
+            } else if (wireScreenX > w - edgeThreshold) {
+                this.cameraX = wireCenterX + (edgeThreshold / this.scale) - (w / 2 / this.scale);
+            }
+        }
+
+        this.ctx.save();
+        this.ctx.translate(w / 2, h / 2);
+        this.ctx.translate(-this.cameraX * this.scale, 0);
+
+        // Handle spark persistence
+        this.ingestSparkData(frameData, frameIndex);
+        const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
+        const isLiveRender = Number.isFinite(liveRenderTimeMs);
 
         const playbackSpeed = this.controller ? this.controller.playbackSpeed : TARGET_FPS;
         const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / TARGET_FPS));

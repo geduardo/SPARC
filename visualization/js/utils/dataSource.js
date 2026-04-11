@@ -5,7 +5,7 @@ const DEFAULT_PROCESS_HISTORY_TRANSIT_MULTIPLIER = 1.1;
 const DEFAULT_PROCESS_FRAME_MEMORY_BUDGET_BYTES = 72 * 1024 * 1024;
 const DEFAULT_TARGET_PROCESS_FPS = 60;
 const PROCESS_FRAME_MEMORY_ESTIMATE_SAFETY_FACTOR = 1.5;
-const PROCESS_FRAME_FIXED_SCALAR_FIELD_COUNT = 19;
+const PROCESS_FRAME_FIXED_SCALAR_FIELD_COUNT = 20;
 
 const PROCESS_FRAME_FIELDS = {
     time: ['time', 'time_us'],
@@ -21,6 +21,7 @@ const PROCESS_FRAME_FIELDS = {
     OFF_time: ['OFF_time', 'off_time_us'],
     spark_events: ['spark_events'],
     is_short_circuit: ['is_short_circuit'],
+    is_wire_broken: ['is_wire_broken'],
     flow_rate: ['flow_rate'],
     debris_density: ['debris_density'],
     wire_head_idx: ['wire_head_idx'],
@@ -47,6 +48,7 @@ function createEmptyDataShape() {
         spark_events: [],
         spark_status: [],
         is_short_circuit: [],
+        is_wire_broken: [],
         flow_rate: [],
         debris_density: [],
         wire_temperature: [],
@@ -60,6 +62,11 @@ function createEmptyDataShape() {
             supportedParams: [],
             currentParams: {},
             solverLimited: false,
+            requestedSlowdownFactor: null,
+            minSlowdownFactor: null,
+            maxSimUsPerWallSecond: null,
+            controlComputeWallS: null,
+            terminationReason: null,
             lastError: null
         }
     };
@@ -261,7 +268,19 @@ function normalizeSessionHeader(message) {
         metadata,
         supportedParams: payload.supported_params || payload.supportedParams || [],
         currentParams: payload.current_params || payload.currentParams || {},
-        sessionState: payload.state || payload.session_state || 'created'
+        sessionState: payload.state || payload.session_state || 'created',
+        requestedSlowdownFactor: toFiniteNumber(
+            payload.requested_slowdown_factor ?? payload.requestedSlowdownFactor
+        ),
+        minSlowdownFactor: toFiniteNumber(
+            payload.min_slowdown_factor ?? payload.minSlowdownFactor
+        ),
+        maxSimUsPerWallSecond: toFiniteNumber(
+            payload.max_sim_us_per_wall_second ?? payload.maxSimUsPerWallSecond
+        ),
+        controlComputeWallS: toFiniteNumber(
+            payload.control_compute_wall_s ?? payload.controlComputeWallS
+        )
     };
 }
 
@@ -334,6 +353,11 @@ export class FileDashboardDataSource extends DashboardDataSource {
                 supportedParams: [],
                 currentParams: {},
                 solverLimited: false,
+                requestedSlowdownFactor: null,
+                minSlowdownFactor: null,
+                maxSimUsPerWallSecond: null,
+                controlComputeWallS: null,
+                terminationReason: null,
                 lastError: null
             };
         }
@@ -397,6 +421,15 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         this.manualDisconnect = false;
         this.reconnectTimer = null;
         this.reconnectAttempt = 0;
+    }
+
+    resetLiveRunData() {
+        const connectionState = this.data?.live_session?.connectionState || 'disconnected';
+        this.data = createEmptyDataShape();
+        this.data.live_session.connectionState = connectionState;
+        this.pulseChunks = [];
+        this.pulseHistory = createEmptyPulseHistory();
+        this.totalPulseSamples = 0;
     }
 
     refreshProcessFrameCapacity() {
@@ -547,10 +580,16 @@ export class LiveDashboardDataSource extends DashboardDataSource {
 
     handleSessionHeader(message) {
         const header = normalizeSessionHeader(message);
+        this.resetLiveRunData();
         this.data.metadata = Object.assign({}, this.data.metadata, header.metadata);
         this.data.live_session.supportedParams = header.supportedParams;
         this.data.live_session.currentParams = header.currentParams;
         this.data.live_session.sessionState = header.sessionState;
+        this.data.live_session.requestedSlowdownFactor = header.requestedSlowdownFactor;
+        this.data.live_session.minSlowdownFactor = header.minSlowdownFactor;
+        this.data.live_session.maxSimUsPerWallSecond = header.maxSimUsPerWallSecond;
+        this.data.live_session.controlComputeWallS = header.controlComputeWallS;
+        this.data.live_session.terminationReason = null;
         this.data.live_session.lastError = null;
         this.refreshProcessFrameCapacity();
         this.emit({ type: 'header', header });
@@ -620,6 +659,19 @@ export class LiveDashboardDataSource extends DashboardDataSource {
             this.data.live_session.currentParams = currentParams;
         }
         this.data.live_session.solverLimited = !!(payload.solver_limited || payload.solverLimited);
+        this.data.live_session.requestedSlowdownFactor = toFiniteNumber(
+            payload.requested_slowdown_factor ?? payload.requestedSlowdownFactor
+        );
+        this.data.live_session.minSlowdownFactor = toFiniteNumber(
+            payload.min_slowdown_factor ?? payload.minSlowdownFactor
+        );
+        this.data.live_session.maxSimUsPerWallSecond = toFiniteNumber(
+            payload.max_sim_us_per_wall_second ?? payload.maxSimUsPerWallSecond
+        );
+        this.data.live_session.controlComputeWallS = toFiniteNumber(
+            payload.control_compute_wall_s ?? payload.controlComputeWallS
+        );
+        this.data.live_session.terminationReason = payload.termination_reason ?? payload.terminationReason ?? null;
         this.data.live_session.lastError = null;
         this.refreshProcessFrameCapacity();
         this.emit({ type: 'session_state', state, payload });

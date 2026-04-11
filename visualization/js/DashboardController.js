@@ -96,6 +96,11 @@ export class DashboardController {
         if (event.type === 'header') {
             this.data = this.dataSource ? this.dataSource.getData() : this.data;
             this.liveLastError = null;
+            this.liveLastProcessFrameWallMs = null;
+            this.clearSelectedMaterialTracking();
+            if (this.elements.damageWindow) {
+                this.elements.damageWindow.style.display = 'none';
+            }
             Object.values(this.panels).forEach(panel => {
                 if (panel.setData) {
                     panel.setData(this.data);
@@ -103,6 +108,7 @@ export class DashboardController {
             });
             this.refreshTimelineBounds();
             this.updateLiveControls();
+            this.drawFrame(this.currentFrame);
             return;
         }
 
@@ -115,11 +121,22 @@ export class DashboardController {
             this.extendSelectedMaterialTraceToLatestFrame();
             this.refreshTimelineBounds();
             this.updateLiveControls();
+            const latestFrame = this.getTotalFrames() - 1;
+            if (
+                this.dataSource &&
+                this.dataSource.isLive &&
+                latestFrame >= 0 &&
+                (this.followLiveTail || this.currentFrame >= latestFrame)
+            ) {
+                this.ingestLiveSparks(latestFrame, this.liveLastProcessFrameWallMs);
+            }
             if (this.dataSource && this.dataSource.isLive && this.followLiveTail && !this.isPlaying) {
-                this.currentFrame = Math.max(0, this.getTotalFrames() - 1);
+                this.currentFrame = Math.max(0, latestFrame);
                 this.elements.timeline.value = this.currentFrame;
-                this.drawFrame(this.currentFrame);
                 this.updateTimeDisplay();
+                if (!this.liveAnimationId) {
+                    this.drawFrame(this.currentFrame);
+                }
             }
             return;
         }
@@ -127,7 +144,7 @@ export class DashboardController {
         if (event.type === 'pulse_chunk') {
             if (this.dataSource && this.dataSource.isLive && !this.isPlaying && this.getTotalFrames() > 0) {
                 const latestFrame = Math.max(0, this.getTotalFrames() - 1);
-                if (this.followLiveTail || this.currentFrame >= latestFrame) {
+                if ((this.followLiveTail || this.currentFrame >= latestFrame) && !this.liveAnimationId) {
                     this.drawFrame(this.currentFrame);
                 }
             }
@@ -242,11 +259,11 @@ export class DashboardController {
             liveSetpointLabel: document.getElementById('liveSetpointLabel'),
             liveSetpointValue: document.getElementById('liveSetpointValue'),
             liveSlowdownFactor: document.getElementById('liveSlowdownFactor'),
-            livePaceSummary: document.getElementById('livePaceSummary'),
             liveGeneratorVoltage: document.getElementById('liveGeneratorVoltage'),
             liveCurrentMode: document.getElementById('liveCurrentMode'),
             liveOffTime: document.getElementById('liveOffTime'),
             livePauseResume: document.getElementById('livePauseResume'),
+            liveRestart: document.getElementById('liveRestart'),
             liveStop: document.getElementById('liveStop'),
             liveControlNote: document.getElementById('liveControlNote'),
             loadingOverlay: document.getElementById('loadingOverlay'),
@@ -299,6 +316,7 @@ export class DashboardController {
             this.elements.triggerSource.addEventListener('change', onTriggerChange);
             this.elements.triggerSlope.addEventListener('change', onTriggerChange);
             this.elements.triggerLevel.addEventListener('change', onTriggerChange);
+            this.elements.triggerLevel.addEventListener('input', onTriggerChange);
             if (this.elements.triggerDelay) {
                 this.elements.triggerDelay.addEventListener('change', onTriggerChange);
                 this.elements.triggerDelay.addEventListener('input', onTriggerChange);
@@ -379,7 +397,16 @@ export class DashboardController {
         bindDebouncedNumberInput(
             this.elements.liveSlowdownFactor,
             'slowdown_factor',
-            (value) => this.sendLiveSpeed(value)
+            (value) => {
+                const clampedValue = this.clampRequestedLivePace(value);
+                if (!Number.isFinite(clampedValue) || clampedValue <= 0) {
+                    return;
+                }
+                if (this.elements.liveSlowdownFactor) {
+                    this.elements.liveSlowdownFactor.value = this.formatLiveControlValue(clampedValue, 0);
+                }
+                this.sendLiveSpeed(clampedValue);
+            }
         );
         bindDebouncedNumberInput(
             this.elements.liveGeneratorVoltage,
@@ -422,6 +449,9 @@ export class DashboardController {
 
         if (this.elements.livePauseResume) {
             this.elements.livePauseResume.addEventListener('click', () => this.handleLivePauseResume());
+        }
+        if (this.elements.liveRestart) {
+            this.elements.liveRestart.addEventListener('click', () => this.sendLiveCommand('restart'));
         }
         if (this.elements.liveStop) {
             this.elements.liveStop.addEventListener('click', () => this.sendLiveCommand('stop'));
@@ -469,6 +499,19 @@ export class DashboardController {
 
     sendLiveParam(name, value) {
         return this.sendLiveCommand('set_param', { name, value });
+    }
+
+    clampRequestedLivePace(simUsPerWallSecond) {
+        const requested = Number(simUsPerWallSecond);
+        if (!Number.isFinite(requested) || requested <= 0) {
+            return null;
+        }
+
+        const maxPace = Number(this.data?.live_session?.maxSimUsPerWallSecond);
+        if (Number.isFinite(maxPace) && maxPace > 0) {
+            return Math.min(requested, maxPace);
+        }
+        return requested;
     }
 
     sendLiveSpeed(simUsPerWallSecond) {
@@ -620,8 +663,12 @@ export class DashboardController {
         return `${this.formatLiveControlValue(numeric, 0)} us/s`;
     }
 
-    getPaceHelpText(slowdownFactor) {
-        return '';
+    getLiveRequestedPace() {
+        const requestedSlowdownFactor = Number(this.data?.live_session?.requestedSlowdownFactor);
+        if (!Number.isFinite(requestedSlowdownFactor) || requestedSlowdownFactor <= 0) {
+            return null;
+        }
+        return this.getLivePaceMetrics(requestedSlowdownFactor).simUsPerWallSecond;
     }
 
     getLiveRenderableFrameData(frameIndex, renderTimeMs = performance.now()) {
@@ -672,10 +719,11 @@ export class DashboardController {
         return frameData;
     }
 
-    setLiveBadgeState(element, prefix, value) {
+    setLiveBadgeState(element, prefix, value, classValue = value) {
         if (!element) return;
         const normalized = String(value || 'unknown');
-        const stateClass = `state-${normalized.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
+        const className = String(classValue || value || 'unknown');
+        const stateClass = `state-${className.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
         element.className = `live-status-badge ${stateClass}`;
         element.textContent = `${prefix} ${normalized}`;
     }
@@ -699,6 +747,10 @@ export class DashboardController {
         const setpointConfig = LIVE_SETPOINT_CONFIG[controllerType] || null;
         const isConnected = isLiveSource && connectionState === 'connected';
         const solverLimited = !!liveSession.solverLimited;
+        const requestedPace = this.getLiveRequestedPace();
+        const maxSustainablePace = Number(liveSession.maxSimUsPerWallSecond);
+        const controlComputeWallS = Number(liveSession.controlComputeWallS);
+        const terminationReason = liveSession.terminationReason || null;
         const lastError = liveSession.lastError || this.liveLastError;
 
         if (this.elements.liveControls) {
@@ -706,7 +758,16 @@ export class DashboardController {
         }
 
         this.setLiveBadgeState(this.elements.liveConnectionState, 'WS', connectionState);
-        this.setLiveBadgeState(this.elements.liveSessionState, 'Session', sessionState);
+        const sessionBadgeValue =
+            sessionState === 'stopped' && terminationReason === 'wire_broken'
+                ? 'wire broken'
+                : sessionState;
+        this.setLiveBadgeState(
+            this.elements.liveSessionState,
+            'Session',
+            sessionBadgeValue,
+            sessionState
+        );
 
         if (this.elements.liveControllerType) {
             this.elements.liveControllerType.textContent = controllerType
@@ -740,7 +801,18 @@ export class DashboardController {
         }
 
         const currentPace = this.getLivePaceMetrics(currentParams.slowdown_factor).simUsPerWallSecond;
-        this.syncLiveInputValue(this.elements.liveSlowdownFactor, currentPace, 0);
+        this.syncLiveInputValue(
+            this.elements.liveSlowdownFactor,
+            Number.isFinite(requestedPace) ? requestedPace : currentPace,
+            0
+        );
+        if (this.elements.liveSlowdownFactor) {
+            if (Number.isFinite(maxSustainablePace) && maxSustainablePace > 0) {
+                this.elements.liveSlowdownFactor.max = String(Math.max(1, Math.floor(maxSustainablePace)));
+            } else {
+                this.elements.liveSlowdownFactor.removeAttribute('max');
+            }
+        }
         this.syncLiveInputValue(this.elements.liveGeneratorVoltage, currentParams.generator_voltage, 2);
         this.syncLiveInputValue(this.elements.liveOffTime, currentParams.off_time, 3);
         if (this.elements.liveControllerSelect && document.activeElement !== this.elements.liveControllerSelect) {
@@ -778,12 +850,17 @@ export class DashboardController {
         if (this.elements.liveStop) {
             this.elements.liveStop.disabled = !isConnected || sessionState === 'stopped';
         }
-
-        if (this.elements.livePaceSummary) {
-            this.elements.livePaceSummary.textContent = this.getPaceHelpText(currentParams.slowdown_factor);
+        if (this.elements.liveRestart) {
+            this.elements.liveRestart.disabled = !isConnected || sessionState !== 'stopped';
         }
 
         if (this.elements.liveControlNote) {
+            const requestedPaceIsCapped =
+                Number.isFinite(requestedPace) &&
+                requestedPace > 0 &&
+                Number.isFinite(maxSustainablePace) &&
+                maxSustainablePace > 0 &&
+                requestedPace > (maxSustainablePace * 1.001);
             if (!isLiveSource) {
                 this.elements.liveControlNote.textContent = 'Load a live session to enable runtime controls.';
             } else if (lastError) {
@@ -792,8 +869,24 @@ export class DashboardController {
                 this.elements.liveControlNote.textContent = 'Connecting to live session...';
             } else if (connectionState === 'disconnected') {
                 this.elements.liveControlNote.textContent = 'Live controls are disabled until the websocket reconnects.';
-            } else if (solverLimited) {
-                this.elements.liveControlNote.textContent = 'Session is solver-limited. Commands still apply on the next control step, but the solver cannot sustain the requested pace.';
+            } else if (sessionState === 'stopped' && terminationReason === 'wire_broken') {
+                this.elements.liveControlNote.textContent = 'Wire broken. Click Restart to launch a fresh live session.';
+            } else if (sessionState === 'stopped') {
+                this.elements.liveControlNote.textContent = 'Live session stopped. Click Restart to launch a fresh live session.';
+            } else if (requestedPaceIsCapped || solverLimited) {
+                const requestedText = Number.isFinite(requestedPace) && requestedPace > 0
+                    ? `Requested ${this.formatSimUsPerWallSecond(requestedPace)}`
+                    : 'Requested pace';
+                const appliedText = Number.isFinite(currentPace) && currentPace > 0
+                    ? ` applied as ${this.formatSimUsPerWallSecond(currentPace)}`
+                    : '';
+                const paceText = Number.isFinite(maxSustainablePace) && maxSustainablePace > 0
+                    ? `${requestedText} is capped at ${this.formatSimUsPerWallSecond(maxSustainablePace)} by measured solver throughput.${appliedText}.`
+                    : `${requestedText} is capped by measured solver throughput.${appliedText}.`;
+                const computeText = Number.isFinite(controlComputeWallS) && controlComputeWallS >= 0
+                    ? ` Last compute step: ${this.formatLiveControlValue(controlComputeWallS * 1000, 2)} ms.`
+                    : '';
+                this.elements.liveControlNote.textContent = `${paceText}${computeText}`;
             } else {
                 this.elements.liveControlNote.textContent = '';
             }
@@ -1883,8 +1976,7 @@ export class DashboardController {
                     const cols = value.shape[1];
                     const start = frameIndex * cols;
                     const end = start + cols;
-                    const subarray = value.data.subarray(start, end);
-                    frameData[key] = Array.from(subarray);
+                    frameData[key] = value.data.subarray(start, end);
                 }
                 continue;
             }
@@ -1904,6 +1996,18 @@ export class DashboardController {
         }
 
         return frameData;
+    }
+
+    ingestLiveSparks(frameIndex, renderTimeMs = performance.now()) {
+        if (!this.data || frameIndex < 0) return;
+
+        const frameData = this.getLiveRenderableFrameData(frameIndex, renderTimeMs);
+        if (this.panels.sideView && this.panels.sideView.ingestSparkData) {
+            this.panels.sideView.ingestSparkData(frameData, frameIndex);
+        }
+        if (this.panels.topView && this.panels.topView.ingestSparkData) {
+            this.panels.topView.ingestSparkData(frameData, frameIndex);
+        }
     }
 
     updateTimeDisplay() {
