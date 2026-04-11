@@ -45,6 +45,10 @@ export class DashboardController {
         this.liveLastError = null;
         this.liveLastProcessFrameWallMs = null;
         this.currentMode = 'file';
+        this.selectedMaterialTrace = null;
+        this.selectedMaterialAnchor = null;
+        this.selectedSegmentClickIndex = null;
+        this.damagePlotCache = null;
 
         // Panel instances
         this.panels = {
@@ -108,6 +112,7 @@ export class DashboardController {
             if (event.droppedFrames > 0) {
                 this.handleHistoryTrim(event.droppedFrames);
             }
+            this.extendSelectedMaterialTraceToLatestFrame();
             this.refreshTimelineBounds();
             this.updateLiveControls();
             if (this.dataSource && this.dataSource.isLive && this.followLiveTail && !this.isPlaying) {
@@ -163,8 +168,16 @@ export class DashboardController {
                 }
             }
             this.selectedMaterialTrace = shiftedTrace.size > 0 ? shiftedTrace : null;
+            if (this.selectedMaterialAnchor) {
+                this.selectedMaterialAnchor = {
+                    ...this.selectedMaterialAnchor,
+                    frameIndex: this.selectedMaterialAnchor.frameIndex - droppedFrames
+                };
+            }
+            this.normalizeSelectedMaterialAnchor();
             this.damagePlotCache = null;
             if (!this.selectedMaterialTrace && this.elements.damageWindow) {
+                this.selectedMaterialAnchor = null;
                 this.elements.damageWindow.style.display = 'none';
             }
         }
@@ -822,9 +835,7 @@ export class DashboardController {
             this.elements.closeDamageWindow.addEventListener('click', () => {
                 win.style.display = 'none';
                 // Clear tracking and cache when window is closed
-                this.selectedMaterialTrace = null;
-                this.selectedSegmentClickIndex = null;
-                this.damagePlotCache = null;
+                this.clearSelectedMaterialTracking();
                 if (this.data) {
                     this.drawFrame(this.currentFrame);
                 }
@@ -869,12 +880,14 @@ export class DashboardController {
         }
 
         let inlet = 160, outlet = 0;
+        let unwindingSpeed = Number.NaN;
         if (this.data.metadata) {
-            const hWP = this.data.metadata.workpiece_height || 100;
+            const hWP = this.data.metadata.workpiece_height_mm ?? this.data.metadata.workpiece_height ?? 100;
             const bBot = this.data.metadata.buffer_len_bottom || 30;
             const bTop = this.data.metadata.buffer_len_top || 30;
             inlet = bBot + hWP + bTop;
             outlet = 0;
+            unwindingSpeed = Number(this.data.metadata.wire_unwinding_speed_mm_per_ms);
         }
 
         const frames = Array.from(trace.keys()).sort((a, b) => a - b);
@@ -907,11 +920,19 @@ export class DashboardController {
         const movesDown = allP[allP.length - 1] < allP[0];
         const entrancePos = movesDown ? Math.max(inlet, outlet) : Math.min(inlet, outlet);
 
-        let speed = 0.001;
-        const dt = allT[allT.length - 1] - allT[0], dp = Math.abs(allP[allP.length - 1] - allP[0]);
-        if (dt > 1 && dp > 0.001) speed = dp / dt;
+        let speed = unwindingSpeed;
+        if (!Number.isFinite(speed) || speed <= 0) {
+            const dt = allT[allT.length - 1] - allT[0];
+            const dp = Math.abs(allP[allP.length - 1] - allP[0]);
+            if (dt > 1 && dp > 0.001) {
+                speed = dp / dt;
+            } else {
+                speed = 0.001;
+            }
+        }
 
-        const maxT = Math.abs(inlet - outlet) / speed;
+        const travelDistance = Math.abs(inlet - outlet);
+        const maxT = travelDistance / speed;
 
         let startIdx = -1;
         for (let i = 0; i < allP.length; i++) {
@@ -925,7 +946,11 @@ export class DashboardController {
         const normalizedX = [];
         for (let i = 0; i < allP.length; i++) {
             const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
-            normalizedX.push(distFromInlet / speed / maxT);
+            normalizedX.push(
+                travelDistance > 0
+                    ? Math.max(0, Math.min(1, distFromInlet / travelDistance))
+                    : 0
+            );
         }
 
         // Find max temperature for scaling (using loop to avoid stack overflow with large arrays)
@@ -1108,86 +1133,343 @@ export class DashboardController {
         }
     }
 
-    traceMaterial(startFrame, startSegmentIndex) {
-        const trace = new Map();
-        if (!this.data || !this.data.wire_material_positions_mm) return trace;
+    getWireMaterialPositionAccessor() {
+        const positionsData = this.data && this.data.wire_material_positions_mm;
+        if (!positionsData) return null;
 
-        const positionsData = this.data.wire_material_positions_mm;
-        const numFrames = this.getTotalFrames();
         const isTyped = positionsData.data && positionsData.shape;
         const numCols = isTyped ? positionsData.shape[1] : 0;
 
-        const getPt = (f, k) => isTyped ? positionsData.data[f * numCols + k] : (positionsData[f] ? positionsData[f][k] : undefined);
-        const getLen = (f) => isTyped ? numCols : (positionsData[f] ? positionsData[f].length : 0);
+        return {
+            getPoint: (frameIndex, segmentIndex) => (
+                isTyped
+                    ? positionsData.data[frameIndex * numCols + segmentIndex]
+                    : (positionsData[frameIndex] ? positionsData[frameIndex][segmentIndex] : undefined)
+            ),
+            getLength: (frameIndex) => (
+                isTyped
+                    ? numCols
+                    : (positionsData[frameIndex] ? positionsData[frameIndex].length : 0)
+            )
+        };
+    }
 
-        if (getLen(startFrame) <= startSegmentIndex) return trace;
+    estimateTrackedMaterialDisplacementMM(fromFrameIndex, toFrameIndex) {
+        const metadata = this.data && this.data.metadata ? this.data.metadata : {};
+        const timeSeries = this.data && this.data.time;
+        const unwindingSpeed = Number(metadata.wire_unwinding_speed_mm_per_ms);
 
-        let currIdx = startSegmentIndex;
-        let prevPos = getPt(startFrame, startSegmentIndex);
+        if (
+            !Number.isFinite(unwindingSpeed) ||
+            !timeSeries ||
+            !Number.isFinite(Number(timeSeries[fromFrameIndex])) ||
+            !Number.isFinite(Number(timeSeries[toFrameIndex]))
+        ) {
+            return 0;
+        }
+
+        const deltaTimeMs = (Number(timeSeries[toFrameIndex]) - Number(timeSeries[fromFrameIndex])) / 1000;
+        return unwindingSpeed * deltaTimeMs;
+    }
+
+    getTrackedSegmentSpacingMM(frameIndex, accessor) {
+        const metadata = this.data && this.data.metadata ? this.data.metadata : {};
+        const metadataSegmentLen = Number(metadata.segment_len_mm);
+        if (Number.isFinite(metadataSegmentLen) && metadataSegmentLen > 0) {
+            return metadataSegmentLen;
+        }
+
+        const segmentCount = accessor.getLength(frameIndex);
+        if (segmentCount < 2) {
+            return null;
+        }
+
+        const sampleA = accessor.getPoint(frameIndex, 0);
+        const sampleB = accessor.getPoint(frameIndex, 1);
+        const spacing = Math.abs(sampleB - sampleA);
+        return Number.isFinite(spacing) && spacing > 0 ? spacing : null;
+    }
+
+    estimateTrackedMaterialIndexShift(fromFrameIndex, toFrameIndex, segmentSpacingMM) {
+        if (!Number.isFinite(segmentSpacingMM) || segmentSpacingMM <= 0) {
+            return null;
+        }
+
+        const offsetSeries = this.data && this.data.wire_offset_mm;
+        if (
+            !offsetSeries ||
+            !Number.isFinite(Number(offsetSeries[fromFrameIndex])) ||
+            !Number.isFinite(Number(offsetSeries[toFrameIndex]))
+        ) {
+            return null;
+        }
+
+        const displacementMM = this.estimateTrackedMaterialDisplacementMM(fromFrameIndex, toFrameIndex);
+        const offsetDeltaMM = Number(offsetSeries[toFrameIndex]) - Number(offsetSeries[fromFrameIndex]);
+        return Math.round((displacementMM - offsetDeltaMM) / segmentSpacingMM);
+    }
+
+    setSelectedMaterialTracking(trace, anchorFrameIndex, anchorSegmentIndex) {
+        this.selectedMaterialTrace = trace instanceof Map && trace.size > 0 ? trace : null;
+        this.selectedMaterialAnchor = this.selectedMaterialTrace
+            ? {
+                frameIndex: anchorFrameIndex,
+                segmentIndex: anchorSegmentIndex,
+                position: null
+            }
+            : null;
+        this.normalizeSelectedMaterialAnchor();
+        this.damagePlotCache = null;
+    }
+
+    clearSelectedMaterialTracking() {
+        this.selectedMaterialTrace = null;
+        this.selectedMaterialAnchor = null;
+        this.selectedSegmentClickIndex = null;
+        this.damagePlotCache = null;
+    }
+
+    normalizeSelectedMaterialAnchor(accessor = this.getWireMaterialPositionAccessor()) {
+        if (!this.selectedMaterialTrace || this.selectedMaterialTrace.size === 0 || !accessor) {
+            this.selectedMaterialAnchor = null;
+            return null;
+        }
+
+        let anchorFrameIndex = this.selectedMaterialAnchor?.frameIndex;
+        let anchorSegmentIndex = this.selectedMaterialAnchor?.segmentIndex;
+
+        if (!Number.isInteger(anchorFrameIndex) || !this.selectedMaterialTrace.has(anchorFrameIndex)) {
+            anchorFrameIndex = null;
+        }
+
+        if (
+            Number.isInteger(anchorFrameIndex) &&
+            !Number.isInteger(anchorSegmentIndex)
+        ) {
+            anchorSegmentIndex = this.selectedMaterialTrace.get(anchorFrameIndex);
+        }
+
+        if (
+            Number.isInteger(anchorFrameIndex) &&
+            Number.isInteger(anchorSegmentIndex) &&
+            anchorSegmentIndex >= 0 &&
+            accessor.getLength(anchorFrameIndex) > anchorSegmentIndex
+        ) {
+            const anchorPosition = accessor.getPoint(anchorFrameIndex, anchorSegmentIndex);
+            if (Number.isFinite(anchorPosition)) {
+                this.selectedMaterialAnchor = {
+                    frameIndex: anchorFrameIndex,
+                    segmentIndex: anchorSegmentIndex,
+                    position: anchorPosition
+                };
+                return this.selectedMaterialAnchor;
+            }
+        }
+
+        const traceFrames = Array.from(this.selectedMaterialTrace.keys()).sort((a, b) => a - b);
+        for (const frameIndex of traceFrames) {
+            const segmentIndex = this.selectedMaterialTrace.get(frameIndex);
+            if (
+                !Number.isInteger(segmentIndex) ||
+                segmentIndex < 0 ||
+                accessor.getLength(frameIndex) <= segmentIndex
+            ) {
+                continue;
+            }
+
+            const anchorPosition = accessor.getPoint(frameIndex, segmentIndex);
+            if (!Number.isFinite(anchorPosition)) {
+                continue;
+            }
+
+            this.selectedMaterialAnchor = {
+                frameIndex,
+                segmentIndex,
+                position: anchorPosition
+            };
+            return this.selectedMaterialAnchor;
+        }
+
+        this.selectedMaterialAnchor = null;
+        return null;
+    }
+
+    findTrackedSegmentAtFrame(accessor, anchorFrameIndex, toFrameIndex, anchorIndex, anchorPosition) {
+        const segmentCount = accessor.getLength(toFrameIndex);
+        if (segmentCount <= 0 || !Number.isFinite(anchorPosition)) {
+            return null;
+        }
+
+        const displacementMM = this.estimateTrackedMaterialDisplacementMM(anchorFrameIndex, toFrameIndex);
+        const expectedPosition = anchorPosition + displacementMM;
+        const segmentSpacingMM = this.getTrackedSegmentSpacingMM(toFrameIndex, accessor);
+        const firstPosition = accessor.getPoint(toFrameIndex, 0);
+        const lastPosition = accessor.getPoint(toFrameIndex, segmentCount - 1);
+        const minPosition = Math.min(firstPosition, lastPosition);
+        const maxPosition = Math.max(firstPosition, lastPosition);
+        const boundaryTolerance = Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+            ? Math.max(segmentSpacingMM, MATERIAL_TRACKING_FALLBACK_DISTANCE)
+            : MATERIAL_TRACKING_FALLBACK_DISTANCE;
+        if (
+            !Number.isFinite(expectedPosition) ||
+            !Number.isFinite(minPosition) ||
+            !Number.isFinite(maxPosition) ||
+            expectedPosition < minPosition - boundaryTolerance ||
+            expectedPosition > maxPosition + boundaryTolerance
+        ) {
+            return null;
+        }
+        const predictedIndexShift = this.estimateTrackedMaterialIndexShift(
+            anchorFrameIndex,
+            toFrameIndex,
+            segmentSpacingMM
+        );
+        const predictedIndex = Number.isInteger(predictedIndexShift)
+            ? anchorIndex + predictedIndexShift
+            : (
+                Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+                    ? anchorIndex + Math.round(displacementMM / segmentSpacingMM)
+                    : anchorIndex
+            );
+        const boundaryIndexTolerance = 1;
+        if (
+            predictedIndex < -boundaryIndexTolerance ||
+            predictedIndex > (segmentCount - 1 + boundaryIndexTolerance)
+        ) {
+            return null;
+        }
+        let bestIndex = -1;
+        let bestDistance = Infinity;
+
+        const searchRadius = MATERIAL_SEARCH_RADIUS;
+        if (predictedIndex >= 0 && predictedIndex < segmentCount) {
+            const startIndex = Math.max(0, predictedIndex - searchRadius);
+            const endIndex = Math.min(segmentCount - 1, predictedIndex + searchRadius);
+
+            for (let segmentIndex = startIndex; segmentIndex <= endIndex; segmentIndex++) {
+                const distance = Math.abs(accessor.getPoint(toFrameIndex, segmentIndex) - expectedPosition);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = segmentIndex;
+                }
+            }
+        }
+
+        if (bestIndex === -1 || bestDistance > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
+            for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex++) {
+                const distance = Math.abs(accessor.getPoint(toFrameIndex, segmentIndex) - expectedPosition);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = segmentIndex;
+                }
+            }
+        }
+
+        const maxDistance = Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+            ? Math.max(MATERIAL_TRACKING_MAX_DISTANCE, Math.abs(displacementMM) + (2 * segmentSpacingMM))
+            : MATERIAL_TRACKING_MAX_DISTANCE;
+        if (bestIndex === -1 || bestDistance >= maxDistance) {
+            return null;
+        }
+
+        return {
+            segmentIndex: bestIndex,
+            position: accessor.getPoint(toFrameIndex, bestIndex)
+        };
+    }
+
+    extendSelectedMaterialTraceToLatestFrame() {
+        if (!this.selectedMaterialTrace || this.selectedMaterialTrace.size === 0) {
+            return false;
+        }
+
+        const accessor = this.getWireMaterialPositionAccessor();
+        if (!accessor) {
+            return false;
+        }
+        const anchor = this.normalizeSelectedMaterialAnchor(accessor);
+        if (!anchor) {
+            return false;
+        }
+
+        const tracedFrames = Array.from(this.selectedMaterialTrace.keys()).sort((a, b) => a - b);
+        if (tracedFrames.length === 0) {
+            return false;
+        }
+
+        const latestAvailableFrame = this.getTotalFrames() - 1;
+        let currentFrame = tracedFrames[tracedFrames.length - 1];
+        if (currentFrame >= latestAvailableFrame) {
+            return false;
+        }
+
+        let extended = false;
+        for (let frameIndex = currentFrame + 1; frameIndex <= latestAvailableFrame; frameIndex++) {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                anchor.frameIndex,
+                frameIndex,
+                anchor.segmentIndex,
+                anchor.position
+            );
+            if (!match) {
+                break;
+            }
+
+            this.selectedMaterialTrace.set(frameIndex, match.segmentIndex);
+            extended = true;
+        }
+
+        if (extended) {
+            this.damagePlotCache = null;
+        }
+
+        return extended;
+    }
+
+    traceMaterial(startFrame, startSegmentIndex) {
+        const trace = new Map();
+        const accessor = this.getWireMaterialPositionAccessor();
+        if (!accessor) return trace;
+
+        const numFrames = this.getTotalFrames();
+
+        if (accessor.getLength(startFrame) <= startSegmentIndex) return trace;
+        const anchorPosition = accessor.getPoint(startFrame, startSegmentIndex);
+        if (!Number.isFinite(anchorPosition)) return trace;
+
         trace.set(startFrame, startSegmentIndex);
 
         // Forward Trace
         for (let f = startFrame + 1; f < numFrames; f++) {
-            const n = getLen(f); if (n === 0) break;
-            let bestK = -1;
-            let bestDist = Infinity;
-
-            const searchRadius = MATERIAL_SEARCH_RADIUS;
-            const startK = Math.max(0, currIdx - searchRadius);
-            const endK = Math.min(n - 1, currIdx + searchRadius);
-
-            for (let k = startK; k <= endK; k++) {
-                const d = Math.abs(getPt(f, k) - prevPos);
-                if (d < bestDist) { bestDist = d; bestK = k; }
-            }
-
-            if (bestK === -1 || bestDist > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
-                for (let k = 0; k < n; k++) {
-                    const d = Math.abs(getPt(f, k) - prevPos);
-                    if (d < bestDist) { bestDist = d; bestK = k; }
-                }
-            }
-
-            if (bestK !== -1 && bestDist < MATERIAL_TRACKING_MAX_DISTANCE) {
-                currIdx = bestK;
-                prevPos = getPt(f, bestK);
-                trace.set(f, currIdx);
-            } else {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                startFrame,
+                f,
+                startSegmentIndex,
+                anchorPosition
+            );
+            if (!match) {
                 break;
             }
+
+            trace.set(f, match.segmentIndex);
         }
 
         // Backward Trace
-        currIdx = startSegmentIndex;
-        prevPos = getPt(startFrame, startSegmentIndex);
         for (let f = startFrame - 1; f >= 0; f--) {
-            const n = getLen(f); if (n === 0) break;
-            let bestK = -1;
-            let bestDist = Infinity;
-
-            const searchRadius = MATERIAL_SEARCH_RADIUS;
-            const startK = Math.max(0, currIdx - searchRadius);
-            const endK = Math.min(n - 1, currIdx + searchRadius);
-
-            for (let k = startK; k <= endK; k++) {
-                const d = Math.abs(getPt(f, k) - prevPos);
-                if (d < bestDist) { bestDist = d; bestK = k; }
-            }
-
-            if (bestK === -1 || bestDist > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
-                for (let k = 0; k < n; k++) {
-                    const d = Math.abs(getPt(f, k) - prevPos);
-                    if (d < bestDist) { bestDist = d; bestK = k; }
-                }
-            }
-
-            if (bestK !== -1 && bestDist < MATERIAL_TRACKING_MAX_DISTANCE) {
-                currIdx = bestK;
-                prevPos = getPt(f, bestK);
-                trace.set(f, currIdx);
-            } else {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                startFrame,
+                f,
+                startSegmentIndex,
+                anchorPosition
+            );
+            if (!match) {
                 break;
             }
+
+            trace.set(f, match.segmentIndex);
         }
 
         return trace;

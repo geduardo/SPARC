@@ -118,6 +118,7 @@ def serialize_session_header(
             "workpiece_height_mm": float(env.config.workpiece_height),
             "wire_diameter": float(env.config.wire_diameter),
             "wire_diameter_um": float(env.config.wire_diameter * 1000.0),
+            "wire_unwinding_speed_mm_per_ms": float(env.state.wire_unwinding_velocity),
             "buffer_len_bottom": float(wire_params.buffer_len_bottom),
             "buffer_len_top": float(wire_params.buffer_len_top),
             "contact_offset_bottom": float(wire_params.contact_offset_bottom),

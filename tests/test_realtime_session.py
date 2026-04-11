@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from wedm import WireEDMEnv
@@ -218,3 +219,30 @@ def test_realtime_session_emits_intermediate_process_frames_at_visual_cadence(
     assert process_frames[0].process_state.time == 17
     assert process_frames[-1].process_state.time == env.servo_interval
     assert sum(clock.sleep_calls) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_realtime_session_snapshots_refresh_wire_material_positions(
+    env: WireEDMEnv,
+) -> None:
+    clock = FakeClock()
+    controller = RuntimeController(RuntimeControlState(controller_type="fixed-servo"))
+
+    session = RealtimeSession(
+        env,
+        controller,
+        slowdown_factor=100.0,
+        clock=clock.perf_counter,
+        sleep=clock.sleep,
+    )
+
+    session._prepare_run()
+    try:
+        update, _ = session._advance_control_interval()
+    finally:
+        session.stop()
+
+    expected_positions = env.wire._base_positions_mm + update.process_state.wire_position_offset_mm
+    np.testing.assert_allclose(
+        update.process_state.wire_material_positions_mm,
+        expected_positions,
+    )

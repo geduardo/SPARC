@@ -132,7 +132,7 @@ export class ThermalProfilePanel extends BasePanel {
             if (my >= y && my <= y + rectH) {
                 if (this.controller) {
                     const trace = this.controller.traceMaterial(this.controller.currentFrame, i);
-                    this.controller.selectedMaterialTrace = trace;
+                    this.controller.setSelectedMaterialTracking(trace, this.controller.currentFrame, i);
                     // Use the segment's index at the earliest frame for a consistent ID
                     this.controller.selectedSegmentClickIndex = this.controller.getOriginalSegmentId(trace);
                     this.controller.showDamagePlot();

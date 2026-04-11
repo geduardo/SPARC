@@ -527,6 +527,9 @@ class SimulationLogger:
                     {
                         "wire_diameter": float(self.env.config.wire_diameter),
                         "wire_diameter_um": float(self.env.config.wire_diameter * 1000),
+                        "wire_unwinding_speed_mm_per_ms": float(
+                            self.env.state.wire_unwinding_velocity
+                        ),
                         "initial_gap": float(self.env.config.initial_gap),
                         "workpiece_height": float(self.env.config.workpiece_height),
                         "workpiece_height_mm": float(self.env.config.workpiece_height),

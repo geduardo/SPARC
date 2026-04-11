@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 import websockets
 
 from wedm import WireEDMEnv
@@ -62,6 +63,10 @@ def test_schema_serialization_matches_realtime_contract() -> None:
         assert header["v"] == SCHEMA_VERSION
         assert header["type"] == "session_header"
         assert header["payload"]["metadata"]["dt_us"] == env.dt
+        assert (
+            header["payload"]["metadata"]["wire_unwinding_speed_mm_per_ms"]
+            == pytest.approx(env.state.wire_unwinding_velocity)
+        )
         assert "current_params" in header["payload"]
         assert "controller_type" in header["payload"]["supported_params"]
 

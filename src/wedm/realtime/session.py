@@ -399,9 +399,21 @@ class RealtimeSession:
 
     def _snapshot_hot_state(self) -> HotStateBundle:
         hot_state = self.env._hot_state
+        wire_positions = hot_state.wire_material_positions_mm.copy()
+        base_positions = getattr(self.env.wire, "_base_positions_mm", None)
+        if (
+            isinstance(base_positions, np.ndarray)
+            and base_positions.shape == wire_positions.shape
+            and wire_positions.size > 0
+        ):
+            wire_positions = np.add(
+                base_positions,
+                hot_state.wire_position_offset_mm,
+                dtype=wire_positions.dtype,
+            )
         return replace(
             hot_state,
-            wire_material_positions_mm=hot_state.wire_material_positions_mm.copy(),
+            wire_material_positions_mm=wire_positions,
             wire_temperature=hot_state.wire_temperature.copy(),
             wire_damage=hot_state.wire_damage.copy(),
             wire_d_t_dt=hot_state.wire_d_t_dt.copy(),

@@ -1,6 +1,11 @@
 const DEFAULT_PROCESS_FRAME_CAPACITY = 1000;
 const DEFAULT_PULSE_SAMPLE_CAPACITY = 100000;
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
+const DEFAULT_PROCESS_HISTORY_TRANSIT_MULTIPLIER = 1.1;
+const DEFAULT_PROCESS_FRAME_MEMORY_BUDGET_BYTES = 72 * 1024 * 1024;
+const DEFAULT_TARGET_PROCESS_FPS = 60;
+const PROCESS_FRAME_MEMORY_ESTIMATE_SAFETY_FACTOR = 1.5;
+const PROCESS_FRAME_FIXED_SCALAR_FIELD_COUNT = 19;
 
 const PROCESS_FRAME_FIELDS = {
     time: ['time', 'time_us'],
@@ -77,6 +82,111 @@ function pickFirstDefined(obj, aliases, fallback = undefined) {
         }
     }
     return fallback;
+}
+
+function toFiniteNumber(value, fallback = null) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function estimateSegmentCountFromMetadata(metadata) {
+    if (!metadata || typeof metadata !== 'object') return null;
+
+    const segmentLenMM = toFiniteNumber(metadata.segment_len_mm);
+    const workpieceHeightMM = toFiniteNumber(
+        metadata.workpiece_height_mm ?? metadata.workpiece_height
+    );
+    const bufferBottomMM = toFiniteNumber(metadata.buffer_len_bottom);
+    const bufferTopMM = toFiniteNumber(metadata.buffer_len_top);
+
+    if (
+        !Number.isFinite(segmentLenMM) ||
+        !Number.isFinite(workpieceHeightMM) ||
+        !Number.isFinite(bufferBottomMM) ||
+        !Number.isFinite(bufferTopMM) ||
+        segmentLenMM <= 0
+    ) {
+        return null;
+    }
+
+    const totalLengthMM = workpieceHeightMM + bufferBottomMM + bufferTopMM;
+    return Math.max(1, Math.floor(totalLengthMM / segmentLenMM));
+}
+
+function estimateProcessFrameBytesFloorFromMetadata(metadata) {
+    const segmentCount = estimateSegmentCountFromMetadata(metadata);
+    if (!Number.isFinite(segmentCount)) return null;
+
+    const numericValueCount =
+        PROCESS_FRAME_FIXED_SCALAR_FIELD_COUNT + (3 * segmentCount);
+    return numericValueCount * 8 * PROCESS_FRAME_MEMORY_ESTIMATE_SAFETY_FACTOR;
+}
+
+function estimateTransitTimeMsFromMetadata(metadata) {
+    if (!metadata || typeof metadata !== 'object') return null;
+
+    const workpieceHeightMM = toFiniteNumber(
+        metadata.workpiece_height_mm ?? metadata.workpiece_height
+    );
+    const bufferBottomMM = toFiniteNumber(metadata.buffer_len_bottom);
+    const bufferTopMM = toFiniteNumber(metadata.buffer_len_top);
+    const unwindingSpeedMMPerMs = toFiniteNumber(
+        metadata.wire_unwinding_speed_mm_per_ms
+    );
+
+    if (
+        !Number.isFinite(workpieceHeightMM) ||
+        !Number.isFinite(bufferBottomMM) ||
+        !Number.isFinite(bufferTopMM) ||
+        !Number.isFinite(unwindingSpeedMMPerMs) ||
+        unwindingSpeedMMPerMs <= 0
+    ) {
+        return null;
+    }
+
+    const travelDistanceMM = workpieceHeightMM + bufferBottomMM + bufferTopMM;
+    return travelDistanceMM / unwindingSpeedMMPerMs;
+}
+
+function deriveProcessFrameCapacityFromMetadata(metadata, currentParams = {}, options = {}) {
+    const transitMultiplier = Math.max(
+        0.01,
+        toFiniteNumber(
+            options.processHistoryTransitMultiplier,
+            DEFAULT_PROCESS_HISTORY_TRANSIT_MULTIPLIER
+        )
+    );
+    const targetProcessFps = Math.max(
+        1,
+        toFiniteNumber(options.targetProcessFps, DEFAULT_TARGET_PROCESS_FPS)
+    );
+    const memoryBudgetBytes = Math.max(
+        1,
+        toFiniteNumber(
+            options.processFrameMemoryBudgetBytes,
+            DEFAULT_PROCESS_FRAME_MEMORY_BUDGET_BYTES
+        )
+    );
+    const slowdownFactor = toFiniteNumber(currentParams?.slowdown_factor);
+    const transitTimeMs = estimateTransitTimeMsFromMetadata(metadata);
+    const rawDesiredCapacity = (
+        Number.isFinite(transitTimeMs) &&
+        Number.isFinite(slowdownFactor) &&
+        slowdownFactor > 0
+    )
+        ? (transitTimeMs * transitMultiplier * targetProcessFps * slowdownFactor) / 1000
+        : DEFAULT_PROCESS_FRAME_CAPACITY;
+    const desiredCapacity = Math.ceil(rawDesiredCapacity - 1e-9);
+    const estimatedBytesPerFrame = estimateProcessFrameBytesFloorFromMetadata(metadata);
+    if (!Number.isFinite(estimatedBytesPerFrame) || estimatedBytesPerFrame <= 0) {
+        return Math.max(1, desiredCapacity);
+    }
+
+    const capacityByBudget = Math.max(
+        1,
+        Math.floor(memoryBudgetBytes / estimatedBytesPerFrame)
+    );
+    return Math.max(1, Math.min(desiredCapacity, capacityByBudget));
 }
 
 function cloneVector(value) {
@@ -263,7 +373,20 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         super();
         this.url = url;
         this.isLive = true;
-        this.maxProcessFrames = options.maxProcessFrames || DEFAULT_PROCESS_FRAME_CAPACITY;
+        this.explicitMaxProcessFrames = toFiniteNumber(options.maxProcessFrames);
+        this.processHistoryTransitMultiplier = toFiniteNumber(
+            options.processHistoryTransitMultiplier,
+            DEFAULT_PROCESS_HISTORY_TRANSIT_MULTIPLIER
+        );
+        this.targetProcessFps = toFiniteNumber(
+            options.targetProcessFps,
+            DEFAULT_TARGET_PROCESS_FPS
+        );
+        this.processFrameMemoryBudgetBytes = toFiniteNumber(
+            options.processFrameMemoryBudgetBytes,
+            DEFAULT_PROCESS_FRAME_MEMORY_BUDGET_BYTES
+        );
+        this.maxProcessFrames = this.explicitMaxProcessFrames || DEFAULT_PROCESS_FRAME_CAPACITY;
         this.maxPulseSamples = options.maxPulseSamples || DEFAULT_PULSE_SAMPLE_CAPACITY;
         this.reconnectDelaysMs = options.reconnectDelaysMs || DEFAULT_RECONNECT_DELAYS_MS;
         this.WebSocketImpl = options.WebSocketImpl || WebSocket;
@@ -274,6 +397,23 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         this.manualDisconnect = false;
         this.reconnectTimer = null;
         this.reconnectAttempt = 0;
+    }
+
+    refreshProcessFrameCapacity() {
+        if (Number.isFinite(this.explicitMaxProcessFrames)) {
+            this.maxProcessFrames = this.explicitMaxProcessFrames;
+            return;
+        }
+
+        this.maxProcessFrames = deriveProcessFrameCapacityFromMetadata(
+            this.data.metadata,
+            this.data.live_session.currentParams,
+            {
+                processHistoryTransitMultiplier: this.processHistoryTransitMultiplier,
+                targetProcessFps: this.targetProcessFps,
+                processFrameMemoryBudgetBytes: this.processFrameMemoryBudgetBytes
+            }
+        );
     }
 
     async connect() {
@@ -412,6 +552,7 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         this.data.live_session.currentParams = header.currentParams;
         this.data.live_session.sessionState = header.sessionState;
         this.data.live_session.lastError = null;
+        this.refreshProcessFrameCapacity();
         this.emit({ type: 'header', header });
     }
 
@@ -480,6 +621,7 @@ export class LiveDashboardDataSource extends DashboardDataSource {
         }
         this.data.live_session.solverLimited = !!(payload.solver_limited || payload.solverLimited);
         this.data.live_session.lastError = null;
+        this.refreshProcessFrameCapacity();
         this.emit({ type: 'session_state', state, payload });
     }
 }
