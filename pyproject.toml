@@ -59,6 +59,9 @@ Documentation = "https://github.com/geduardo/SPARC/wiki"
 Repository = "https://github.com/geduardo/SPARC"
 Issues = "https://github.com/geduardo/SPARC/issues"
 
+[project.scripts]
+wedm-realtime = "wedm.realtime.launch:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

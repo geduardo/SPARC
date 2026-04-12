@@ -3,6 +3,10 @@
 This document defines the MVP contract for SPARC realtime mode before any
 implementation work begins.
 
+For the implemented launcher, runtime architecture, supported live parameters,
+and current performance limits, see
+[docs/realtime_mode_guide.md](realtime_mode_guide.md).
+
 The goal is not true wall-clock realtime physics. The goal is a stable,
 interactive live session where the simulation runs continuously, the dashboard
 renders the process as it happens, and selected process parameters can be

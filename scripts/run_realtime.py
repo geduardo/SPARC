@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backward-compatible alias for the canonical realtime launcher."""
+"""Canonical local entrypoint for SPARC realtime mode."""
 
 from __future__ import annotations
 
