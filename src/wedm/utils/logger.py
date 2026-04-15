@@ -523,13 +523,15 @@ class SimulationLogger:
 
         if self.env and hasattr(self.env, "config"):
             try:
+                wire_diameter = float(self.env.config.wire_diameter)
+                workpiece_height = float(self.env.config.workpiece_height)
                 metadata.update(
                     {
-                        "wire_diameter": float(self.env.config.wire_diameter),
-                        "wire_diameter_um": float(self.env.config.wire_diameter * 1000),
+                        "wire_diameter": wire_diameter,
+                        "wire_diameter_um": float(wire_diameter * 1000),
                         "initial_gap": float(self.env.config.initial_gap),
-                        "workpiece_height": float(self.env.config.workpiece_height),
-                        "workpiece_height_mm": float(self.env.config.workpiece_height),
+                        "workpiece_height": workpiece_height,
+                        "workpiece_height_mm": workpiece_height,
                         "target_cutting_distance": float(
                             self.env.config.target_cutting_distance
                         ),
@@ -540,6 +542,19 @@ class SimulationLogger:
             except (AttributeError, TypeError, ValueError) as e:
                 logger.warning("Could not extract env config for metadata: %s", e)
                 return {}
+
+        state = getattr(self.env, "state", None) if self.env else None
+        if state is not None:
+            try:
+                wire_unwinding_speed = getattr(state, "wire_unwinding_velocity", None)
+                if wire_unwinding_speed is not None:
+                    metadata["wire_unwinding_speed_mm_per_ms"] = float(
+                        wire_unwinding_speed
+                    )
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "Could not extract wire unwinding speed for metadata: %s", e
+                )
 
         if self.env and hasattr(self.env, "material") and hasattr(self.env.material, "params"):
             try:

@@ -8,7 +8,10 @@ import {
     DEFAULT_WIRE_DIAMETER,
     DEFAULT_ZOOM_LEVEL,
     BASE_SPARK_PERSISTENCE_FRAMES,
+    SPARK_VISIBILITY_MS,
     TARGET_FPS,
+    NOZZLE_BUFFER_DISTANCE_MM,
+    VIEW_MARGIN_MM,
     COLORS
 } from '../utils/constants.js';
 
@@ -35,9 +38,7 @@ export class TopViewPanel extends BasePanel {
         this.activeSparks = [];
         this.baseSparkPersistenceFrames = BASE_SPARK_PERSISTENCE_FRAMES;
         this.lastFrameIndex = -1;
-
-        // Spark angle map
-        this.sparkAngles = new Map();
+        this.lastProcessedSparkTimeUs = -Infinity;
 
         // Spark visibility toggle
         this.showSparks = true;
@@ -50,7 +51,9 @@ export class TopViewPanel extends BasePanel {
             e.preventDefault();
             const zoomDelta = e.deltaY > 0 ? 1.2 : 0.8;
             this.zoomLevel *= zoomDelta;
-            this.zoomLevel = Math.max(0.05, Math.min(10000, this.zoomLevel));
+            const minViewHeight = (this.workpieceHeightMM || 20.0) / 2 + NOZZLE_BUFFER_DISTANCE_MM + VIEW_MARGIN_MM;
+            const maxZoom = Math.max(DEFAULT_ZOOM_LEVEL, minViewHeight / this.wireDiameter);
+            this.zoomLevel = Math.max(0.05, Math.min(maxZoom, this.zoomLevel));
 
             if (this.controller && this.controller.data) {
                 this.controller.drawFrame(this.controller.currentFrame);
@@ -101,6 +104,9 @@ export class TopViewPanel extends BasePanel {
 
     setData(data) {
         super.setData(data);
+        this.activeSparks = [];
+        this.lastFrameIndex = -1;
+        this.lastProcessedSparkTimeUs = -Infinity;
 
         if (data.metadata) {
             this.wireDiameter = data.metadata.wire_diameter || DEFAULT_WIRE_DIAMETER;
@@ -116,87 +122,145 @@ export class TopViewPanel extends BasePanel {
             }
         }
 
-        this.precomputeSparkAngles(data);
     }
 
-    precomputeSparkAngles(data) {
-        this.sparkAngles = new Map();
+    onHistoryTrim(droppedFrames) {
+        if (!Number.isFinite(droppedFrames) || droppedFrames <= 0) return;
 
-        if (!data) return;
-        const hasLegacySpark = Array.isArray(data.spark_status);
-        const hasSplitSpark = (data.spark_status_state && (Array.isArray(data.spark_status_state) || ArrayBuffer.isView(data.spark_status_state))) &&
-            (data.spark_status_location_mm && (Array.isArray(data.spark_status_location_mm) || ArrayBuffer.isView(data.spark_status_location_mm)));
-        if (!hasLegacySpark && !hasSplitSpark) return;
-        if (!data.wire_position || !data.workpiece_position) return;
+        this.activeSparks = this.activeSparks
+            .map((spark) => ({
+                ...spark,
+                startFrame: spark.startFrame - droppedFrames
+            }))
+            .filter((spark) => spark.startFrame >= 0);
+        this.lastFrameIndex = Math.max(-1, this.lastFrameIndex - droppedFrames);
+        if (this.activeSparks.length === 0) {
+            this.lastProcessedSparkTimeUs = -Infinity;
+        }
+    }
 
+    getDeterministicRandom(seed) {
+        const raw = Math.sin((seed + 1) * 12.9898) * 43758.5453;
+        return raw - Math.floor(raw);
+    }
+
+    sampleSparkAngle(gapUM, eventSeed) {
         const baseOvercutPerSideUM = (this.baseOvercut || 0.026) * 1000;
         const threshold = baseOvercutPerSideUM;
         const transitionRange = 5.0;
 
-        const sampleAngle = (gapUM) => {
-            let pSides;
+        let pSides;
+        if (gapUM < threshold - transitionRange) {
+            pSides = 0.0;
+        } else if (gapUM > threshold + transitionRange) {
+            pSides = 1.0;
+        } else {
+            pSides = (gapUM - (threshold - transitionRange)) / (2 * transitionRange);
+            pSides = Math.max(0, Math.min(1, pSides));
+        }
 
-            if (gapUM < threshold - transitionRange) {
-                pSides = 0.0;
-            } else if (gapUM > threshold + transitionRange) {
-                pSides = 1.0;
+        const chooseSides = this.getDeterministicRandom(eventSeed) < pSides;
+        let angle;
+        if (chooseSides) {
+            const u = this.getDeterministicRandom(eventSeed + 17);
+            const k = 20.0;
+            const pole = this.getDeterministicRandom(eventSeed + 29) < 0.5 ? Math.PI / 2 : -Math.PI / 2;
+            let offset;
+            if (u < 0.5) {
+                offset = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
             } else {
-                pSides = (gapUM - (threshold - transitionRange)) / (2 * transitionRange);
-                pSides = Math.max(0, Math.min(1, pSides));
+                offset = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
             }
-
-            const useSidesMode = Math.random() < pSides;
-            let angle;
-
-            if (useSidesMode) {
-                const u = Math.random();
-                const k = 20.0;
-                const pole = Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
-                let offset;
-                if (u < 0.5) {
-                    offset = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
-                } else {
-                    offset = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
-                }
-                angle = pole + offset;
-                if (angle > Math.PI) angle -= 2 * Math.PI;
-                if (angle < -Math.PI) angle += 2 * Math.PI;
+            angle = pole + offset;
+            if (angle > Math.PI) angle -= 2 * Math.PI;
+            if (angle < -Math.PI) angle += 2 * Math.PI;
+        } else {
+            const u = this.getDeterministicRandom(eventSeed + 43);
+            const k = 5.0;
+            if (u < 0.5) {
+                angle = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
             } else {
-                const u = Math.random();
-                const k = 5.0;
-                if (u < 0.5) {
-                    angle = -Math.log(1 - 2 * u * (1 - Math.exp(-k * Math.PI / 2))) / k;
-                } else {
-                    angle = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
-                }
-                angle = Math.max(-Math.PI / 2 + 0.001, Math.min(Math.PI / 2 - 0.001, angle));
+                angle = Math.log(2 * (u - 0.5) * (1 - Math.exp(-k * Math.PI / 2)) + Math.exp(-k * Math.PI / 2)) / k;
             }
+            angle = Math.max(-Math.PI / 2 + 0.001, Math.min(Math.PI / 2 - 0.001, angle));
+        }
 
-            return angle;
+        return angle;
+    }
+
+    createSparkRecord(locationMM, startFrame, gapUM, eventSeed) {
+        return {
+            locationMM,
+            startFrame,
+            startRenderTimeMs: null,
+            intensity: 1.0,
+            angle: this.sampleSparkAngle(gapUM, eventSeed)
         };
+    }
 
-        const totalFrames = data.time ? data.time.length : (hasLegacySpark ? data.spark_status.length : data.spark_status_state.length);
-        if (hasLegacySpark) {
-            data.spark_status.forEach((status, frameIndex) => {
-                if (status && status[0] === 1 && status[1] !== null) {
-                    const wirePos = data.wire_position[frameIndex] || 0;
-                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
-                    const gapUM = workpiecePos - wirePos;
-                    const angle = sampleAngle(gapUM);
-                    this.sparkAngles.set(frameIndex, angle);
+    ingestSparkData(frameData, frameIndex) {
+        if (!frameData) return;
+
+        if (frameIndex < this.lastFrameIndex) {
+            this.activeSparks = [];
+            this.lastProcessedSparkTimeUs = -Infinity;
+        }
+        this.lastFrameIndex = frameIndex;
+
+        const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
+        const isLiveRender = Number.isFinite(liveRenderTimeMs);
+        const gapUM = (frameData.workpiece_position || 0) - (frameData.wire_position || 0);
+
+        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
+            frameData.accumulatedSparks.forEach(spark => {
+                const sparkSeed = Number.isFinite(spark.timeUS) ? spark.timeUS : spark.frameIndex;
+                const sparkGapUM = Number.isFinite(spark.gapUM) ? spark.gapUM : gapUM;
+                if (!Number.isFinite(spark.timeUS) || spark.timeUS > this.lastProcessedSparkTimeUs) {
+                    const sparkRecord = this.createSparkRecord(
+                        spark.locationMM,
+                        spark.frameIndex,
+                        sparkGapUM,
+                        sparkSeed
+                    );
+                    sparkRecord.startRenderTimeMs = isLiveRender ? liveRenderTimeMs : null;
+                    this.activeSparks.push(sparkRecord);
+                    if (Number.isFinite(spark.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, spark.timeUS);
+                    }
                 }
             });
-        } else if (hasSplitSpark) {
-            const s = data.spark_status_state;
-            for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-                const state = s[frameIndex];
-                if (state === 1) {
-                    const wirePos = data.wire_position[frameIndex] || 0;
-                    const workpiecePos = data.workpiece_position[frameIndex] || 0;
-                    const gapUM = workpiecePos - wirePos;
-                    const angle = sampleAngle(gapUM);
-                    this.sparkAngles.set(frameIndex, angle);
+        }
+
+        if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
+            frameData.spark_events.forEach((sparkEvent) => {
+                const sparkSeed = Number.isFinite(sparkEvent.timeUS) ? sparkEvent.timeUS : frameIndex;
+                if (!Number.isFinite(sparkEvent.timeUS) || sparkEvent.timeUS > this.lastProcessedSparkTimeUs) {
+                    const sparkRecord = this.createSparkRecord(
+                        sparkEvent.locationMM,
+                        frameIndex,
+                        gapUM,
+                        sparkSeed
+                    );
+                    sparkRecord.startRenderTimeMs = isLiveRender ? liveRenderTimeMs : null;
+                    this.activeSparks.push(sparkRecord);
+                    if (Number.isFinite(sparkEvent.timeUS)) {
+                        this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkEvent.timeUS);
+                    }
                 }
+            });
+        } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const sparkLocationMM = frameData.spark_status[1];
+            const sparkSeed = Number.isFinite(frameData.time) ? Number(frameData.time) : frameIndex;
+            if (sparkSeed > this.lastProcessedSparkTimeUs) {
+                const sparkRecord = this.createSparkRecord(
+                    sparkLocationMM,
+                    frameIndex,
+                    gapUM,
+                    sparkSeed
+                );
+                sparkRecord.startRenderTimeMs = isLiveRender ? liveRenderTimeMs : null;
+                this.activeSparks.push(sparkRecord);
+                this.lastProcessedSparkTimeUs = Math.max(this.lastProcessedSparkTimeUs, sparkSeed);
             }
         }
     }
@@ -251,46 +315,36 @@ export class TopViewPanel extends BasePanel {
         this.ctx.translate(-this.cameraX * this.scale, 0);
 
         // Handle spark persistence
-        if (frameIndex < this.lastFrameIndex) {
-            this.activeSparks = [];
-        }
-        this.lastFrameIndex = frameIndex;
-
-        if (frameData.accumulatedSparks && frameData.accumulatedSparks.length > 0) {
-            frameData.accumulatedSparks.forEach(spark => {
-                this.activeSparks.push({
-                    locationMM: spark.locationMM,
-                    startFrame: spark.frameIndex,
-                    intensity: 1.0
-                });
-            });
-        }
-
-        if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
-            const sparkLocationMM = frameData.spark_status[1];
-            this.activeSparks.push({
-                locationMM: sparkLocationMM,
-                startFrame: frameIndex,
-                intensity: 1.0
-            });
-        }
+        this.ingestSparkData(frameData, frameIndex);
+        const liveRenderTimeMs = Number(frameData.liveRenderTimeMs);
+        const isLiveRender = Number.isFinite(liveRenderTimeMs);
 
         const playbackSpeed = this.controller ? this.controller.playbackSpeed : TARGET_FPS;
         const framesPerDisplayFrame = Math.max(1, Math.round(playbackSpeed / TARGET_FPS));
         const sparkPersistenceFrames = Math.max(this.baseSparkPersistenceFrames, framesPerDisplayFrame * 12);
+        const sparkPersistenceMs = SPARK_VISIBILITY_MS;
 
-        this.activeSparks = this.activeSparks.filter(
-            spark => (frameIndex - spark.startFrame) < sparkPersistenceFrames
-        );
+        this.activeSparks = this.activeSparks.filter((spark) => {
+            if (isLiveRender && Number.isFinite(spark.startRenderTimeMs)) {
+                return (liveRenderTimeMs - spark.startRenderTimeMs) < sparkPersistenceMs;
+            }
+            return (frameIndex - spark.startFrame) < sparkPersistenceFrames;
+        });
 
         // Draw layers
         this.drawKerf(wireCenterX, wireRadius, frontierCenterX, frontierRadius);
 
         if (this.showSparks) {
             this.activeSparks.forEach(spark => {
-                const age = frameIndex - spark.startFrame;
-                const decayFactor = 1.0 - (age / sparkPersistenceFrames);
-                this.drawSpark(wireCenterX, wireRadius, spark.locationMM, gapUM, decayFactor, spark.startFrame);
+                let decayFactor;
+                if (isLiveRender && Number.isFinite(spark.startRenderTimeMs)) {
+                    const ageMs = liveRenderTimeMs - spark.startRenderTimeMs;
+                    decayFactor = 1.0 - (ageMs / sparkPersistenceMs);
+                } else {
+                    const age = frameIndex - spark.startFrame;
+                    decayFactor = 1.0 - (age / sparkPersistenceFrames);
+                }
+                this.drawSpark(wireCenterX, wireRadius, spark.locationMM, gapUM, decayFactor, spark.angle);
             });
         }
 
@@ -473,10 +527,9 @@ export class TopViewPanel extends BasePanel {
         }
     }
 
-    drawSpark(wireX, wireRadius, sparkLocationMM, gapUM, decayFactor, sparkFrameIndex) {
+    drawSpark(wireX, wireRadius, sparkLocationMM, gapUM, decayFactor, angle) {
         const wireCenterXPx = wireX * this.scale;
         const wireRadiusPx = wireRadius * this.scale;
-        const angle = this.sparkAngles.get(sparkFrameIndex) || 0;
 
         const extensionFactor = 0.4;
         const sparkStartRadiusMM = -wireRadius * extensionFactor;

@@ -4,6 +4,7 @@
  */
 
 import { loadSparcPack } from './utils/dataLoader.js';
+import { FileDashboardDataSource, LiveDashboardDataSource } from './utils/dataSource.js';
 import {
     DEFAULT_PLAYBACK_SPEED,
     TARGET_FPS,
@@ -18,16 +19,36 @@ import { OscilloscopePanel } from './panels/OscilloscopePanel.js';
 import { TopViewPanel } from './panels/TopViewPanel.js';
 import { ThermalProfilePanel } from './panels/ThermalProfilePanel.js';
 
+const REALTIME_SCHEMA_VERSION = 1;
+
+const LIVE_SETPOINT_CONFIG = {
+    gap: { param: 'target_gap', label: 'Target Gap (um)', min: '0', step: '0.1' },
+    voltage: { param: 'target_avg_voltage', label: 'Target Vavg (V)', min: '0', step: '0.1' },
+    'fixed-servo': { param: 'fixed_servo', label: 'Servo Command', step: '0.01' }
+};
+
 export class DashboardController {
     constructor() {
         this.data = null;
+        this.dataSource = null;
         this.currentFrame = 0;
         this.isPlaying = false;
         this.animationId = null;
+        this.liveAnimationId = null;
         this.playbackSpeed = DEFAULT_PLAYBACK_SPEED;
         this.lastFrameTime = 0;
         this.frameAccumulator = 0;
         this.viewsLinked = true;
+        this.followLiveTail = true;
+        this.dataSourceSubscription = null;
+        this.liveControlTimers = new Map();
+        this.liveLastError = null;
+        this.liveLastProcessFrameWallMs = null;
+        this.currentMode = 'file';
+        this.selectedMaterialTrace = null;
+        this.selectedMaterialAnchor = null;
+        this.selectedSegmentClickIndex = null;
+        this.damagePlotCache = null;
 
         // Panel instances
         this.panels = {
@@ -40,9 +61,185 @@ export class DashboardController {
         this.init();
     }
 
+    setDataSource(dataSource) {
+        this.clearLiveControlTimers();
+        if (this.dataSource && this.dataSourceSubscription) {
+            this.dataSourceSubscription();
+            this.dataSourceSubscription = null;
+        }
+        if (this.dataSource && this.dataSource.isLive) {
+            this.dataSource.disconnect();
+        }
+
+        this.dataSource = dataSource;
+        this.data = dataSource ? dataSource.getData() : null;
+        this.liveLastError = null;
+
+        if (this.dataSource && this.dataSource.subscribe) {
+            this.dataSourceSubscription = this.dataSource.subscribe((event) => this.handleDataSourceEvent(event));
+        }
+
+        Object.values(this.panels).forEach(panel => {
+            if (panel.setData) {
+                panel.setData(this.data);
+            }
+        });
+
+        this.refreshTimelineBounds();
+        this.updateModeLayout();
+        this.updateLiveControls();
+    }
+
+    handleDataSourceEvent(event) {
+        if (!event) return;
+
+        if (event.type === 'header') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastError = null;
+            this.liveLastProcessFrameWallMs = null;
+            this.clearSelectedMaterialTracking();
+            if (this.elements.damageWindow) {
+                this.elements.damageWindow.style.display = 'none';
+            }
+            Object.values(this.panels).forEach(panel => {
+                if (panel.setData) {
+                    panel.setData(this.data);
+                }
+            });
+            this.refreshTimelineBounds();
+            this.updateLiveControls();
+            this.drawFrame(this.currentFrame);
+            return;
+        }
+
+        if (event.type === 'process_frame') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastProcessFrameWallMs = performance.now();
+            if (event.droppedFrames > 0) {
+                this.handleHistoryTrim(event.droppedFrames);
+            }
+            this.extendSelectedMaterialTraceToLatestFrame();
+            this.refreshTimelineBounds();
+            this.updateLiveControls();
+            const latestFrame = this.getTotalFrames() - 1;
+            if (
+                this.dataSource &&
+                this.dataSource.isLive &&
+                latestFrame >= 0 &&
+                (this.followLiveTail || this.currentFrame >= latestFrame)
+            ) {
+                this.ingestLiveSparks(latestFrame, this.liveLastProcessFrameWallMs);
+            }
+            if (this.dataSource && this.dataSource.isLive && this.followLiveTail && !this.isPlaying) {
+                this.currentFrame = Math.max(0, latestFrame);
+                this.elements.timeline.value = this.currentFrame;
+                this.updateTimeDisplay();
+                if (!this.liveAnimationId) {
+                    this.drawFrame(this.currentFrame);
+                }
+            }
+            return;
+        }
+
+        if (event.type === 'pulse_chunk') {
+            if (this.dataSource && this.dataSource.isLive && !this.isPlaying && this.getTotalFrames() > 0) {
+                const latestFrame = Math.max(0, this.getTotalFrames() - 1);
+                if ((this.followLiveTail || this.currentFrame >= latestFrame) && !this.liveAnimationId) {
+                    this.drawFrame(this.currentFrame);
+                }
+            }
+            return;
+        }
+
+        if (event.type === 'session_state') {
+            this.data = this.dataSource ? this.dataSource.getData() : this.data;
+            this.liveLastError = null;
+            this.updateLiveControls();
+            return;
+        }
+
+        if (event.type === 'reconnecting' || event.type === 'connected' || event.type === 'disconnected' || event.type === 'error') {
+            if (event.type === 'error') {
+                this.liveLastError = this.extractLiveErrorMessage(event.error);
+            } else if (event.type === 'connected') {
+                this.liveLastError = null;
+            }
+            this.updateLiveControls();
+            console.info('Dashboard data source event:', event);
+        }
+    }
+
+    handleHistoryTrim(droppedFrames) {
+        if (!Number.isFinite(droppedFrames) || droppedFrames <= 0) return;
+
+        if (!this.followLiveTail) {
+            this.currentFrame = Math.max(0, this.currentFrame - droppedFrames);
+        }
+
+        if (this.selectedMaterialTrace) {
+            const shiftedTrace = new Map();
+            for (const [frameIndex, segmentIndex] of this.selectedMaterialTrace.entries()) {
+                const shiftedFrame = frameIndex - droppedFrames;
+                if (shiftedFrame >= 0) {
+                    shiftedTrace.set(shiftedFrame, segmentIndex);
+                }
+            }
+            this.selectedMaterialTrace = shiftedTrace.size > 0 ? shiftedTrace : null;
+            if (this.selectedMaterialAnchor) {
+                this.selectedMaterialAnchor = {
+                    ...this.selectedMaterialAnchor,
+                    frameIndex: this.selectedMaterialAnchor.frameIndex - droppedFrames
+                };
+            }
+            this.normalizeSelectedMaterialAnchor();
+            this.damagePlotCache = null;
+            if (!this.selectedMaterialTrace && this.elements.damageWindow) {
+                this.selectedMaterialAnchor = null;
+                this.elements.damageWindow.style.display = 'none';
+            }
+        }
+
+        Object.values(this.panels).forEach(panel => {
+            if (panel && panel.onHistoryTrim) {
+                panel.onHistoryTrim(droppedFrames);
+            }
+        });
+    }
+
+    async connectLiveStream(url, options = {}) {
+        const source = new LiveDashboardDataSource(url, options);
+        this.setDataSource(source);
+        await source.connect();
+        return source;
+    }
+
+    disconnectLiveStream() {
+        if (this.dataSource && this.dataSource.isLive) {
+            this.dataSource.disconnect();
+        }
+    }
+
+    getTotalFrames() {
+        if (this.dataSource) {
+            return this.dataSource.getFrameCount();
+        }
+        if (!this.data || !this.data.time) return 0;
+        return this.data.time.length || 0;
+    }
+
+    refreshTimelineBounds() {
+        const totalFrames = this.getTotalFrames();
+        const maxFrame = Math.max(0, totalFrames - 1);
+        this.elements.timeline.max = maxFrame;
+        this.currentFrame = Math.max(0, Math.min(this.currentFrame, maxFrame));
+        this.elements.timeline.value = this.currentFrame;
+    }
+
     init() {
         // Get DOM elements
         this.elements = {
+            modeBadge: document.getElementById('modeBadge'),
+            recordingControls: document.getElementById('recordingControls'),
             loadData: document.getElementById('loadData'),
             fileInput: document.getElementById('fileInput'),
             playPause: document.getElementById('playPause'),
@@ -52,6 +249,23 @@ export class DashboardController {
             timeline: document.getElementById('timeline'),
             frameCounter: document.getElementById('frameCounter'),
             timeDisplay: document.getElementById('timeDisplay'),
+            liveControls: document.getElementById('liveControls'),
+            liveConnectionState: document.getElementById('liveConnectionState'),
+            liveSessionState: document.getElementById('liveSessionState'),
+            liveControllerType: document.getElementById('liveControllerType'),
+            liveSimTime: document.getElementById('liveSimTime'),
+            liveFrameBuffer: document.getElementById('liveFrameBuffer'),
+            liveControllerSelect: document.getElementById('liveControllerSelect'),
+            liveSetpointLabel: document.getElementById('liveSetpointLabel'),
+            liveSetpointValue: document.getElementById('liveSetpointValue'),
+            liveSlowdownFactor: document.getElementById('liveSlowdownFactor'),
+            liveGeneratorVoltage: document.getElementById('liveGeneratorVoltage'),
+            liveCurrentMode: document.getElementById('liveCurrentMode'),
+            liveOffTime: document.getElementById('liveOffTime'),
+            livePauseResume: document.getElementById('livePauseResume'),
+            liveRestart: document.getElementById('liveRestart'),
+            liveStop: document.getElementById('liveStop'),
+            liveControlNote: document.getElementById('liveControlNote'),
             loadingOverlay: document.getElementById('loadingOverlay'),
             speedControl: document.getElementById('speedControl'),
             timebaseControl: document.getElementById('timebaseControl'),
@@ -102,6 +316,7 @@ export class DashboardController {
             this.elements.triggerSource.addEventListener('change', onTriggerChange);
             this.elements.triggerSlope.addEventListener('change', onTriggerChange);
             this.elements.triggerLevel.addEventListener('change', onTriggerChange);
+            this.elements.triggerLevel.addEventListener('input', onTriggerChange);
             if (this.elements.triggerDelay) {
                 this.elements.triggerDelay.addEventListener('change', onTriggerChange);
                 this.elements.triggerDelay.addEventListener('input', onTriggerChange);
@@ -144,6 +359,8 @@ export class DashboardController {
             this.elements.iPerDiv.addEventListener('change', onScaleChange);
         }
 
+        this.setupLiveControls();
+
         // Initialize panels
         this.initializePanels();
 
@@ -155,6 +372,525 @@ export class DashboardController {
 
         // Setup damage window controls
         this.setupDamageWindow();
+        this.updateModeLayout();
+    }
+
+    setupLiveControls() {
+        const bindDebouncedNumberInput = (element, key, callback, delayMs = 180) => {
+            if (!element) return;
+
+            const dispatch = () => {
+                const value = parseFloat(element.value);
+                if (!Number.isFinite(value)) return;
+                callback(value);
+            };
+
+            element.addEventListener('input', () => {
+                this.scheduleLiveControl(key, dispatch, delayMs);
+            });
+            element.addEventListener('change', () => {
+                this.cancelLiveControl(key);
+                dispatch();
+            });
+        };
+
+        bindDebouncedNumberInput(
+            this.elements.liveSlowdownFactor,
+            'slowdown_factor',
+            (value) => {
+                const clampedValue = this.clampRequestedLivePace(value);
+                if (!Number.isFinite(clampedValue) || clampedValue <= 0) {
+                    return;
+                }
+                if (this.elements.liveSlowdownFactor) {
+                    this.elements.liveSlowdownFactor.value = this.formatLiveControlValue(clampedValue, 0);
+                }
+                this.sendLiveSpeed(clampedValue);
+            }
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveGeneratorVoltage,
+            'generator_voltage',
+            (value) => this.sendLiveParam('generator_voltage', value)
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveOffTime,
+            'off_time',
+            (value) => this.sendLiveParam('off_time', value)
+        );
+        bindDebouncedNumberInput(
+            this.elements.liveSetpointValue,
+            'active_setpoint',
+            (value) => {
+                const config = this.getActiveLiveSetpointConfig();
+                if (config) {
+                    this.sendLiveParam(config.param, value);
+                }
+            }
+        );
+
+        if (this.elements.liveControllerSelect) {
+            this.elements.liveControllerSelect.addEventListener('change', () => {
+                const value = this.elements.liveControllerSelect.value;
+                if (value) {
+                    this.sendLiveParam('controller_type', value);
+                }
+            });
+        }
+
+        if (this.elements.liveCurrentMode) {
+            this.elements.liveCurrentMode.addEventListener('change', () => {
+                const value = parseInt(this.elements.liveCurrentMode.value, 10);
+                if (Number.isFinite(value)) {
+                    this.sendLiveParam('current_mode', value);
+                }
+            });
+        }
+
+        if (this.elements.livePauseResume) {
+            this.elements.livePauseResume.addEventListener('click', () => this.handleLivePauseResume());
+        }
+        if (this.elements.liveRestart) {
+            this.elements.liveRestart.addEventListener('click', () => this.sendLiveCommand('restart'));
+        }
+        if (this.elements.liveStop) {
+            this.elements.liveStop.addEventListener('click', () => this.sendLiveCommand('stop'));
+        }
+
+        this.updateLiveControls();
+    }
+
+    scheduleLiveControl(key, callback, delayMs = 180) {
+        this.cancelLiveControl(key);
+        const timer = setTimeout(() => {
+            this.liveControlTimers.delete(key);
+            callback();
+        }, delayMs);
+        this.liveControlTimers.set(key, timer);
+    }
+
+    cancelLiveControl(key) {
+        if (!this.liveControlTimers.has(key)) return;
+        clearTimeout(this.liveControlTimers.get(key));
+        this.liveControlTimers.delete(key);
+    }
+
+    clearLiveControlTimers() {
+        this.liveControlTimers.forEach((timerId) => clearTimeout(timerId));
+        this.liveControlTimers.clear();
+    }
+
+    sendLiveCommand(type, payload = {}) {
+        if (!this.dataSource || !this.dataSource.isLive || typeof this.dataSource.send !== 'function') {
+            return false;
+        }
+
+        const sent = this.dataSource.send({
+            v: REALTIME_SCHEMA_VERSION,
+            type,
+            payload
+        });
+        if (!sent) {
+            this.liveLastError = 'live websocket is not connected';
+            this.updateLiveControls();
+        }
+        return sent;
+    }
+
+    sendLiveParam(name, value) {
+        return this.sendLiveCommand('set_param', { name, value });
+    }
+
+    clampRequestedLivePace(simUsPerWallSecond) {
+        const requested = Number(simUsPerWallSecond);
+        if (!Number.isFinite(requested) || requested <= 0) {
+            return null;
+        }
+
+        const maxPace = Number(this.data?.live_session?.maxSimUsPerWallSecond);
+        if (Number.isFinite(maxPace) && maxPace > 0) {
+            return Math.min(requested, maxPace);
+        }
+        return requested;
+    }
+
+    sendLiveSpeed(simUsPerWallSecond) {
+        const pace = Number(simUsPerWallSecond);
+        if (!Number.isFinite(pace) || pace <= 0) {
+            return false;
+        }
+        return this.sendLiveCommand('set_speed', { slowdown_factor: 1000000 / pace });
+    }
+
+    handleLivePauseResume() {
+        const sessionState = this.data && this.data.live_session ? this.data.live_session.sessionState : 'stopped';
+        if (sessionState === 'paused') {
+            return this.sendLiveCommand('resume');
+        }
+        if (sessionState === 'stopped') {
+            return false;
+        }
+        return this.sendLiveCommand('pause');
+    }
+
+    getActiveLiveSetpointConfig() {
+        const currentParams = this.data && this.data.live_session ? this.data.live_session.currentParams || {} : {};
+        const controllerType =
+            currentParams.controller_type ||
+            (this.data && this.data.metadata ? this.data.metadata.controller_strategy : null);
+        return LIVE_SETPOINT_CONFIG[controllerType] || null;
+    }
+
+    extractLiveErrorMessage(error) {
+        if (!error) return null;
+        if (typeof error === 'string') return error;
+        if (error.payload && typeof error.payload.message === 'string') return error.payload.message;
+        if (typeof error.message === 'string') return error.message;
+        return 'live session error';
+    }
+
+    formatLiveControlValue(value, digits = 3) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return '';
+        if (Number.isInteger(numeric)) {
+            return String(numeric);
+        }
+        return String(Number(numeric.toFixed(digits)));
+    }
+
+    isLiveMode() {
+        return !!(this.dataSource && this.dataSource.isLive);
+    }
+
+    updateModeLayout() {
+        const isLiveMode = this.isLiveMode();
+        const nextMode = isLiveMode ? 'live' : 'file';
+        const modeChanged = nextMode !== this.currentMode;
+        this.currentMode = nextMode;
+        if (document.body) {
+            document.body.classList.toggle('mode-live', isLiveMode);
+            document.body.classList.toggle('mode-file', !isLiveMode);
+        }
+
+        if (this.elements.modeBadge) {
+            this.elements.modeBadge.textContent = isLiveMode ? 'Live' : 'Recording';
+            this.elements.modeBadge.classList.toggle('mode-badge-live', isLiveMode);
+            this.elements.modeBadge.classList.toggle('mode-badge-file', !isLiveMode);
+        }
+
+        if (isLiveMode) {
+            this.followLiveTail = true;
+            if (this.isPlaying) {
+                this.pause();
+                this.isPlaying = false;
+                this.updatePlayPauseIcon();
+            }
+            this.startLiveRenderLoop();
+        } else {
+            this.stopLiveRenderLoop();
+            this.liveLastProcessFrameWallMs = null;
+        }
+
+        if (modeChanged) {
+            requestAnimationFrame(() => this.handleResize());
+        }
+    }
+
+    startLiveRenderLoop() {
+        if (this.liveAnimationId) return;
+
+        const render = (renderTimeMs) => {
+            if (!this.isLiveMode()) {
+                this.liveAnimationId = null;
+                return;
+            }
+
+            if (this.data && this.getTotalFrames() > 0) {
+                if (this.followLiveTail) {
+                    this.currentFrame = Math.max(0, this.getTotalFrames() - 1);
+                }
+                this.drawFrame(this.currentFrame, { renderTimeMs });
+            }
+
+            this.liveAnimationId = requestAnimationFrame(render);
+        };
+
+        this.liveAnimationId = requestAnimationFrame(render);
+    }
+
+    stopLiveRenderLoop() {
+        if (!this.liveAnimationId) return;
+        cancelAnimationFrame(this.liveAnimationId);
+        this.liveAnimationId = null;
+    }
+
+    formatSimTimeShort(timeUs) {
+        const numeric = Number(timeUs);
+        if (!Number.isFinite(numeric) || numeric < 0) return '--';
+        if (numeric >= 1000000) {
+            return `${this.formatLiveControlValue(numeric / 1000000, 3)} s`;
+        }
+        if (numeric >= 1000) {
+            return `${this.formatLiveControlValue(numeric / 1000, 3)} ms`;
+        }
+        return `${this.formatLiveControlValue(numeric, 1)} us`;
+    }
+
+    getLivePaceMetrics(slowdownFactor) {
+        const slowdown = Number(slowdownFactor);
+        const servoIntervalUs = Number(this.data?.metadata?.servo_interval_us) || 1000;
+
+        if (!Number.isFinite(slowdown) || slowdown <= 0) {
+            return {
+                controlStepSimUs: servoIntervalUs,
+                wallMsPerControlStep: null,
+                updatesPerWallSecond: null,
+                simUsPerWallSecond: null
+            };
+        }
+
+        return {
+            controlStepSimUs: servoIntervalUs,
+            wallMsPerControlStep: (servoIntervalUs * slowdown) / 1000,
+            updatesPerWallSecond: 1000000 / (servoIntervalUs * slowdown),
+            simUsPerWallSecond: 1000000 / slowdown
+        };
+    }
+
+    formatSimUsPerWallSecond(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) return '--';
+        return `${this.formatLiveControlValue(numeric, 0)} us/s`;
+    }
+
+    getLiveRequestedPace() {
+        const requestedSlowdownFactor = Number(this.data?.live_session?.requestedSlowdownFactor);
+        if (!Number.isFinite(requestedSlowdownFactor) || requestedSlowdownFactor <= 0) {
+            return null;
+        }
+        return this.getLivePaceMetrics(requestedSlowdownFactor).simUsPerWallSecond;
+    }
+
+    getLiveRenderableFrameData(frameIndex, renderTimeMs = performance.now()) {
+        const frameData = this.getFrameData(frameIndex);
+        frameData.isLiveMode = true;
+        frameData.liveRenderTimeMs = renderTimeMs;
+
+        const totalFrames = this.getTotalFrames();
+        if (frameIndex !== totalFrames - 1) {
+            return frameData;
+        }
+
+        const liveSession = this.data?.live_session || {};
+        const currentParams = liveSession.currentParams || {};
+        const slowdownFactor = Number(currentParams.slowdown_factor);
+        const sessionState = liveSession.sessionState || 'created';
+        const connectionState = liveSession.connectionState || 'disconnected';
+        const servoIntervalUs = Number(this.data?.metadata?.servo_interval_us) || 1000;
+
+        if (
+            sessionState !== 'running' ||
+            connectionState !== 'connected' ||
+            !Number.isFinite(slowdownFactor) ||
+            slowdownFactor <= 0 ||
+            !Number.isFinite(this.liveLastProcessFrameWallMs)
+        ) {
+            return frameData;
+        }
+
+        const elapsedWallMs = Math.max(0, renderTimeMs - this.liveLastProcessFrameWallMs);
+        const extrapolatedSimUs = Math.min(servoIntervalUs, (elapsedWallMs * 1000) / slowdownFactor);
+        if (!Number.isFinite(extrapolatedSimUs) || extrapolatedSimUs <= 0) {
+            return frameData;
+        }
+
+        const wirePosition = Number(frameData.wire_position);
+        const wireVelocity = Number(frameData.wire_velocity);
+        if (Number.isFinite(wirePosition) && Number.isFinite(wireVelocity)) {
+            frameData.wire_position = wirePosition + wireVelocity * (extrapolatedSimUs / 1000000);
+        }
+
+        const timeUs = Number(frameData.time);
+        if (Number.isFinite(timeUs)) {
+            frameData.time = timeUs + extrapolatedSimUs;
+        }
+        frameData.liveExtrapolatedSimUs = extrapolatedSimUs;
+
+        return frameData;
+    }
+
+    setLiveBadgeState(element, prefix, value, classValue = value) {
+        if (!element) return;
+        const normalized = String(value || 'unknown');
+        const className = String(classValue || value || 'unknown');
+        const stateClass = `state-${className.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
+        element.className = `live-status-badge ${stateClass}`;
+        element.textContent = `${prefix} ${normalized}`;
+    }
+
+    syncLiveInputValue(element, value, digits = 3) {
+        if (!element) return;
+        if (document.activeElement === element) return;
+        element.value = this.formatLiveControlValue(value, digits);
+    }
+
+    updateLiveControls() {
+        const liveSession = this.data && this.data.live_session ? this.data.live_session : {};
+        const isLiveSource = this.isLiveMode();
+        const connectionState = liveSession.connectionState || (isLiveSource ? 'disconnected' : 'file');
+        const sessionState = liveSession.sessionState || (isLiveSource ? 'created' : 'stopped');
+        const supportedParams = Array.isArray(liveSession.supportedParams) ? liveSession.supportedParams : [];
+        const currentParams = liveSession.currentParams || {};
+        const controllerType =
+            currentParams.controller_type ||
+            (this.data && this.data.metadata ? this.data.metadata.controller_strategy : null);
+        const setpointConfig = LIVE_SETPOINT_CONFIG[controllerType] || null;
+        const isConnected = isLiveSource && connectionState === 'connected';
+        const solverLimited = !!liveSession.solverLimited;
+        const requestedPace = this.getLiveRequestedPace();
+        const maxSustainablePace = Number(liveSession.maxSimUsPerWallSecond);
+        const controlComputeWallS = Number(liveSession.controlComputeWallS);
+        const terminationReason = liveSession.terminationReason || null;
+        const lastError = liveSession.lastError || this.liveLastError;
+
+        if (this.elements.liveControls) {
+            this.elements.liveControls.classList.toggle('live-disabled', !isConnected);
+        }
+
+        this.setLiveBadgeState(this.elements.liveConnectionState, 'WS', connectionState);
+        const sessionBadgeValue =
+            sessionState === 'stopped' && terminationReason === 'wire_broken'
+                ? 'wire broken'
+                : sessionState;
+        this.setLiveBadgeState(
+            this.elements.liveSessionState,
+            'Session',
+            sessionBadgeValue,
+            sessionState
+        );
+
+        if (this.elements.liveControllerType) {
+            this.elements.liveControllerType.textContent = controllerType
+                ? `Strategy: ${controllerType}`
+                : 'Strategy: unavailable';
+        }
+
+        if (this.elements.liveSimTime) {
+            const latestTimeSeries = this.data && this.data.time;
+            const latestTimeUs = latestTimeSeries && latestTimeSeries.length > 0
+                ? latestTimeSeries[latestTimeSeries.length - 1]
+                : null;
+            this.elements.liveSimTime.textContent = `Sim: ${this.formatSimTimeShort(latestTimeUs)}`;
+        }
+        if (this.elements.liveFrameBuffer) {
+            this.elements.liveFrameBuffer.textContent = `Buffered frames: ${this.getTotalFrames()}`;
+        }
+
+        if (this.elements.liveSetpointLabel) {
+            this.elements.liveSetpointLabel.textContent = setpointConfig ? setpointConfig.label : 'Setpoint';
+        }
+        if (this.elements.liveSetpointValue && setpointConfig) {
+            if (setpointConfig.min !== undefined) {
+                this.elements.liveSetpointValue.min = setpointConfig.min;
+            } else {
+                this.elements.liveSetpointValue.removeAttribute('min');
+            }
+            if (setpointConfig.step !== undefined) {
+                this.elements.liveSetpointValue.step = setpointConfig.step;
+            }
+        }
+
+        const currentPace = this.getLivePaceMetrics(currentParams.slowdown_factor).simUsPerWallSecond;
+        this.syncLiveInputValue(
+            this.elements.liveSlowdownFactor,
+            Number.isFinite(requestedPace) ? requestedPace : currentPace,
+            0
+        );
+        if (this.elements.liveSlowdownFactor) {
+            if (Number.isFinite(maxSustainablePace) && maxSustainablePace > 0) {
+                this.elements.liveSlowdownFactor.max = String(Math.max(1, Math.floor(maxSustainablePace)));
+            } else {
+                this.elements.liveSlowdownFactor.removeAttribute('max');
+            }
+        }
+        this.syncLiveInputValue(this.elements.liveGeneratorVoltage, currentParams.generator_voltage, 2);
+        this.syncLiveInputValue(this.elements.liveOffTime, currentParams.off_time, 3);
+        if (this.elements.liveControllerSelect && document.activeElement !== this.elements.liveControllerSelect) {
+            const nextControllerType = controllerType || 'gap';
+            this.elements.liveControllerSelect.value = nextControllerType;
+        }
+        if (setpointConfig) {
+            this.syncLiveInputValue(this.elements.liveSetpointValue, currentParams[setpointConfig.param], 3);
+        }
+        if (this.elements.liveCurrentMode && document.activeElement !== this.elements.liveCurrentMode) {
+            const currentMode = currentParams.current_mode;
+            this.elements.liveCurrentMode.value = Number.isFinite(Number(currentMode)) ? String(currentMode) : '';
+        }
+
+        const setDisabled = (element, disabled) => {
+            if (element) {
+                element.disabled = disabled;
+            }
+        };
+
+        setDisabled(this.elements.liveControllerSelect, !isConnected || !supportedParams.includes('controller_type'));
+        setDisabled(this.elements.liveSlowdownFactor, !isConnected || !supportedParams.includes('slowdown_factor'));
+        setDisabled(this.elements.liveGeneratorVoltage, !isConnected || !supportedParams.includes('generator_voltage'));
+        setDisabled(this.elements.liveCurrentMode, !isConnected || !supportedParams.includes('current_mode'));
+        setDisabled(this.elements.liveOffTime, !isConnected || !supportedParams.includes('off_time'));
+        setDisabled(
+            this.elements.liveSetpointValue,
+            !isConnected || !setpointConfig || !supportedParams.includes(setpointConfig.param)
+        );
+
+        if (this.elements.livePauseResume) {
+            this.elements.livePauseResume.textContent = sessionState === 'paused' ? 'Resume' : 'Pause';
+            this.elements.livePauseResume.disabled = !isConnected || sessionState === 'stopped';
+        }
+        if (this.elements.liveStop) {
+            this.elements.liveStop.disabled = !isConnected || sessionState === 'stopped';
+        }
+        if (this.elements.liveRestart) {
+            this.elements.liveRestart.disabled = !isConnected || sessionState !== 'stopped';
+        }
+
+        if (this.elements.liveControlNote) {
+            const requestedPaceIsCapped =
+                Number.isFinite(requestedPace) &&
+                requestedPace > 0 &&
+                Number.isFinite(maxSustainablePace) &&
+                maxSustainablePace > 0 &&
+                requestedPace > (maxSustainablePace * 1.001);
+            if (!isLiveSource) {
+                this.elements.liveControlNote.textContent = 'Load a live session to enable runtime controls.';
+            } else if (lastError) {
+                this.elements.liveControlNote.textContent = `Last error: ${lastError}`;
+            } else if (connectionState === 'connecting') {
+                this.elements.liveControlNote.textContent = 'Connecting to live session...';
+            } else if (connectionState === 'disconnected') {
+                this.elements.liveControlNote.textContent = 'Live controls are disabled until the websocket reconnects.';
+            } else if (sessionState === 'stopped' && terminationReason === 'wire_broken') {
+                this.elements.liveControlNote.textContent = 'Wire broken. Click Restart to launch a fresh live session.';
+            } else if (sessionState === 'stopped') {
+                this.elements.liveControlNote.textContent = 'Live session stopped. Click Restart to launch a fresh live session.';
+            } else if (requestedPaceIsCapped || solverLimited) {
+                const requestedText = Number.isFinite(requestedPace) && requestedPace > 0
+                    ? `Requested ${this.formatSimUsPerWallSecond(requestedPace)}`
+                    : 'Requested pace';
+                const appliedText = Number.isFinite(currentPace) && currentPace > 0
+                    ? ` applied as ${this.formatSimUsPerWallSecond(currentPace)}`
+                    : '';
+                const paceText = Number.isFinite(maxSustainablePace) && maxSustainablePace > 0
+                    ? `${requestedText} is capped at ${this.formatSimUsPerWallSecond(maxSustainablePace)} by measured solver throughput.${appliedText}.`
+                    : `${requestedText} is capped by measured solver throughput.${appliedText}.`;
+                const computeText = Number.isFinite(controlComputeWallS) && controlComputeWallS >= 0
+                    ? ` Last compute step: ${this.formatLiveControlValue(controlComputeWallS * 1000, 2)} ms.`
+                    : '';
+                this.elements.liveControlNote.textContent = `${paceText}${computeText}`;
+            } else {
+                this.elements.liveControlNote.textContent = '';
+            }
+        }
     }
 
     setupDamageWindow() {
@@ -192,9 +928,7 @@ export class DashboardController {
             this.elements.closeDamageWindow.addEventListener('click', () => {
                 win.style.display = 'none';
                 // Clear tracking and cache when window is closed
-                this.selectedMaterialTrace = null;
-                this.selectedSegmentClickIndex = null;
-                this.damagePlotCache = null;
+                this.clearSelectedMaterialTracking();
                 if (this.data) {
                     this.drawFrame(this.currentFrame);
                 }
@@ -239,12 +973,14 @@ export class DashboardController {
         }
 
         let inlet = 160, outlet = 0;
+        let unwindingSpeed = Number.NaN;
         if (this.data.metadata) {
-            const hWP = this.data.metadata.workpiece_height || 100;
+            const hWP = this.data.metadata.workpiece_height_mm ?? this.data.metadata.workpiece_height ?? 100;
             const bBot = this.data.metadata.buffer_len_bottom || 30;
             const bTop = this.data.metadata.buffer_len_top || 30;
             inlet = bBot + hWP + bTop;
             outlet = 0;
+            unwindingSpeed = Number(this.data.metadata.wire_unwinding_speed_mm_per_ms);
         }
 
         const frames = Array.from(trace.keys()).sort((a, b) => a - b);
@@ -277,11 +1013,19 @@ export class DashboardController {
         const movesDown = allP[allP.length - 1] < allP[0];
         const entrancePos = movesDown ? Math.max(inlet, outlet) : Math.min(inlet, outlet);
 
-        let speed = 0.001;
-        const dt = allT[allT.length - 1] - allT[0], dp = Math.abs(allP[allP.length - 1] - allP[0]);
-        if (dt > 1 && dp > 0.001) speed = dp / dt;
+        let speed = unwindingSpeed;
+        if (!Number.isFinite(speed) || speed <= 0) {
+            const dt = allT[allT.length - 1] - allT[0];
+            const dp = Math.abs(allP[allP.length - 1] - allP[0]);
+            if (dt > 1 && dp > 0.001) {
+                speed = dp / dt;
+            } else {
+                speed = 0.001;
+            }
+        }
 
-        const maxT = Math.abs(inlet - outlet) / speed;
+        const travelDistance = Math.abs(inlet - outlet);
+        const maxT = travelDistance / speed;
 
         let startIdx = -1;
         for (let i = 0; i < allP.length; i++) {
@@ -295,7 +1039,11 @@ export class DashboardController {
         const normalizedX = [];
         for (let i = 0; i < allP.length; i++) {
             const distFromInlet = movesDown ? (entrancePos - allP[i]) : (allP[i] - entrancePos);
-            normalizedX.push(distFromInlet / speed / maxT);
+            normalizedX.push(
+                travelDistance > 0
+                    ? Math.max(0, Math.min(1, distFromInlet / travelDistance))
+                    : 0
+            );
         }
 
         // Find max temperature for scaling (using loop to avoid stack overflow with large arrays)
@@ -478,86 +1226,343 @@ export class DashboardController {
         }
     }
 
-    traceMaterial(startFrame, startSegmentIndex) {
-        const trace = new Map();
-        if (!this.data || !this.data.wire_material_positions_mm) return trace;
+    getWireMaterialPositionAccessor() {
+        const positionsData = this.data && this.data.wire_material_positions_mm;
+        if (!positionsData) return null;
 
-        const positionsData = this.data.wire_material_positions_mm;
-        const numFrames = this.data.time.length;
         const isTyped = positionsData.data && positionsData.shape;
         const numCols = isTyped ? positionsData.shape[1] : 0;
 
-        const getPt = (f, k) => isTyped ? positionsData.data[f * numCols + k] : (positionsData[f] ? positionsData[f][k] : undefined);
-        const getLen = (f) => isTyped ? numCols : (positionsData[f] ? positionsData[f].length : 0);
+        return {
+            getPoint: (frameIndex, segmentIndex) => (
+                isTyped
+                    ? positionsData.data[frameIndex * numCols + segmentIndex]
+                    : (positionsData[frameIndex] ? positionsData[frameIndex][segmentIndex] : undefined)
+            ),
+            getLength: (frameIndex) => (
+                isTyped
+                    ? numCols
+                    : (positionsData[frameIndex] ? positionsData[frameIndex].length : 0)
+            )
+        };
+    }
 
-        if (getLen(startFrame) <= startSegmentIndex) return trace;
+    estimateTrackedMaterialDisplacementMM(fromFrameIndex, toFrameIndex) {
+        const metadata = this.data && this.data.metadata ? this.data.metadata : {};
+        const timeSeries = this.data && this.data.time;
+        const unwindingSpeed = Number(metadata.wire_unwinding_speed_mm_per_ms);
 
-        let currIdx = startSegmentIndex;
-        let prevPos = getPt(startFrame, startSegmentIndex);
+        if (
+            !Number.isFinite(unwindingSpeed) ||
+            !timeSeries ||
+            !Number.isFinite(Number(timeSeries[fromFrameIndex])) ||
+            !Number.isFinite(Number(timeSeries[toFrameIndex]))
+        ) {
+            return 0;
+        }
+
+        const deltaTimeMs = (Number(timeSeries[toFrameIndex]) - Number(timeSeries[fromFrameIndex])) / 1000;
+        return unwindingSpeed * deltaTimeMs;
+    }
+
+    getTrackedSegmentSpacingMM(frameIndex, accessor) {
+        const metadata = this.data && this.data.metadata ? this.data.metadata : {};
+        const metadataSegmentLen = Number(metadata.segment_len_mm);
+        if (Number.isFinite(metadataSegmentLen) && metadataSegmentLen > 0) {
+            return metadataSegmentLen;
+        }
+
+        const segmentCount = accessor.getLength(frameIndex);
+        if (segmentCount < 2) {
+            return null;
+        }
+
+        const sampleA = accessor.getPoint(frameIndex, 0);
+        const sampleB = accessor.getPoint(frameIndex, 1);
+        const spacing = Math.abs(sampleB - sampleA);
+        return Number.isFinite(spacing) && spacing > 0 ? spacing : null;
+    }
+
+    estimateTrackedMaterialIndexShift(fromFrameIndex, toFrameIndex, segmentSpacingMM) {
+        if (!Number.isFinite(segmentSpacingMM) || segmentSpacingMM <= 0) {
+            return null;
+        }
+
+        const offsetSeries = this.data && this.data.wire_offset_mm;
+        if (
+            !offsetSeries ||
+            !Number.isFinite(Number(offsetSeries[fromFrameIndex])) ||
+            !Number.isFinite(Number(offsetSeries[toFrameIndex]))
+        ) {
+            return null;
+        }
+
+        const displacementMM = this.estimateTrackedMaterialDisplacementMM(fromFrameIndex, toFrameIndex);
+        const offsetDeltaMM = Number(offsetSeries[toFrameIndex]) - Number(offsetSeries[fromFrameIndex]);
+        return Math.round((displacementMM - offsetDeltaMM) / segmentSpacingMM);
+    }
+
+    setSelectedMaterialTracking(trace, anchorFrameIndex, anchorSegmentIndex) {
+        this.selectedMaterialTrace = trace instanceof Map && trace.size > 0 ? trace : null;
+        this.selectedMaterialAnchor = this.selectedMaterialTrace
+            ? {
+                frameIndex: anchorFrameIndex,
+                segmentIndex: anchorSegmentIndex,
+                position: null
+            }
+            : null;
+        this.normalizeSelectedMaterialAnchor();
+        this.damagePlotCache = null;
+    }
+
+    clearSelectedMaterialTracking() {
+        this.selectedMaterialTrace = null;
+        this.selectedMaterialAnchor = null;
+        this.selectedSegmentClickIndex = null;
+        this.damagePlotCache = null;
+    }
+
+    normalizeSelectedMaterialAnchor(accessor = this.getWireMaterialPositionAccessor()) {
+        if (!this.selectedMaterialTrace || this.selectedMaterialTrace.size === 0 || !accessor) {
+            this.selectedMaterialAnchor = null;
+            return null;
+        }
+
+        let anchorFrameIndex = this.selectedMaterialAnchor?.frameIndex;
+        let anchorSegmentIndex = this.selectedMaterialAnchor?.segmentIndex;
+
+        if (!Number.isInteger(anchorFrameIndex) || !this.selectedMaterialTrace.has(anchorFrameIndex)) {
+            anchorFrameIndex = null;
+        }
+
+        if (
+            Number.isInteger(anchorFrameIndex) &&
+            !Number.isInteger(anchorSegmentIndex)
+        ) {
+            anchorSegmentIndex = this.selectedMaterialTrace.get(anchorFrameIndex);
+        }
+
+        if (
+            Number.isInteger(anchorFrameIndex) &&
+            Number.isInteger(anchorSegmentIndex) &&
+            anchorSegmentIndex >= 0 &&
+            accessor.getLength(anchorFrameIndex) > anchorSegmentIndex
+        ) {
+            const anchorPosition = accessor.getPoint(anchorFrameIndex, anchorSegmentIndex);
+            if (Number.isFinite(anchorPosition)) {
+                this.selectedMaterialAnchor = {
+                    frameIndex: anchorFrameIndex,
+                    segmentIndex: anchorSegmentIndex,
+                    position: anchorPosition
+                };
+                return this.selectedMaterialAnchor;
+            }
+        }
+
+        const traceFrames = Array.from(this.selectedMaterialTrace.keys()).sort((a, b) => a - b);
+        for (const frameIndex of traceFrames) {
+            const segmentIndex = this.selectedMaterialTrace.get(frameIndex);
+            if (
+                !Number.isInteger(segmentIndex) ||
+                segmentIndex < 0 ||
+                accessor.getLength(frameIndex) <= segmentIndex
+            ) {
+                continue;
+            }
+
+            const anchorPosition = accessor.getPoint(frameIndex, segmentIndex);
+            if (!Number.isFinite(anchorPosition)) {
+                continue;
+            }
+
+            this.selectedMaterialAnchor = {
+                frameIndex,
+                segmentIndex,
+                position: anchorPosition
+            };
+            return this.selectedMaterialAnchor;
+        }
+
+        this.selectedMaterialAnchor = null;
+        return null;
+    }
+
+    findTrackedSegmentAtFrame(accessor, anchorFrameIndex, toFrameIndex, anchorIndex, anchorPosition) {
+        const segmentCount = accessor.getLength(toFrameIndex);
+        if (segmentCount <= 0 || !Number.isFinite(anchorPosition)) {
+            return null;
+        }
+
+        const displacementMM = this.estimateTrackedMaterialDisplacementMM(anchorFrameIndex, toFrameIndex);
+        const expectedPosition = anchorPosition + displacementMM;
+        const segmentSpacingMM = this.getTrackedSegmentSpacingMM(toFrameIndex, accessor);
+        const firstPosition = accessor.getPoint(toFrameIndex, 0);
+        const lastPosition = accessor.getPoint(toFrameIndex, segmentCount - 1);
+        const minPosition = Math.min(firstPosition, lastPosition);
+        const maxPosition = Math.max(firstPosition, lastPosition);
+        const boundaryTolerance = Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+            ? Math.max(segmentSpacingMM, MATERIAL_TRACKING_FALLBACK_DISTANCE)
+            : MATERIAL_TRACKING_FALLBACK_DISTANCE;
+        if (
+            !Number.isFinite(expectedPosition) ||
+            !Number.isFinite(minPosition) ||
+            !Number.isFinite(maxPosition) ||
+            expectedPosition < minPosition - boundaryTolerance ||
+            expectedPosition > maxPosition + boundaryTolerance
+        ) {
+            return null;
+        }
+        const predictedIndexShift = this.estimateTrackedMaterialIndexShift(
+            anchorFrameIndex,
+            toFrameIndex,
+            segmentSpacingMM
+        );
+        const predictedIndex = Number.isInteger(predictedIndexShift)
+            ? anchorIndex + predictedIndexShift
+            : (
+                Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+                    ? anchorIndex + Math.round(displacementMM / segmentSpacingMM)
+                    : anchorIndex
+            );
+        const boundaryIndexTolerance = 1;
+        if (
+            predictedIndex < -boundaryIndexTolerance ||
+            predictedIndex > (segmentCount - 1 + boundaryIndexTolerance)
+        ) {
+            return null;
+        }
+        let bestIndex = -1;
+        let bestDistance = Infinity;
+
+        const searchRadius = MATERIAL_SEARCH_RADIUS;
+        if (predictedIndex >= 0 && predictedIndex < segmentCount) {
+            const startIndex = Math.max(0, predictedIndex - searchRadius);
+            const endIndex = Math.min(segmentCount - 1, predictedIndex + searchRadius);
+
+            for (let segmentIndex = startIndex; segmentIndex <= endIndex; segmentIndex++) {
+                const distance = Math.abs(accessor.getPoint(toFrameIndex, segmentIndex) - expectedPosition);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = segmentIndex;
+                }
+            }
+        }
+
+        if (bestIndex === -1 || bestDistance > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
+            for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex++) {
+                const distance = Math.abs(accessor.getPoint(toFrameIndex, segmentIndex) - expectedPosition);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = segmentIndex;
+                }
+            }
+        }
+
+        const maxDistance = Number.isFinite(segmentSpacingMM) && segmentSpacingMM > 0
+            ? Math.max(MATERIAL_TRACKING_MAX_DISTANCE, Math.abs(displacementMM) + (2 * segmentSpacingMM))
+            : MATERIAL_TRACKING_MAX_DISTANCE;
+        if (bestIndex === -1 || bestDistance >= maxDistance) {
+            return null;
+        }
+
+        return {
+            segmentIndex: bestIndex,
+            position: accessor.getPoint(toFrameIndex, bestIndex)
+        };
+    }
+
+    extendSelectedMaterialTraceToLatestFrame() {
+        if (!this.selectedMaterialTrace || this.selectedMaterialTrace.size === 0) {
+            return false;
+        }
+
+        const accessor = this.getWireMaterialPositionAccessor();
+        if (!accessor) {
+            return false;
+        }
+        const anchor = this.normalizeSelectedMaterialAnchor(accessor);
+        if (!anchor) {
+            return false;
+        }
+
+        const tracedFrames = Array.from(this.selectedMaterialTrace.keys()).sort((a, b) => a - b);
+        if (tracedFrames.length === 0) {
+            return false;
+        }
+
+        const latestAvailableFrame = this.getTotalFrames() - 1;
+        let currentFrame = tracedFrames[tracedFrames.length - 1];
+        if (currentFrame >= latestAvailableFrame) {
+            return false;
+        }
+
+        let extended = false;
+        for (let frameIndex = currentFrame + 1; frameIndex <= latestAvailableFrame; frameIndex++) {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                anchor.frameIndex,
+                frameIndex,
+                anchor.segmentIndex,
+                anchor.position
+            );
+            if (!match) {
+                break;
+            }
+
+            this.selectedMaterialTrace.set(frameIndex, match.segmentIndex);
+            extended = true;
+        }
+
+        if (extended) {
+            this.damagePlotCache = null;
+        }
+
+        return extended;
+    }
+
+    traceMaterial(startFrame, startSegmentIndex) {
+        const trace = new Map();
+        const accessor = this.getWireMaterialPositionAccessor();
+        if (!accessor) return trace;
+
+        const numFrames = this.getTotalFrames();
+
+        if (accessor.getLength(startFrame) <= startSegmentIndex) return trace;
+        const anchorPosition = accessor.getPoint(startFrame, startSegmentIndex);
+        if (!Number.isFinite(anchorPosition)) return trace;
+
         trace.set(startFrame, startSegmentIndex);
 
         // Forward Trace
         for (let f = startFrame + 1; f < numFrames; f++) {
-            const n = getLen(f); if (n === 0) break;
-            let bestK = -1;
-            let bestDist = Infinity;
-
-            const searchRadius = MATERIAL_SEARCH_RADIUS;
-            const startK = Math.max(0, currIdx - searchRadius);
-            const endK = Math.min(n - 1, currIdx + searchRadius);
-
-            for (let k = startK; k <= endK; k++) {
-                const d = Math.abs(getPt(f, k) - prevPos);
-                if (d < bestDist) { bestDist = d; bestK = k; }
-            }
-
-            if (bestK === -1 || bestDist > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
-                for (let k = 0; k < n; k++) {
-                    const d = Math.abs(getPt(f, k) - prevPos);
-                    if (d < bestDist) { bestDist = d; bestK = k; }
-                }
-            }
-
-            if (bestK !== -1 && bestDist < MATERIAL_TRACKING_MAX_DISTANCE) {
-                currIdx = bestK;
-                prevPos = getPt(f, bestK);
-                trace.set(f, currIdx);
-            } else {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                startFrame,
+                f,
+                startSegmentIndex,
+                anchorPosition
+            );
+            if (!match) {
                 break;
             }
+
+            trace.set(f, match.segmentIndex);
         }
 
         // Backward Trace
-        currIdx = startSegmentIndex;
-        prevPos = getPt(startFrame, startSegmentIndex);
         for (let f = startFrame - 1; f >= 0; f--) {
-            const n = getLen(f); if (n === 0) break;
-            let bestK = -1;
-            let bestDist = Infinity;
-
-            const searchRadius = MATERIAL_SEARCH_RADIUS;
-            const startK = Math.max(0, currIdx - searchRadius);
-            const endK = Math.min(n - 1, currIdx + searchRadius);
-
-            for (let k = startK; k <= endK; k++) {
-                const d = Math.abs(getPt(f, k) - prevPos);
-                if (d < bestDist) { bestDist = d; bestK = k; }
-            }
-
-            if (bestK === -1 || bestDist > MATERIAL_TRACKING_FALLBACK_DISTANCE) {
-                for (let k = 0; k < n; k++) {
-                    const d = Math.abs(getPt(f, k) - prevPos);
-                    if (d < bestDist) { bestDist = d; bestK = k; }
-                }
-            }
-
-            if (bestK !== -1 && bestDist < MATERIAL_TRACKING_MAX_DISTANCE) {
-                currIdx = bestK;
-                prevPos = getPt(f, bestK);
-                trace.set(f, currIdx);
-            } else {
+            const match = this.findTrackedSegmentAtFrame(
+                accessor,
+                startFrame,
+                f,
+                startSegmentIndex,
+                anchorPosition
+            );
+            if (!match) {
                 break;
             }
+
+            trace.set(f, match.segmentIndex);
         }
 
         return trace;
@@ -735,18 +1740,12 @@ export class DashboardController {
                 throw new Error('Invalid data format: missing time array');
             }
 
-            const maxFrame = (this.data.time.length || 0) - 1;
-            this.elements.timeline.max = maxFrame;
+            this.setDataSource(new FileDashboardDataSource(this.data));
             this.currentFrame = 0;
-
-            Object.values(this.panels).forEach(panel => {
-                if (panel.setData) {
-                    panel.setData(this.data);
-                }
-            });
-
-            this.drawFrame(0);
-            this.updateTimeDisplay();
+            if (this.getTotalFrames() > 0) {
+                this.drawFrame(0);
+                this.updateTimeDisplay();
+            }
 
         } catch (error) {
             console.error('Error loading data:', error);
@@ -766,7 +1765,10 @@ export class DashboardController {
     }
 
     togglePlayPause() {
-        if (!this.data) {
+        if (this.isLiveMode()) {
+            return;
+        }
+        if (!this.data || this.getTotalFrames() === 0) {
             alert('Please load data first');
             return;
         }
@@ -815,7 +1817,7 @@ export class DashboardController {
                 const oldFrame = this.currentFrame;
                 this.currentFrame += framesToAdvance;
 
-                if (this.currentFrame >= this.data.time.length) {
+                if (this.currentFrame >= this.getTotalFrames()) {
                     this.currentFrame = 0;
                 }
 
@@ -846,6 +1848,9 @@ export class DashboardController {
     }
 
     resetTimeline() {
+        if (this.isLiveMode()) {
+            return;
+        }
         this.pause();
         this.isPlaying = false;
         this.updatePlayPauseIcon();
@@ -853,6 +1858,7 @@ export class DashboardController {
     }
 
     previousFrame() {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
         const frameStep = Math.max(1, Math.round(this.playbackSpeed / TARGET_FPS));
         const prevFrame = Math.max(this.currentFrame - frameStep, 0);
@@ -860,26 +1866,29 @@ export class DashboardController {
     }
 
     nextFrame() {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
         const frameStep = Math.max(1, Math.round(this.playbackSpeed / TARGET_FPS));
-        const nextFrame = Math.min(this.currentFrame + frameStep, this.data.time.length - 1);
+        const nextFrame = Math.min(this.currentFrame + frameStep, this.getTotalFrames() - 1);
         this.seekToWithAccumulation(nextFrame);
     }
 
     seekTo(frame) {
-        if (!this.data) return;
+        if (this.isLiveMode()) return;
+        if (!this.data || this.getTotalFrames() === 0) return;
 
-        this.currentFrame = Math.max(0, Math.min(frame, this.data.time.length - 1));
+        this.currentFrame = Math.max(0, Math.min(frame, this.getTotalFrames() - 1));
         this.elements.timeline.value = this.currentFrame;
         this.drawFrame(this.currentFrame);
         this.updateTimeDisplay();
     }
 
     seekToWithAccumulation(targetFrame) {
+        if (this.isLiveMode()) return;
         if (!this.data) return;
 
         const oldFrame = this.currentFrame;
-        this.currentFrame = Math.max(0, Math.min(targetFrame, this.data.time.length - 1));
+        this.currentFrame = Math.max(0, Math.min(targetFrame, this.getTotalFrames() - 1));
         this.elements.timeline.value = this.currentFrame;
 
         if (this.currentFrame > oldFrame) {
@@ -891,10 +1900,13 @@ export class DashboardController {
         this.updateTimeDisplay();
     }
 
-    drawFrame(frameIndex) {
+    drawFrame(frameIndex, options = {}) {
         if (!this.data) return;
 
-        const frameData = this.getFrameData(frameIndex);
+        const renderTimeMs = Number.isFinite(options.renderTimeMs) ? options.renderTimeMs : performance.now();
+        const frameData = this.isLiveMode()
+            ? this.getLiveRenderableFrameData(frameIndex, renderTimeMs)
+            : this.getFrameData(frameIndex);
 
         Object.values(this.panels).forEach(panel => {
             panel.draw(frameData, frameIndex);
@@ -912,10 +1924,23 @@ export class DashboardController {
 
         for (let f = startFrame + 1; f <= endFrame; f++) {
             const frameData = this.getFrameData(f);
-            if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
+            const gapUM = (frameData.workpiece_position || 0) - (frameData.wire_position || 0);
+
+            if (Array.isArray(frameData.spark_events) && frameData.spark_events.length > 0) {
+                frameData.spark_events.forEach((sparkEvent) => {
+                    accumulatedSparks.push({
+                        locationMM: sparkEvent.locationMM,
+                        frameIndex: f,
+                        timeUS: sparkEvent.timeUS,
+                        gapUM
+                    });
+                });
+            } else if (frameData.spark_status && frameData.spark_status[0] === 1 && frameData.spark_status[1] !== null) {
                 accumulatedSparks.push({
                     locationMM: frameData.spark_status[1],
-                    frameIndex: f
+                    frameIndex: f,
+                    timeUS: Number(frameData.time),
+                    gapUM
                 });
             }
         }
@@ -937,7 +1962,7 @@ export class DashboardController {
         const frameData = {
             time: ArrayBuffer.isView(timeSeries) ? timeSeries[frameIndex] : timeSeries[frameIndex],
             frameIndex: frameIndex,
-            totalFrames: this.data.time.length
+            totalFrames: this.getTotalFrames()
         };
 
         const isSeries = (v) => Array.isArray(v) || ArrayBuffer.isView(v);
@@ -951,8 +1976,7 @@ export class DashboardController {
                     const cols = value.shape[1];
                     const start = frameIndex * cols;
                     const end = start + cols;
-                    const subarray = value.data.subarray(start, end);
-                    frameData[key] = Array.from(subarray);
+                    frameData[key] = value.data.subarray(start, end);
                 }
                 continue;
             }
@@ -974,11 +1998,23 @@ export class DashboardController {
         return frameData;
     }
 
+    ingestLiveSparks(frameIndex, renderTimeMs = performance.now()) {
+        if (!this.data || frameIndex < 0) return;
+
+        const frameData = this.getLiveRenderableFrameData(frameIndex, renderTimeMs);
+        if (this.panels.sideView && this.panels.sideView.ingestSparkData) {
+            this.panels.sideView.ingestSparkData(frameData, frameIndex);
+        }
+        if (this.panels.topView && this.panels.topView.ingestSparkData) {
+            this.panels.topView.ingestSparkData(frameData, frameIndex);
+        }
+    }
+
     updateTimeDisplay() {
         if (!this.data) return;
 
         const currentTime = Number(this.data.time[this.currentFrame]) / 1000;
-        const totalTime = Number(this.data.time[this.data.time.length - 1]) / 1000;
+        const totalTime = Number(this.data.time[this.getTotalFrames() - 1]) / 1000;
 
         const formatTime = (ms) => {
             const seconds = Math.floor(ms / 1000);
@@ -987,7 +2023,7 @@ export class DashboardController {
         };
 
         this.elements.frameCounter.textContent =
-            `Frame: ${this.currentFrame + 1} / ${this.data.time.length}`;
+            `Frame: ${this.currentFrame + 1} / ${this.getTotalFrames()}`;
 
         this.elements.timeDisplay.textContent =
             `${formatTime(currentTime)} / ${formatTime(totalTime)}`;

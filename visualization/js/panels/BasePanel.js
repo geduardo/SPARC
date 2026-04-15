@@ -26,6 +26,7 @@ export class BasePanel {
      */
     setupCanvas() {
         const rect = this.canvas.getBoundingClientRect();
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.canvas.width = rect.width * window.devicePixelRatio;
         this.canvas.height = rect.height * window.devicePixelRatio;
         this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);

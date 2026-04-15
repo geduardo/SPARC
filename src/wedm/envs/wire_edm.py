@@ -416,9 +416,11 @@ class WireEDMEnv(gym.Env):
         # TODO: implement proper reward
         return 0.0
 
-    def build_hot_state_bundle(self) -> HotStateBundle:
+    def build_hot_state_bundle(
+        self, *, copy_arrays: bool = False
+    ) -> HotStateBundle:
         """Capture the scheduler state bundle from the current environment."""
-        return HotStateBundle.from_env(self)
+        return HotStateBundle.from_env(self, copy_arrays=copy_arrays)
 
     def apply_hot_state_bundle(self, hot_state: HotStateBundle) -> None:
         """Restore environment and module state from a scheduler bundle."""
@@ -444,6 +446,32 @@ class WireEDMEnv(gym.Env):
     def compile_action(self, action) -> CompiledActionPacket:
         """Resolve an action into a compiled control packet."""
         return self._resolve_compiled_action_packet(action)
+
+    def _load_compiled_action_packet(
+        self, packet: CompiledActionPacket
+    ) -> CompiledActionPacket:
+        """Load a compiled control packet into scheduler state."""
+        hs = self._hot_state
+
+        hs.target_delta = packet.target_delta
+        hs.target_voltage = packet.target_voltage
+        hs.current_mode_code = packet.current_mode
+        hs.on_time_us = packet.on_time
+        hs.off_time_us = packet.off_time
+        self._compiled_target_voltage = packet.target_voltage
+        self._compiled_on_time = packet.on_time
+        self._compiled_off_time = packet.off_time
+        self._compiled_peak_current = packet.peak_current
+        self._compiled_crater_mean = packet.crater_mean_um3
+        self._compiled_crater_std = packet.crater_std_um3
+        self._compiled_kerf_width_mm = packet.kerf_width_mm
+        self._compiled_cached_mode_int = packet.current_mode
+        return packet
+
+    def prime_compiled_action(self, action) -> CompiledActionPacket:
+        """Load an action into the compiled scheduler without advancing time."""
+        packet = self._resolve_compiled_action_packet(action)
+        return self._load_compiled_action_packet(packet)
 
     def _resolve_compiled_generator_settings(self) -> None:
         """Cache generator settings used by compiled stepping."""
@@ -484,22 +512,9 @@ class WireEDMEnv(gym.Env):
         is_ctrl_step = hs.time_since_servo >= sc.servo_interval
 
         if is_ctrl_step:
-            packet = self._resolve_compiled_action_packet(action)
-
-            hs.target_delta = packet.target_delta
-            hs.target_voltage = packet.target_voltage
-            hs.current_mode_code = packet.current_mode
-            hs.on_time_us = packet.on_time
-            hs.off_time_us = packet.off_time
-            self._compiled_target_voltage = packet.target_voltage
-            self._compiled_on_time = packet.on_time
-            self._compiled_off_time = packet.off_time
-            self._compiled_peak_current = packet.peak_current
-            self._compiled_crater_mean = packet.crater_mean_um3
-            self._compiled_crater_std = packet.crater_std_um3
-            self._compiled_kerf_width_mm = packet.kerf_width_mm
-            self._compiled_cached_mode_int = packet.current_mode
-
+            self._load_compiled_action_packet(
+                self._resolve_compiled_action_packet(action)
+            )
             hs.time_since_servo = 0
 
         termination_code = compiled_microstep(

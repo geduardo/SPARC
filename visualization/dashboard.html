@@ -6,49 +6,16 @@
     <title>SPARC - Wire EDM Visualization Dashboard</title>
     <link rel="stylesheet" href="dashboard.css">
 </head>
-<body>
+<body class="mode-file">
     <div id="container">
         <!-- Controls Bar -->
         <div id="controls">
-            <img src="img/sparc_logo_1.png" alt="SPARC" id="logo">
-
-            <button id="loadData" class="icon-btn" title="Load Data">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-            </button>
-            <input type="file" id="fileInput" accept=".json,.npz,.zip">
-
-            <div class="control-group">
-                <button id="playPause" class="icon-btn" title="Play/Pause">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                    </svg>
-                </button>
-                <button id="reset" class="icon-btn" title="Reset">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                        <path d="M3 3v5h5"/>
-                    </svg>
-                </button>
+            <div class="controls-brand">
+                <img src="img/sparc_logo_1.png" alt="SPARC" id="logo">
+                <span id="modeBadge" class="mode-badge mode-badge-file">Recording</span>
             </div>
 
-            <div class="control-group">
-                <button id="prevFrame" class="icon-btn" title="Previous Frame">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="15 18 9 12 15 6"/>
-                    </svg>
-                </button>
-                <button id="nextFrame" class="icon-btn" title="Next Frame">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                </button>
-            </div>
-
-            <div class="control-group">
+            <div id="sharedViewControls" class="control-group shared-view-controls">
                 <button id="linkViews" class="icon-btn" title="Link Top View & Side View (horizontal)">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -57,25 +24,129 @@
                 </button>
             </div>
 
-            <div class="control-group">
-                <select id="speedControl" title="Playback Speed">
-                    <option value="1">1 us/s</option>
-                    <option value="30">30 us/s</option>
-                    <option value="60" selected>60 us/s</option>
-                    <option value="120">120 us/s</option>
-                    <option value="240">240 us/s</option>
-                    <option value="480">480 us/s</option>
-                    <option value="1000">1000 us/s</option>
-                    <option value="10000">10,000 us/s</option>
-                    <option value="100000">100,000 us/s</option>
-                    <option value="1000000">1,000,000 us/s</option>
-                </select>
+            <div id="recordingControls" class="recording-controls">
+                <button id="loadData" class="icon-btn" title="Load Data">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                </button>
+                <input type="file" id="fileInput" accept=".json,.npz,.zip">
+
+                <div class="control-group">
+                    <button id="playPause" class="icon-btn" title="Play/Pause">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                    </button>
+                    <button id="reset" class="icon-btn" title="Reset">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                            <path d="M3 3v5h5"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="control-group">
+                    <button id="prevFrame" class="icon-btn" title="Previous Frame">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="15 18 9 12 15 6"/>
+                        </svg>
+                    </button>
+                    <button id="nextFrame" class="icon-btn" title="Next Frame">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="control-group">
+                    <select id="speedControl" title="Recording Playback Speed">
+                        <option value="1">1 us/s</option>
+                        <option value="30">30 us/s</option>
+                        <option value="60" selected>60 us/s</option>
+                        <option value="120">120 us/s</option>
+                        <option value="240">240 us/s</option>
+                        <option value="480">480 us/s</option>
+                        <option value="1000">1000 us/s</option>
+                        <option value="10000">10,000 us/s</option>
+                        <option value="100000">100,000 us/s</option>
+                        <option value="1000000">1,000,000 us/s</option>
+                    </select>
+                </div>
+
+                <input type="range" id="timeline" min="0" max="100" value="0">
+
+                <div id="frameCounter">0 / 0</div>
+                <div id="timeDisplay">00:00.000</div>
             </div>
 
-            <input type="range" id="timeline" min="0" max="100" value="0">
-
-            <div id="frameCounter">0 / 0</div>
-            <div id="timeDisplay">00:00.000</div>
+            <div id="liveControls" class="live-controls live-disabled">
+                <div class="live-status-row">
+                    <span id="liveConnectionState" class="live-status-badge state-disconnected">WS disconnected</span>
+                    <span id="liveSessionState" class="live-status-badge state-stopped">Session stopped</span>
+                    <span id="liveControllerType" class="live-status-meta">Strategy: file mode</span>
+                    <span id="liveSimTime" class="live-status-meta">Sim: --</span>
+                    <span id="liveFrameBuffer" class="live-status-meta">Buffered frames: --</span>
+                </div>
+                <div class="live-control-grid">
+                    <div class="live-field">
+                        <label for="liveControllerSelect">Controller</label>
+                        <select id="liveControllerSelect">
+                            <option value="gap">Gap</option>
+                            <option value="voltage">Voltage</option>
+                            <option value="fixed-servo">Fixed Servo</option>
+                        </select>
+                    </div>
+                    <div class="live-field">
+                        <label for="liveSlowdownFactor">Simulation Pace (us/s)</label>
+                        <input type="number" id="liveSlowdownFactor" min="1" step="100" value="10000">
+                    </div>
+                    <div class="live-field">
+                        <label id="liveSetpointLabel" for="liveSetpointValue">Setpoint</label>
+                        <input type="number" id="liveSetpointValue" step="0.1" value="0">
+                    </div>
+                    <div class="live-field">
+                        <label for="liveGeneratorVoltage">Vgen (V)</label>
+                        <input type="number" id="liveGeneratorVoltage" min="0" step="0.1" value="80">
+                    </div>
+                    <div class="live-field">
+                        <label for="liveCurrentMode">Current</label>
+                        <select id="liveCurrentMode">
+                            <option value="1">I1</option>
+                            <option value="2">I2</option>
+                            <option value="3">I3</option>
+                            <option value="4">I4</option>
+                            <option value="5">I5</option>
+                            <option value="6">I6</option>
+                            <option value="7">I7</option>
+                            <option value="8">I8</option>
+                            <option value="9">I9</option>
+                            <option value="10">I10</option>
+                            <option value="11">I11</option>
+                            <option value="12">I12</option>
+                            <option value="13">I13</option>
+                            <option value="14">I14</option>
+                            <option value="15">I15</option>
+                            <option value="16">I16</option>
+                            <option value="17">I17</option>
+                            <option value="18">I18</option>
+                            <option value="19">I19</option>
+                        </select>
+                    </div>
+                    <div class="live-field">
+                        <label for="liveOffTime">Toff (us)</label>
+                        <input type="number" id="liveOffTime" min="0" step="0.1" value="33">
+                    </div>
+                    <div class="live-session-actions">
+                        <button id="livePauseResume" type="button">Pause</button>
+                        <button id="liveRestart" type="button">Restart</button>
+                        <button id="liveStop" type="button" class="danger-btn">Stop</button>
+                    </div>
+                </div>
+                <div id="liveControlNote" class="live-control-note">Load a live session to enable runtime controls.</div>
+            </div>
         </div>
 
         <!-- Dashboard Grid -->
