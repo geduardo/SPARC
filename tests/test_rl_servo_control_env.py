@@ -5,15 +5,29 @@ from wedm.rl.envs import ServoControlEnv
 
 
 @pytest.mark.parametrize("use_compiled", [False, True])
-def test_servo_control_reset_returns_valid_empty_observation(use_compiled):
+def test_servo_control_reset_returns_valid_scalar_observation(use_compiled):
     env = ServoControlEnv(use_compiled=use_compiled)
 
     obs, info = env.reset(seed=123)
 
-    assert obs == {}
     assert env.observation_space.contains(obs)
+    assert set(obs) == {
+        "gap_um",
+        "wire_position_um",
+        "workpiece_position_um",
+        "wire_velocity_um_s",
+        "interval_mean_voltage_v",
+        "interval_mean_current_a",
+        "previous_action",
+    }
+    assert obs["previous_action"][0] == pytest.approx(0.0)
+    assert obs["interval_mean_voltage_v"][0] == pytest.approx(0.0)
+    assert obs["interval_mean_current_a"][0] == pytest.approx(0.0)
     assert info["sim_time_us"] == 0
     assert info["interval_microsteps"] == 0
+    assert info["interval_charge"] == pytest.approx(0.0)
+    assert info["interval_spark_count"] == 0
+    assert info["interval_short_count"] == 0
     assert env.simulator.state.time == 0
 
 
@@ -24,14 +38,22 @@ def test_servo_control_step_advances_exactly_one_control_interval(use_compiled):
 
     obs, reward, terminated, truncated, info = env.step(np.array([0.25], dtype=np.float32))
 
-    assert obs == {}
+    assert env.observation_space.contains(obs)
     assert reward == pytest.approx(0.0)
     assert terminated is False
     assert truncated is False
     assert env.simulator.state.time == env.control_interval_us
     assert info["interval_microsteps"] == env.control_interval_us
+    assert info["interval_duration_us"] == env.control_interval_us
     assert info["sim_time_us"] == env.control_interval_us
     assert info["last_action"] == pytest.approx(0.25)
+    assert reward == pytest.approx(info["interval_charge"])
+    assert obs["previous_action"][0] == pytest.approx(0.25)
+    assert obs["interval_mean_voltage_v"][0] == pytest.approx(info["interval_mean_voltage"])
+    assert obs["interval_mean_current_a"][0] == pytest.approx(info["interval_mean_current"])
+    assert info["gap_um"] == pytest.approx(
+        info["workpiece_position_um"] - info["wire_position_um"]
+    )
     assert env.simulator.state.target_delta == pytest.approx(0.25)
 
 
