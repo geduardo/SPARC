@@ -23,6 +23,7 @@ export class OscilloscopePanel extends BasePanel {
         this.lastDrawnFrame = -1;
         this.sampleStartIndex = 0;
         this.sampleEndIndex = 0;
+        this.windowSampleCount = 0;
         this.maxPointsPerSeries = 2000; // decimation guard for performance
         this.channelGap = 8; // gap between channels in px
         // Fixed voltage axis limits
@@ -38,6 +39,8 @@ export class OscilloscopePanel extends BasePanel {
         this.iPerDiv = 'auto';
         // Enable/disable toggle
         this.isEnabled = false; // Default OFF
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
     }
 
     init() {
@@ -48,6 +51,8 @@ export class OscilloscopePanel extends BasePanel {
 
     setTrigger(cfg) {
         this.trigger = Object.assign({}, this.trigger, cfg || {});
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
     }
 
     setOffsets(vOffset, iOffset) {
@@ -71,6 +76,9 @@ export class OscilloscopePanel extends BasePanel {
     setData(data) {
         super.setData(data);
         this.autoTimebaseUsPerDiv = null;
+        this.windowSampleCount = 0;
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
         this.recomputeWindow(this.controller ? this.controller.currentFrame : 0);
     }
 
@@ -81,69 +89,235 @@ export class OscilloscopePanel extends BasePanel {
         }
     }
 
-    recomputeWindow(frameIndex) {
-        if (!this.data) return;
-        const totalFrames = this.data.time.length;
-        const w = this.canvas.width / window.devicePixelRatio;
+    recomputeWindow(frameIndex, frameData = null) {
+        const signalHistory = this.getSignalHistory();
+        if (!signalHistory) return;
+        this.triggerLocked = false;
+        this.triggerSampleIndex = null;
 
-        let usPerDiv;
-        if (this.mode === 'manual' && this.usPerDiv) {
-            usPerDiv = this.usPerDiv;
-        } else {
-            if (!this.autoTimebaseUsPerDiv) {
-                let onUs = 3, offUs = 80;
-                if (this.data.ON_time && this.data.ON_time.length > 0) {
-                    const validOns = this.data.ON_time.filter(v => typeof v === 'number' && v > 0);
-                    if (validOns.length > 0) {
-                        validOns.sort((a, b) => a - b);
-                        onUs = validOns[Math.floor(validOns.length / 2)];
-                    }
-                }
-                if (this.data.OFF_time && this.data.OFF_time.length > 0) {
-                    const validOffs = this.data.OFF_time.filter(v => typeof v === 'number' && v > 0);
-                    if (validOffs.length > 0) {
-                        validOffs.sort((a, b) => a - b);
-                        offUs = validOffs[Math.floor(validOffs.length / 2)];
-                    }
-                }
-                const typicalCycleUs = Math.max(onUs + offUs, 20);
-                const desiredWindowUs = typicalCycleUs * 12;
-                this.autoTimebaseUsPerDiv = Math.max(1, Math.round(desiredWindowUs / this.divisionsX));
-            }
-            usPerDiv = this.autoTimebaseUsPerDiv;
+        const voltageSeries = signalHistory.voltage || [];
+        const currentSeries = signalHistory.current || [];
+        const totalSamples = Math.max(voltageSeries.length, currentSeries.length);
+        if (totalSamples <= 0) {
+            this.sampleStartIndex = 0;
+            this.sampleEndIndex = 0;
+            this.windowSampleCount = 0;
+            return;
         }
 
+        const dtUs = Math.max(1, Number(signalHistory.dtUs) || 1);
+        const usPerDiv = this.resolveUsPerDiv();
         this.windowUs = usPerDiv * this.divisionsX;
+        this.windowSampleCount = Math.max(1, Math.ceil(this.windowUs / dtUs));
 
-        const right = frameIndex;
-        const left = Math.max(0, right - this.windowUs + 1);
+        const anchorTimeUs = this.resolveAnchorTimeUs(frameIndex, frameData, signalHistory, totalSamples);
+        let right = Math.floor((anchorTimeUs - signalHistory.baseTimeUs) / dtUs);
+        if (!Number.isFinite(right)) {
+            right = totalSamples - 1;
+        }
+        right = Math.max(0, Math.min(totalSamples - 1, right));
+
+        let left = Math.max(0, right - this.windowSampleCount + 1);
+        let end = Math.min(totalSamples - 1, right);
+        if (end - left + 1 < this.windowSampleCount) {
+            left = Math.max(0, end - this.windowSampleCount + 1);
+        }
         this.sampleStartIndex = left;
-        this.sampleEndIndex = Math.min(totalFrames - 1, right);
+        this.sampleEndIndex = end;
 
         if (this.trigger && this.trigger.enabled) {
-            const searchLeft = Math.max(0, frameIndex - this.windowUs * 5);
-            const searchRight = Math.min(totalFrames - 1, frameIndex + this.windowUs * 5);
-            const trigIdx = this.findTriggerIndex(searchLeft, searchRight);
-            if (trigIdx !== null) {
-                const half = Math.floor(this.windowUs / 2);
-                const delayFrames = Math.round(Number(this.trigger.delayUs || 0));
-                const centerIdx = trigIdx + delayFrames;
-                let newLeft = Math.max(0, centerIdx - half);
-                let newRight = Math.min(totalFrames - 1, newLeft + this.windowUs - 1);
-                if (newRight - newLeft + 1 < this.windowUs) {
-                    newLeft = Math.max(0, newRight - this.windowUs + 1);
+            const sourceSeries = this.trigger.source === 'ch2' ? currentSeries : voltageSeries;
+            const preferLatestTrigger = this.shouldUseLiveTailSignalAnchor(frameIndex);
+            const delaySamples = Math.round(Number(this.trigger.delayUs || 0) / dtUs);
+            let trigIdx = null;
+
+            if (preferLatestTrigger) {
+                const preTriggerSamples = Math.floor(this.windowSampleCount / 2);
+                const postTriggerSamples = this.windowSampleCount - preTriggerSamples - 1;
+                const earliestEligibleTriggerIndex = Math.max(1, preTriggerSamples - delaySamples);
+                const latestEligibleTriggerIndex = Math.min(
+                    right,
+                    totalSamples - 1 - postTriggerSamples - delaySamples
+                );
+                if (latestEligibleTriggerIndex >= earliestEligibleTriggerIndex) {
+                    trigIdx = this.findLatestTriggerIndex(
+                        Math.max(0, earliestEligibleTriggerIndex - 1),
+                        latestEligibleTriggerIndex,
+                        sourceSeries
+                    );
                 }
-                this.sampleStartIndex = newLeft;
-                this.sampleEndIndex = newRight;
+            } else {
+                const searchLeft = Math.max(0, right - this.windowSampleCount * 5);
+                const searchRight = Math.min(totalSamples - 1, right + this.windowSampleCount * 5);
+                trigIdx = this.findTriggerIndex(searchLeft, searchRight, sourceSeries);
+            }
+
+            if (trigIdx !== null) {
+                const half = Math.floor(this.windowSampleCount / 2);
+                const centerIdx = trigIdx + delaySamples;
+                let newLeft = centerIdx - half;
+                let newRight = newLeft + this.windowSampleCount - 1;
+
+                if (!preferLatestTrigger) {
+                    newLeft = Math.max(0, newLeft);
+                    newRight = Math.min(totalSamples - 1, newRight);
+                    if (newRight - newLeft + 1 < this.windowSampleCount) {
+                        newLeft = Math.max(0, newRight - this.windowSampleCount + 1);
+                    }
+                }
+
+                if (
+                    newLeft >= 0 &&
+                    newRight < totalSamples &&
+                    newRight >= newLeft
+                ) {
+                    this.sampleStartIndex = newLeft;
+                    this.sampleEndIndex = newRight;
+                    this.triggerLocked = true;
+                    this.triggerSampleIndex = trigIdx;
+                }
             }
         }
     }
 
-    findTriggerIndex(start, end) {
-        const sourceSeries = this.trigger.source === 'ch2' ? (this.data.current || []) : (this.data.voltage || []);
+    resolveUsPerDiv() {
+        if (this.mode === 'manual' && this.usPerDiv) {
+            return this.usPerDiv;
+        }
+
+        if (!this.autoTimebaseUsPerDiv) {
+            let onUs = 3;
+            let offUs = 80;
+
+            if (this.data && this.data.ON_time && this.data.ON_time.length > 0) {
+                const validOns = this.data.ON_time.filter(v => typeof v === 'number' && v > 0);
+                if (validOns.length > 0) {
+                    validOns.sort((a, b) => a - b);
+                    onUs = validOns[Math.floor(validOns.length / 2)];
+                }
+            }
+
+            if (this.data && this.data.OFF_time && this.data.OFF_time.length > 0) {
+                const validOffs = this.data.OFF_time.filter(v => typeof v === 'number' && v > 0);
+                if (validOffs.length > 0) {
+                    validOffs.sort((a, b) => a - b);
+                    offUs = validOffs[Math.floor(validOffs.length / 2)];
+                }
+            }
+
+            const typicalCycleUs = Math.max(onUs + offUs, 20);
+            const desiredWindowUs = typicalCycleUs * 12;
+            this.autoTimebaseUsPerDiv = Math.max(1, Math.round(desiredWindowUs / this.divisionsX));
+        }
+
+        return this.autoTimebaseUsPerDiv;
+    }
+
+    getSignalHistoryLatestTimeUs(signalHistory, totalSamples = null) {
+        if (!signalHistory) return NaN;
+
+        const sampleCount = Number.isFinite(totalSamples)
+            ? totalSamples
+            : Math.max(
+                signalHistory?.voltage?.length || 0,
+                signalHistory?.current?.length || 0
+            );
+        if (sampleCount <= 0) {
+            return NaN;
+        }
+
+        const baseTimeUs = Number(signalHistory.baseTimeUs);
+        const dtUs = Math.max(1, Number(signalHistory.dtUs) || 1);
+        if (!Number.isFinite(baseTimeUs)) {
+            return NaN;
+        }
+
+        return baseTimeUs + Math.max(0, sampleCount - 1) * dtUs;
+    }
+
+    shouldUseLiveTailSignalAnchor(frameIndex) {
+        const controller = this.controller;
+        if (!controller || typeof controller.isLiveMode !== 'function' || !controller.isLiveMode()) {
+            return false;
+        }
+
+        if (controller.followLiveTail) {
+            return true;
+        }
+
+        const totalFrames = typeof controller.getTotalFrames === 'function'
+            ? controller.getTotalFrames()
+            : ((this.data?.time?.length) || 0);
+        return frameIndex >= Math.max(0, totalFrames - 1);
+    }
+
+    resolveAnchorTimeUs(frameIndex, frameData, signalHistory, totalSamples) {
+        if (this.shouldUseLiveTailSignalAnchor(frameIndex)) {
+            const latestSignalTimeUs = this.getSignalHistoryLatestTimeUs(signalHistory, totalSamples);
+            if (Number.isFinite(latestSignalTimeUs)) {
+                return latestSignalTimeUs;
+            }
+        }
+
+        const frameTime = frameData ? Number(frameData.time) : NaN;
+        if (Number.isFinite(frameTime)) {
+            return frameTime;
+        }
+
+        if (this.data && this.data.time && this.data.time.length > frameIndex) {
+            const indexedTime = Number(this.data.time[frameIndex]);
+            if (Number.isFinite(indexedTime)) {
+                return indexedTime;
+            }
+        }
+
+        return this.getSignalHistoryLatestTimeUs(signalHistory, totalSamples);
+    }
+
+    getSignalHistory() {
+        const dataSource = this.controller && this.controller.dataSource;
+        if (dataSource && typeof dataSource.getPulseHistory === 'function') {
+            const history = dataSource.getPulseHistory();
+            if (history && history.voltage && history.current) {
+                return history;
+            }
+        }
+
+        if (!this.data || !this.data.voltage || !this.data.current) {
+            return null;
+        }
+
+        return {
+            baseTimeUs: this.data.time && this.data.time.length > 0 ? Number(this.data.time[0]) : 0,
+            dtUs: 1,
+            voltage: this.data.voltage,
+            current: this.data.current,
+            sparkState: this.data.spark_status_state || []
+        };
+    }
+
+    findTriggerIndex(start, end, sourceSeries) {
         const level = this.trigger.level;
         const rising = this.trigger.slope !== 'falling';
         for (let i = Math.max(start + 1, 1); i <= end; i++) {
+            const prevRaw = sourceSeries[i - 1];
+            const currRaw = sourceSeries[i];
+            const prev = (typeof prevRaw === 'bigint') ? Number(prevRaw) : prevRaw;
+            const curr = (typeof currRaw === 'bigint') ? Number(currRaw) : currRaw;
+            if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
+            if (rising) {
+                if (prev < level && curr >= level) return i;
+            } else {
+                if (prev > level && curr <= level) return i;
+            }
+        }
+        return null;
+    }
+
+    findLatestTriggerIndex(start, end, sourceSeries) {
+        const level = this.trigger.level;
+        const rising = this.trigger.slope !== 'falling';
+        for (let i = Math.min(end, sourceSeries.length - 1); i >= Math.max(start + 1, 1); i--) {
             const prevRaw = sourceSeries[i - 1];
             const currRaw = sourceSeries[i];
             const prev = (typeof prevRaw === 'bigint') ? Number(prevRaw) : prevRaw;
@@ -204,14 +378,23 @@ export class OscilloscopePanel extends BasePanel {
             return;
         }
 
-        this.recomputeWindow(frameIndex);
+        const signalHistory = this.getSignalHistory();
+        if (!signalHistory || !signalHistory.voltage || signalHistory.voltage.length === 0) {
+            this.drawText('Waiting for pulse data', w / 2, h / 2, {
+                color: '#888', font: 'bold 14px sans-serif', align: 'center', baseline: 'middle'
+            });
+            this.alignSidebarControls();
+            return;
+        }
 
-        const voltageSeries = this.data.voltage || [];
-        const currentSeries = this.data.current || [];
+        this.recomputeWindow(frameIndex, frameData);
+
+        const voltageSeries = signalHistory.voltage || [];
+        const currentSeries = signalHistory.current || [];
 
         const start = this.sampleStartIndex;
         const end = this.sampleEndIndex;
-        const endForScale = Math.max(end, start + this.windowUs - 1);
+        const endForScale = Math.max(end, start + Math.max(1, this.windowSampleCount) - 1);
 
         const plotX0 = padLeft;
         const plotX1 = w - padRight;
@@ -267,10 +450,10 @@ export class OscilloscopePanel extends BasePanel {
         this.drawSeriesDecimated(currentSeries, start, end, xToPx, cToPx, OSC_CH2_COLOR, 2.0, 'rgba(255,106,160,0.45)');
         this.ctx.restore();
 
-        // Trigger centerline
-        if (this.trigger && this.trigger.enabled) {
-            const centerX = plotX0 + plotW / 2;
-            this.drawCenterTimeAxis(centerX, vTopY0, vTopY1, cBotY0, cBotY1);
+        // Trigger reference line
+        if (this.trigger && this.trigger.enabled && this.triggerLocked && Number.isInteger(this.triggerSampleIndex)) {
+            const triggerX = xToPx(this.triggerSampleIndex);
+            this.drawCenterTimeAxis(triggerX, vTopY0, vTopY1, cBotY0, cBotY1);
         }
 
         // Axis labels

@@ -169,6 +169,60 @@ python -m http.server 8000
 
 See [visualization/README.md](visualization/README.md) for detailed documentation.
 
+## Realtime Mode
+
+SPARC also includes a local realtime mode that runs one live simulation session,
+serves the dashboard, and connects the browser over WebSocket.
+
+### Launch Realtime Mode
+
+```bash
+python scripts/run_realtime.py --open-browser
+```
+
+Useful pace options:
+
+```bash
+# Request pace directly in simulated microseconds per wall second
+python scripts/run_realtime.py --pace-us-per-s 10000
+
+# Equivalent request in slowdown-factor form
+python scripts/run_realtime.py --slowdown-factor 100
+
+# Let the OS choose free ports and stop automatically after 30 seconds
+python scripts/run_realtime.py --http-port 0 --ws-port 0 --run-seconds 30
+```
+
+You can also configure the environment directly from the CLI:
+
+```bash
+python scripts/run_realtime.py \
+  --workpiece-height 15.0 \
+  --wire-diameter 0.25 \
+  --wire-material brass \
+  --initial-gap 20 \
+  --target-cutting-distance 800 \
+  --mechanics-control-mode position
+```
+
+`dt` is intentionally fixed to `1 us` in realtime mode and is not exposed as a
+launcher override.
+
+Or load a JSON `EnvironmentConfig` and override selected fields:
+
+```bash
+python scripts/run_realtime.py --config my_env.json --wire-diameter 0.3
+```
+
+The canonical launcher is `scripts/run_realtime.py`. The older
+`scripts/run_realtime_smoke.py` path is kept as a compatibility alias.
+
+Implemented architecture, supported live parameters, pacing rules, and known
+performance limits are documented in
+[docs/realtime_mode_guide.md](docs/realtime_mode_guide.md). The original
+design-stage contract remains in
+[docs/realtime_mode_contract.md](docs/realtime_mode_contract.md).
+
 ## Documentation
 
 For detailed documentation, please visit our [documentation page](https://github.com/geduardo/SPARC/wiki).

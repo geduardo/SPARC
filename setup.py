@@ -41,6 +41,7 @@ setup(
         "gymnasium>=0.28.0",
         "numba>=0.56.0",
         "matplotlib>=3.5.0",
+        "websockets>=15.0.0",
     ],
     extras_require={
         "dev": [
