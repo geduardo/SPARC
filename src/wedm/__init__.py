@@ -10,7 +10,7 @@ from .core import (
     get_material_db,
 )
 
-from .envs.wire_edm import WireEDMEnv
+from .envs.wire_edm import WireEDMEnv, WireEDMSimulator
 
 from .modules.ignition import IgnitionModule, IgnitionModuleParameters
 from .modules.wire import WireModule, WireModuleParameters
@@ -31,6 +31,7 @@ __all__ = [
     "get_material_db",
     # Environment
     "WireEDMEnv",
+    "WireEDMSimulator",
     # Modules and their parameters
     "IgnitionModule",
     "IgnitionModuleParameters",

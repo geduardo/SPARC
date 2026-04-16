@@ -4,6 +4,7 @@ import pytest
 import numpy as np
 from wedm import (
     WireEDMEnv,
+    WireEDMSimulator,
     EnvironmentConfig,
     IgnitionModuleParameters,
     MaterialModuleParameters,
@@ -29,6 +30,22 @@ class TestWireEDMEnv:
         env = WireEDMEnv()
         assert env is not None
         assert env.config is not None
+        assert isinstance(env, WireEDMSimulator)
+
+    def test_simulator_creation_and_step(self):
+        """The extracted simulator should reset and advance without Gym inheritance."""
+        sim = WireEDMSimulator()
+        obs, info = sim.reset(seed=123)
+
+        assert obs == {}
+        assert isinstance(info, dict)
+        assert sim.state.time == 0
+
+        terminated, truncated = sim.step_fast(_valid_action(sim))
+
+        assert isinstance(terminated, bool)
+        assert truncated is False
+        assert sim.state.time == sim.dt
 
     def test_env_reset(self):
         """Test environment reset."""
