@@ -32,6 +32,15 @@ class ServoControlEnv(gym.Env):
         "interval_mean_current_a",
         "previous_action",
     )
+    _SCALAR_BOUNDS = {
+        "gap_um": (-1.0e6, 1.0e6),
+        "wire_position_um": (-1.0e6, 1.0e6),
+        "workpiece_position_um": (0.0, 1.0e6),
+        "wire_velocity_um_s": (-1.0e9, 1.0e9),
+        "interval_mean_voltage_v": (0.0, 1.0e3),
+        "interval_mean_current_a": (0.0, 1.0e3),
+        "previous_action": (-1.0, 1.0),
+    }
 
     def __init__(
         self,
@@ -71,8 +80,8 @@ class ServoControlEnv(gym.Env):
         self.observation_space = spaces.Dict(
             {
                 key: spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
+                    low=np.array([self._SCALAR_BOUNDS[key][0]], dtype=np.float32),
+                    high=np.array([self._SCALAR_BOUNDS[key][1]], dtype=np.float32),
                     shape=(1,),
                     dtype=np.float32,
                 )
@@ -84,7 +93,9 @@ class ServoControlEnv(gym.Env):
 
     def reset(self, *, seed: int | None = None, options=None):
         """Reset the simulator and return the initial task observation/info."""
-        self.simulator.reset(seed=seed, options=options)
+        super().reset(seed=seed)
+        self.simulator.np_random = self.np_random
+        self.simulator.reset(seed=None, options=options)
         if self.use_compiled:
             self.simulator.init_compiled_scheduler()
         self._last_action = 0.0

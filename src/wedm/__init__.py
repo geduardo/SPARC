@@ -11,6 +11,14 @@ from .core import (
 )
 
 from .envs.wire_edm import WireEDMEnv, WireEDMSimulator
+from .rl import (
+    DEFAULT_CONTROL_INTERVAL_US,
+    DEFAULT_EPISODE_HORIZON_US,
+    DEFAULT_MAX_EPISODE_STEPS,
+    SERVO_CONTROL_ENV_ID,
+    ServoControlEnv,
+    register_envs,
+)
 
 from .modules.ignition import IgnitionModule, IgnitionModuleParameters
 from .modules.wire import WireModule, WireModuleParameters
@@ -32,6 +40,12 @@ __all__ = [
     # Environment
     "WireEDMEnv",
     "WireEDMSimulator",
+    "ServoControlEnv",
+    "SERVO_CONTROL_ENV_ID",
+    "DEFAULT_CONTROL_INTERVAL_US",
+    "DEFAULT_EPISODE_HORIZON_US",
+    "DEFAULT_MAX_EPISODE_STEPS",
+    "register_envs",
     # Modules and their parameters
     "IgnitionModule",
     "IgnitionModuleParameters",

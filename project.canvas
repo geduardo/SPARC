@@ -95,7 +95,7 @@
 			"y": 1320,
 			"width": 420,
 			"height": 300,
-			"color": "5"
+			"color": "4"
 		},
 		{
 			"id": "31e74b0b",
@@ -105,17 +105,17 @@
 			"y": 2180,
 			"width": 420,
 			"height": 200,
-			"color": "0"
+			"color": "1"
 		},
 		{
 			"id": "c3ff702b",
 			"type": "text",
-			"text": "## VA-01 Register ServoControl env and add Gym tests\nRegister the first env ID, add check_env coverage, and test horizon truncation, deterministic reset behavior, valid step tuples, and wire-break termination.",
+			"text": "## VA-01 Register ServoControl env and add Gym tests\nRegister the first env ID, add check_env coverage, and test horizon truncation, deterministic reset behavior, valid step tuples, and wire-break termination.\n\n### Changes\n- Added `src/wedm/rl/registration.py` with the first registered Gymnasium env ID, `wedm/ServoControl-v0`, plus an idempotent `register_envs()` helper and the default `3 s` / `3000 step` time-limit configuration.\n- Wired registration into `wedm.rl` (and re-exported the env ID/constants from `wedm`) so `gym.make(...)` can construct the task env through standard Gymnasium registration.\n- Updated `ServoControlEnv.reset()` to follow Gymnasium seeding semantics and tightened the observation-space bounds so `check_env()` passes cleanly.\n- Added Gym-facing regression tests covering registration idempotence, `gym.make(...)`, `check_env(...)`, deterministic reset/step behavior, `TimeLimit` truncation, and wire-break termination.\n\n### Verification\n- `python -m pytest tests/test_rl_registration.py tests/test_rl_servo_control_env.py -q`\n- `python -m pytest tests/test_env_integration.py tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `170 passed`",
 			"x": 80,
 			"y": 1860,
 			"width": 420,
 			"height": 220,
-			"color": "0"
+			"color": "4"
 		}
 	],
 	"edges": [
