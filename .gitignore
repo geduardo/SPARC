@@ -151,6 +151,7 @@ Thumbs.db
 experiments/logs/
 experiments/outputs/
 simulation_data/
+artifacts/
 *.npz
 *.gif
 *.mp4

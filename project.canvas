@@ -1,158 +1,23 @@
 {
-	"nodes": [
-		{
-			"id": "group-gymint",
-			"type": "group",
-			"x": 20,
-			"y": 900,
-			"width": 540,
-			"height": 780,
-			"label": "Gym Integration"
-		},
-		{
-			"id": "group-simula",
-			"type": "group",
-			"x": 20,
-			"y": 40,
-			"width": 540,
-			"height": 760,
-			"label": "Simulator Foundations"
-		},
-		{
-			"id": "group-valida",
-			"type": "group",
-			"x": 20,
-			"y": 1760,
-			"width": 540,
-			"height": 690,
-			"label": "Validation"
-		},
-		{
-			"id": "canvas-errors",
-			"type": "text",
-			"text": "## Errors\n✓ None",
-			"x": -540,
-			"y": -750,
-			"width": 380,
-			"height": 200,
-			"color": "1"
-		},
-		{
-			"id": "legend",
-			"type": "text",
-			"text": "## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent",
-			"x": -540,
-			"y": -310,
-			"width": 380,
-			"height": 230,
-			"color": "0"
-		},
-		{
-			"id": "canvas-warnings",
-			"type": "text",
-			"text": "## Warnings\n✓ None",
-			"x": -540,
-			"y": -530,
-			"width": 380,
-			"height": 200,
-			"color": "3"
-		},
-		{
-			"id": "3b192831",
-			"type": "text",
-			"text": "## SF-02 Extract WireEDMSimulator from WireEDMEnv\nIntroduce a non-Gym simulator object that owns config, modules, RNG, compiled stepping, and the formal simulator state. Keep it as the single source of process truth and leave Gym task semantics to higher layers.\n\n### Changes\n- Extracted `WireEDMSimulator` as the non-Gym process object in `src/wedm/envs/wire_edm.py`, moving the physics runtime, module ownership, RNG, action decoding, and compiled-step orchestration into that simulator class.\n- Reduced `WireEDMEnv` to a thin Gymnasium-facing compatibility shell that subclasses the simulator and only restores Gym reset/step semantics.\n- Exported `WireEDMSimulator` from `wedm` and `wedm.envs` so later task envs can build directly on the simulator abstraction.\n- Added coverage proving the simulator can reset/step directly and that `WireEDMEnv` remains a compatible shell over it.\n\n### Verification\n- `python -m pytest tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `154 passed`",
-			"x": 80,
-			"y": 510,
-			"width": 420,
-			"height": 230,
-			"color": "4"
-		},
-		{
-			"id": "8bb2fe15",
-			"type": "text",
-			"text": "## GI-01 Implement ServoControlEnv on top of WireEDMSimulator\nCreate the first real Gymnasium task env with one public step per control interval. It should apply one action, run the simulator until the next decision boundary, and always return a valid observation and reward.\n\n### Changes\n- Added `src/wedm/rl/envs/servo_control.py` with the first real agent-facing Gymnasium env, `ServoControlEnv`, which owns a `WireEDMSimulator` internally.\n- Each public `step()` now applies one servo action immediately, rolls the simulator forward exactly one control interval, and always returns a valid observation, reward, and info dictionary.\n- Kept the Phase 1 interface intentionally minimal for now: servo-only action, fixed generator defaults, empty placeholder observation, zero placeholder reward, and interval-level rollout info.\n- Added `wedm.rl` package exports and focused tests covering reset behavior, one-interval stepping, fixed generator settings, and simulator termination propagation in both modular and compiled modes.\n\n### Verification\n- `python -m pytest tests/test_rl_servo_control_env.py tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `162 passed`",
-			"x": 80,
-			"y": 940,
-			"width": 420,
-			"height": 240,
-			"color": "4"
-		},
-		{
-			"id": "dda01b4f",
-			"type": "text",
-			"text": "## SF-01 Make simulator state fully explicit and Markovian\nMove Markov-relevant runtime variables out of hidden module internals and into the formal simulator state, including ignition short timers, mechanics controller memory, and any other variables that affect future evolution. Separate true state from pure caches.\n\n### Changes\n- Extended `EDMState` to carry Markov-relevant runtime memory directly, including ignition short timers, mechanics jerk memory, dielectric cached gap/debris values, and wire transport/zone-mean runtime fields.\n- Rewired ignition, mechanics, dielectric, and wire modules so those runtime variables read from and write back to `EDMState` instead of living only in module internals.\n- Updated `HotStateBundle` and the compiled-step path to source and restore the canonical runtime state from `EDMState`, while keeping performance-only buffers as implementation details.\n- Added integration and hot-state regression tests to lock down the new canonical-state behavior and the reset semantics.\n\n### Verification\n- `python -m pytest -q` via `~/.pyenv/pyenv-win/versions/3.11.0/python.exe`\n- Result: `153 passed`",
-			"x": 80,
-			"y": 100,
-			"width": 420,
-			"height": 260,
-			"color": "4"
-		},
-		{
-			"id": "111925bd",
-			"type": "text",
-			"text": "## GI-02 Add interval summaries and first scalar observation\nExpose interval charge and other control-interval summaries through info and implement the first simple scalar observation builder for the Phase 1 servo task.\n\n### Changes\n- Extended `ServoControlEnv` to accumulate control-interval summaries during its internal rollout: interval charge, duration, mean current, mean voltage, spark count, short count, and interval microstep count.\n- Added the first scalar observation builder, exposing gap, wire position, workpiece position, wire velocity, interval mean voltage/current, and previous action through a real `observation_space`.\n- Switched the default task reward from the placeholder to measurable interval charge and exposed the same reward ingredients through `info` for later ablations.\n- Updated the RL env tests to validate the new observation contract, interval summaries, and reward/info consistency in both modular and compiled modes.\n\n### Verification\n- `python -m pytest tests/test_rl_servo_control_env.py tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- `python scripts/run_env_rollout.py --env servo_control --sim-seconds 0.01 --json`\n- Result: `162 passed`",
-			"x": 80,
-			"y": 1320,
-			"width": 420,
-			"height": 300,
-			"color": "4"
-		},
-		{
-			"id": "31e74b0b",
-			"type": "text",
-			"text": "## VA-02 Add minimal SB3 smoke example\nProvide one minimal training script that instantiates the first env, runs a short SB3 smoke training loop, and performs one evaluation rollout.",
-			"x": 80,
-			"y": 2180,
-			"width": 420,
-			"height": 200,
-			"color": "1"
-		},
-		{
-			"id": "c3ff702b",
-			"type": "text",
-			"text": "## VA-01 Register ServoControl env and add Gym tests\nRegister the first env ID, add check_env coverage, and test horizon truncation, deterministic reset behavior, valid step tuples, and wire-break termination.\n\n### Changes\n- Added `src/wedm/rl/registration.py` with the first registered Gymnasium env ID, `wedm/ServoControl-v0`, plus an idempotent `register_envs()` helper and the default `3 s` / `3000 step` time-limit configuration.\n- Wired registration into `wedm.rl` (and re-exported the env ID/constants from `wedm`) so `gym.make(...)` can construct the task env through standard Gymnasium registration.\n- Updated `ServoControlEnv.reset()` to follow Gymnasium seeding semantics and tightened the observation-space bounds so `check_env()` passes cleanly.\n- Added Gym-facing regression tests covering registration idempotence, `gym.make(...)`, `check_env(...)`, deterministic reset/step behavior, `TimeLimit` truncation, and wire-break termination.\n\n### Verification\n- `python -m pytest tests/test_rl_registration.py tests/test_rl_servo_control_env.py -q`\n- `python -m pytest tests/test_env_integration.py tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `170 passed`",
-			"x": 80,
-			"y": 1860,
-			"width": 420,
-			"height": 220,
-			"color": "4"
-		}
+	"nodes":[
+		{"id":"group-valida","type":"group","x":20,"y":1780,"width":540,"height":1360,"label":"Validation"},
+		{"id":"group-gymint","type":"group","x":20,"y":900,"width":540,"height":780,"label":"Gym Integration"},
+		{"id":"group-simula","type":"group","x":20,"y":40,"width":540,"height":760,"label":"Simulator Foundations"},
+		{"id":"canvas-errors","type":"text","text":"## Errors\n✓ None","x":-540,"y":-750,"width":380,"height":200,"color":"1"},
+		{"id":"legend","type":"text","text":"## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent","x":-540,"y":-310,"width":380,"height":230,"color":"0"},
+		{"id":"canvas-warnings","type":"text","text":"## Warnings\n✓ None","x":-540,"y":-530,"width":380,"height":200,"color":"3"},
+		{"id":"3b192831","type":"text","text":"## SF-02 Extract WireEDMSimulator from WireEDMEnv\nIntroduce a non-Gym simulator object that owns config, modules, RNG, compiled stepping, and the formal simulator state. Keep it as the single source of process truth and leave Gym task semantics to higher layers.\n\n### Changes\n- Extracted `WireEDMSimulator` as the non-Gym process object in `src/wedm/envs/wire_edm.py`, moving the physics runtime, module ownership, RNG, action decoding, and compiled-step orchestration into that simulator class.\n- Reduced `WireEDMEnv` to a thin Gymnasium-facing compatibility shell that subclasses the simulator and only restores Gym reset/step semantics.\n- Exported `WireEDMSimulator` from `wedm` and `wedm.envs` so later task envs can build directly on the simulator abstraction.\n- Added coverage proving the simulator can reset/step directly and that `WireEDMEnv` remains a compatible shell over it.\n\n### Verification\n- `python -m pytest tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `154 passed`","x":80,"y":510,"width":420,"height":230,"color":"4"},
+		{"id":"8bb2fe15","type":"text","text":"## GI-01 Implement ServoControlEnv on top of WireEDMSimulator\nCreate the first real Gymnasium task env with one public step per control interval. It should apply one action, run the simulator until the next decision boundary, and always return a valid observation and reward.\n\n### Changes\n- Added `src/wedm/rl/envs/servo_control.py` with the first real agent-facing Gymnasium env, `ServoControlEnv`, which owns a `WireEDMSimulator` internally.\n- Each public `step()` now applies one servo action immediately, rolls the simulator forward exactly one control interval, and always returns a valid observation, reward, and info dictionary.\n- Kept the Phase 1 interface intentionally minimal for now: servo-only action, fixed generator defaults, empty placeholder observation, zero placeholder reward, and interval-level rollout info.\n- Added `wedm.rl` package exports and focused tests covering reset behavior, one-interval stepping, fixed generator settings, and simulator termination propagation in both modular and compiled modes.\n\n### Verification\n- `python -m pytest tests/test_rl_servo_control_env.py tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `162 passed`","x":80,"y":940,"width":420,"height":240,"color":"4"},
+		{"id":"dda01b4f","type":"text","text":"## SF-01 Make simulator state fully explicit and Markovian\nMove Markov-relevant runtime variables out of hidden module internals and into the formal simulator state, including ignition short timers, mechanics controller memory, and any other variables that affect future evolution. Separate true state from pure caches.\n\n### Changes\n- Extended `EDMState` to carry Markov-relevant runtime memory directly, including ignition short timers, mechanics jerk memory, dielectric cached gap/debris values, and wire transport/zone-mean runtime fields.\n- Rewired ignition, mechanics, dielectric, and wire modules so those runtime variables read from and write back to `EDMState` instead of living only in module internals.\n- Updated `HotStateBundle` and the compiled-step path to source and restore the canonical runtime state from `EDMState`, while keeping performance-only buffers as implementation details.\n- Added integration and hot-state regression tests to lock down the new canonical-state behavior and the reset semantics.\n\n### Verification\n- `python -m pytest -q` via `~/.pyenv/pyenv-win/versions/3.11.0/python.exe`\n- Result: `153 passed`","x":80,"y":100,"width":420,"height":260,"color":"4"},
+		{"id":"111925bd","type":"text","text":"## GI-02 Add interval summaries and first scalar observation\nExpose interval charge and other control-interval summaries through info and implement the first simple scalar observation builder for the Phase 1 servo task.\n\n### Changes\n- Extended `ServoControlEnv` to accumulate control-interval summaries during its internal rollout: interval charge, duration, mean current, mean voltage, spark count, short count, and interval microstep count.\n- Added the first scalar observation builder, exposing gap, wire position, workpiece position, wire velocity, interval mean voltage/current, and previous action through a real `observation_space`.\n- Switched the default task reward from the placeholder to measurable interval charge and exposed the same reward ingredients through `info` for later ablations.\n- Updated the RL env tests to validate the new observation contract, interval summaries, and reward/info consistency in both modular and compiled modes.\n\n### Verification\n- `python -m pytest tests/test_rl_servo_control_env.py tests/test_env_integration.py -q`\n- `python -m pytest tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- `python scripts/run_env_rollout.py --env servo_control --sim-seconds 0.01 --json`\n- Result: `162 passed`","x":80,"y":1320,"width":420,"height":300,"color":"4"},
+		{"id":"31e74b0b","type":"text","text":"## VA-02 Add minimal SB3 smoke example\nProvide one minimal training script that instantiates the first env, runs a short SB3 smoke training loop, and performs one evaluation rollout.\n\n### Changes\n- Added `src/wedm/rl/sb3_training.py` with a small PPO training utility for `wedm/ServoControl-v0`, including flattened/episode-stat wrappers, pre/post evaluation, artifact export, and reward-curve plotting.\n- Added `scripts/train_env_sb3.py` so the baseline can be trained from the CLI with cheap defaults and environment overrides matching the existing rollout tooling.\n- Added `tests/test_rl_sb3_training.py` to validate reward-plot generation and, when `stable_baselines3` is installed, run a short guarded PPO training path.\n- Added optional dependency group `.[rl]` in `pyproject.toml` for `stable-baselines3`.\n- Verification: `python -m pytest tests/test_rl_sb3_training.py -q` -> `1 passed, 1 skipped`; `python scripts/train_env_sb3.py --help`; full suite `python -m pytest -q` -> `171 passed, 1 skipped`.\n- Note: actual PPO training is implemented and ready, but this environment does not currently have `stable_baselines3` installed, so only the guarded non-training path was exercised locally.","x":80,"y":2200,"width":420,"height":920,"color":"4"},
+		{"id":"c3ff702b","type":"text","text":"## VA-01 Register ServoControl env and add Gym tests\nRegister the first env ID, add check_env coverage, and test horizon truncation, deterministic reset behavior, valid step tuples, and wire-break termination.\n\n### Changes\n- Added `src/wedm/rl/registration.py` with the first registered Gymnasium env ID, `wedm/ServoControl-v0`, plus an idempotent `register_envs()` helper and the default `3 s` / `3000 step` time-limit configuration.\n- Wired registration into `wedm.rl` (and re-exported the env ID/constants from `wedm`) so `gym.make(...)` can construct the task env through standard Gymnasium registration.\n- Updated `ServoControlEnv.reset()` to follow Gymnasium seeding semantics and tightened the observation-space bounds so `check_env()` passes cleanly.\n- Added Gym-facing regression tests covering registration idempotence, `gym.make(...)`, `check_env(...)`, deterministic reset/step behavior, `TimeLimit` truncation, and wire-break termination.\n\n### Verification\n- `python -m pytest tests/test_rl_registration.py tests/test_rl_servo_control_env.py -q`\n- `python -m pytest tests/test_env_integration.py tests/test_compiled_step.py tests/test_realtime_session.py tests/test_realtime_transport.py -q`\n- `python -m pytest -q`\n- Result: `170 passed`","x":80,"y":1880,"width":420,"height":220,"color":"4"}
 	],
-	"edges": [
-		{
-			"id": "edge-001",
-			"fromNode": "dda01b4f",
-			"fromSide": "bottom",
-			"toNode": "3b192831",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-002",
-			"fromNode": "3b192831",
-			"fromSide": "bottom",
-			"toNode": "8bb2fe15",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-003",
-			"fromNode": "8bb2fe15",
-			"fromSide": "bottom",
-			"toNode": "111925bd",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-004",
-			"fromNode": "111925bd",
-			"fromSide": "bottom",
-			"toNode": "c3ff702b",
-			"toSide": "top"
-		},
-		{
-			"id": "edge-005",
-			"fromNode": "c3ff702b",
-			"fromSide": "bottom",
-			"toNode": "31e74b0b",
-			"toSide": "top"
-		}
+	"edges":[
+		{"id":"edge-001","fromNode":"dda01b4f","fromSide":"bottom","toNode":"3b192831","toSide":"top"},
+		{"id":"edge-002","fromNode":"3b192831","fromSide":"bottom","toNode":"8bb2fe15","toSide":"top"},
+		{"id":"edge-003","fromNode":"8bb2fe15","fromSide":"bottom","toNode":"111925bd","toSide":"top"},
+		{"id":"edge-004","fromNode":"111925bd","fromSide":"bottom","toNode":"c3ff702b","toSide":"top"},
+		{"id":"edge-005","fromNode":"c3ff702b","fromSide":"bottom","toNode":"31e74b0b","toSide":"top"}
 	]
 }
