@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
 
+from wedm.core.env_config import EnvironmentConfig
 from wedm.core.constants import WIRE_BREAK_POSITION_MARGIN_UM
 from wedm.rl import (
     DEFAULT_MAX_EPISODE_STEPS,
@@ -25,7 +26,8 @@ def test_gym_make_creates_servo_control_env():
         assert env.unwrapped.__class__ is ServoControlEnv
         assert env.spec is not None
         assert env.spec.id == SERVO_CONTROL_ENV_ID
-        assert env.spec.max_episode_steps == DEFAULT_MAX_EPISODE_STEPS
+        assert env.spec.max_episode_steps is None
+        assert env.unwrapped.max_episode_steps == DEFAULT_MAX_EPISODE_STEPS
     finally:
         env.close()
 
@@ -82,6 +84,33 @@ def test_gym_make_time_limit_truncates_episode():
         assert terminated is False
         assert truncated is True
         assert info["sim_time_us"] == 3 * env.unwrapped.control_interval_us
+    finally:
+        env.close()
+
+
+def test_gym_make_uses_dynamic_default_horizon_for_custom_control_interval():
+    env = gym.make(
+        SERVO_CONTROL_ENV_ID,
+        config=EnvironmentConfig(servo_interval=500),
+        episode_horizon_us=1_500,
+        disable_env_checker=True,
+    )
+    try:
+        env.reset(seed=123)
+        terminated = False
+        truncated = False
+        info = {}
+
+        for _ in range(3):
+            _, _, terminated, truncated, info = env.step(
+                np.array([0.0], dtype=np.float32)
+            )
+
+        assert env.unwrapped.max_episode_steps == 3
+        assert terminated is False
+        assert truncated is True
+        assert info["sim_time_us"] == 1_500
+        assert info["control_interval_us"] == 500
     finally:
         env.close()
 

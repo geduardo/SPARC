@@ -1,17 +1,25 @@
 from __future__ import annotations
+
 """Phase-1 servo-control Gym env built on top of the low-level simulator."""
+
+from collections.abc import Callable
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
 from ...core.env_config import EnvironmentConfig
+from ...core.state import EDMState
 from ...envs.wire_edm import WireEDMSimulator, build_scalar_action
 from ...modules.dielectric import DielectricModuleParameters
 from ...modules.ignition import IgnitionModuleParameters
 from ...modules.material import MaterialModuleParameters
 from ...modules.mechanics import MechanicsModuleParameters
 from ...modules.wire import WireModuleParameters
+from ..registration import DEFAULT_EPISODE_HORIZON_US, resolve_episode_step_limit
+
+
+MicrostepCallback = Callable[[EDMState, dict[str, float | int | bool]], None]
 
 
 class ServoControlEnv(gym.Env):
@@ -48,6 +56,8 @@ class ServoControlEnv(gym.Env):
         render_mode: str | None = None,
         mechanics_control_mode: str = "position",
         config: EnvironmentConfig | None = None,
+        episode_horizon_us: int = DEFAULT_EPISODE_HORIZON_US,
+        max_episode_steps: int | None = None,
         ignition_params: IgnitionModuleParameters = None,
         wire_params: WireModuleParameters = None,
         material_params: MaterialModuleParameters = None,
@@ -68,7 +78,21 @@ class ServoControlEnv(gym.Env):
             dielectric_params=dielectric_params,
             mechanics_params=mechanics_params,
         )
+        self.config = self.simulator.config
         self.control_interval_us = int(self.simulator.servo_interval)
+        self.episode_horizon_us = int(episode_horizon_us)
+        if self.episode_horizon_us <= 0:
+            raise ValueError("episode_horizon_us must be positive")
+        if max_episode_steps is not None and max_episode_steps <= 0:
+            raise ValueError("max_episode_steps must be positive")
+        self.max_episode_steps = (
+            int(max_episode_steps)
+            if max_episode_steps is not None
+            else resolve_episode_step_limit(
+                control_interval_us=self.control_interval_us,
+                episode_horizon_us=self.episode_horizon_us,
+            )
+        )
 
         defaults = self.simulator.get_default_discharge_settings()
         self._fixed_target_voltage = float(defaults["target_voltage"])
@@ -90,6 +114,7 @@ class ServoControlEnv(gym.Env):
         )
         self._last_action = 0.0
         self._last_interval_summary = self._zero_interval_summary()
+        self._elapsed_episode_steps = 0
 
     def reset(self, *, seed: int | None = None, options=None):
         """Reset the simulator and return the initial task observation/info."""
@@ -100,22 +125,33 @@ class ServoControlEnv(gym.Env):
             self.simulator.init_compiled_scheduler()
         self._last_action = 0.0
         self._last_interval_summary = self._zero_interval_summary()
+        self._elapsed_episode_steps = 0
         return self._get_obs(), self._build_info()
 
     def step(self, action):
         """Apply one servo action and advance exactly one control interval."""
+        return self.advance_interval(action)
+
+    def advance_interval(
+        self,
+        action,
+        *,
+        microstep_callback: MicrostepCallback | None = None,
+    ):
+        """Apply one servo action and optionally observe every simulator microstep."""
         servo_delta = self._coerce_action(action)
-        sim_action = build_scalar_action(
-            servo=servo_delta,
-            target_voltage=self._fixed_target_voltage,
-            current_mode=self._fixed_current_mode,
-            ON_time=self._fixed_on_time,
-            OFF_time=self._fixed_off_time,
-        )
+        sim_action = self._build_sim_action(servo_delta)
         self._last_action = servo_delta
-        self._last_interval_summary = self._run_control_interval(sim_action)
-        terminated = self.simulator.state.is_wire_broken or self.simulator.state.is_target_distance_reached
-        truncated = False
+        self._last_interval_summary = self._run_control_interval(
+            sim_action,
+            microstep_callback=microstep_callback,
+        )
+        terminated = bool(
+            self.simulator.state.is_wire_broken
+            or self.simulator.state.is_target_distance_reached
+        )
+        self._elapsed_episode_steps += 1
+        truncated = self._elapsed_episode_steps >= self.max_episode_steps
         return (
             self._get_obs(),
             self._calc_reward(),
@@ -124,14 +160,33 @@ class ServoControlEnv(gym.Env):
             self._build_info(),
         )
 
+    def _build_sim_action(self, servo_delta: float):
+        """Build the fixed generator-control packet for one public servo action."""
+        return build_scalar_action(
+            servo=servo_delta,
+            target_voltage=self._fixed_target_voltage,
+            current_mode=self._fixed_current_mode,
+            ON_time=self._fixed_on_time,
+            OFF_time=self._fixed_off_time,
+        )
+
     def _coerce_action(self, action) -> float:
         """Convert the external action into one clipped scalar servo command."""
         action_array = np.asarray(action, dtype=np.float32).reshape(-1)
         if action_array.size == 0:
             raise ValueError("ServoControlEnv action cannot be empty")
-        return float(np.clip(action_array[0], self.action_space.low[0], self.action_space.high[0]))
+        return float(
+            np.clip(
+                action_array[0], self.action_space.low[0], self.action_space.high[0]
+            )
+        )
 
-    def _run_control_interval(self, sim_action) -> dict[str, float | int | bool]:
+    def _run_control_interval(
+        self,
+        sim_action,
+        *,
+        microstep_callback: MicrostepCallback | None = None,
+    ) -> dict[str, float | int | bool]:
         """Roll the simulator until the next decision boundary or termination."""
         self._prime_control_boundary()
         interval_microsteps = 0
@@ -143,6 +198,7 @@ class ServoControlEnv(gym.Env):
         dt_seconds = float(self.simulator.dt) * 1e-6
 
         while True:
+            control_step = interval_microsteps == 0
             if self.use_compiled:
                 terminated, truncated = self.simulator.step_compiled_fast(sim_action)
                 runtime_current = float(self.simulator._hot_state.current)
@@ -150,7 +206,8 @@ class ServoControlEnv(gym.Env):
                 runtime_spark_state = int(self.simulator._hot_state.spark_state)
                 runtime_spark_duration = int(self.simulator._hot_state.spark_duration)
                 interval_complete = (
-                    self.simulator._hot_state.time_since_servo >= self.control_interval_us
+                    self.simulator._hot_state.time_since_servo
+                    >= self.control_interval_us
                 )
             else:
                 terminated, truncated = self.simulator.step_fast(sim_action)
@@ -160,6 +217,14 @@ class ServoControlEnv(gym.Env):
                 runtime_spark_duration = int(self.simulator.state.spark_status[2])
                 interval_complete = (
                     self.simulator.state.time_since_servo >= self.control_interval_us
+                )
+
+            if microstep_callback is not None:
+                if self.use_compiled:
+                    self.simulator.sync_compiled_to_state()
+                microstep_callback(
+                    self.simulator.state,
+                    self._build_microstep_info(control_step=control_step),
                 )
 
             interval_microsteps += 1
@@ -177,8 +242,12 @@ class ServoControlEnv(gym.Env):
             self.simulator.sync_compiled_to_state()
 
         duration_us = int(interval_microsteps * self.simulator.dt)
-        mean_voltage = 0.0 if interval_microsteps == 0 else voltage_sum / interval_microsteps
-        mean_current = 0.0 if interval_microsteps == 0 else current_sum / interval_microsteps
+        mean_voltage = (
+            0.0 if interval_microsteps == 0 else voltage_sum / interval_microsteps
+        )
+        mean_current = (
+            0.0 if interval_microsteps == 0 else current_sum / interval_microsteps
+        )
         return {
             "interval_charge": float(charge_c),
             "interval_duration_us": duration_us,
@@ -199,6 +268,18 @@ class ServoControlEnv(gym.Env):
         self.simulator.state.time_since_servo = self.control_interval_us
         if self.use_compiled:
             self.simulator._hot_state.time_since_servo = self.control_interval_us
+
+    def _build_microstep_info(
+        self, *, control_step: bool
+    ) -> dict[str, float | int | bool]:
+        """Build the per-microstep info payload used by optional observers."""
+        return {
+            "wire_broken": bool(self.simulator.state.is_wire_broken),
+            "target_reached": bool(self.simulator.state.is_target_distance_reached),
+            "spark_state": int(self.simulator.state.spark_status[0]),
+            "time": int(self.simulator.state.time),
+            "control_step": bool(control_step),
+        }
 
     def _get_obs(self):
         """Return the current scalar observation for the servo task."""
@@ -236,16 +317,20 @@ class ServoControlEnv(gym.Env):
         info = dict(self._last_interval_summary)
         info.update(
             {
-            "sim_time_us": int(self.simulator.state.time),
-            "control_interval_us": self.control_interval_us,
-            "wire_broken": bool(self.simulator.state.is_wire_broken),
-            "target_reached": bool(self.simulator.state.is_target_distance_reached),
-            "workpiece_position_um": float(self.simulator.state.workpiece_position),
-            "wire_position_um": float(self.simulator.state.wire_position),
-            "gap_um": float(
-                self.simulator.state.workpiece_position - self.simulator.state.wire_position
-            ),
-            "last_action": float(self._last_action),
+                "sim_time_us": int(self.simulator.state.time),
+                "control_interval_us": self.control_interval_us,
+                "episode_horizon_us": self.episode_horizon_us,
+                "elapsed_episode_steps": self._elapsed_episode_steps,
+                "max_episode_steps": self.max_episode_steps,
+                "wire_broken": bool(self.simulator.state.is_wire_broken),
+                "target_reached": bool(self.simulator.state.is_target_distance_reached),
+                "workpiece_position_um": float(self.simulator.state.workpiece_position),
+                "wire_position_um": float(self.simulator.state.wire_position),
+                "gap_um": float(
+                    self.simulator.state.workpiece_position
+                    - self.simulator.state.wire_position
+                ),
+                "last_action": float(self._last_action),
             }
         )
         return info

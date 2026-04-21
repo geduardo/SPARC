@@ -10,6 +10,7 @@ from gymnasium.wrappers import FlattenObservation, RecordEpisodeStatistics
 
 from ..core.env_config import EnvironmentConfig
 from . import SERVO_CONTROL_ENV_ID
+from .envs import ServoControlEnv
 
 
 def build_servo_control_training_env(
@@ -21,13 +22,11 @@ def build_servo_control_training_env(
     config: EnvironmentConfig | None = None,
 ) -> gym.Env:
     """Create a flattened, statistics-enabled ServoControl env for training."""
-    env = gym.make(
-        SERVO_CONTROL_ENV_ID,
-        max_episode_steps=max_episode_steps,
-        disable_env_checker=True,
+    env = ServoControlEnv(
         use_compiled=use_compiled,
         mechanics_control_mode=mechanics_control_mode,
         config=config,
+        max_episode_steps=max_episode_steps,
     )
     env = FlattenObservation(env)
     env = RecordEpisodeStatistics(env)
@@ -97,7 +96,7 @@ def _import_sb3():
     except ImportError as exc:
         raise ImportError(
             "stable-baselines3 is required for SB3 training scripts. "
-            "Install it with `pip install -e \".[rl]\"` or "
+            'Install it with `pip install -e ".[rl]"` or '
             "`pip install stable-baselines3`."
         ) from exc
     return PPO, BaseCallback, evaluate_policy, Monitor
@@ -154,8 +153,7 @@ def train_servo_control_ppo(
                     and len(self.episode_rewards) % checkpoint_interval_episodes == 0
                 ):
                     checkpoint_path = (
-                        checkpoint_dir
-                        / "servo_control_ppo_"
+                        checkpoint_dir / "servo_control_ppo_"
                         f"ep{len(self.episode_rewards):05d}_"
                         f"step{self.num_timesteps:09d}"
                     )
@@ -172,9 +170,7 @@ def train_servo_control_ppo(
                 >= progress_step_interval
             ):
                 latest_reward = (
-                    f"{self.episode_rewards[-1]:.3f}"
-                    if self.episode_rewards
-                    else "n/a"
+                    f"{self.episode_rewards[-1]:.3f}" if self.episode_rewards else "n/a"
                 )
                 print(
                     "[train] "
@@ -216,6 +212,11 @@ def train_servo_control_ppo(
         mechanics_control_mode=mechanics_control_mode,
         config=config,
     )
+    train_base_env = train_env.unwrapped
+    resolved_environment_config = train_base_env.config.to_dict()
+    resolved_control_interval_us = int(train_base_env.control_interval_us)
+    resolved_max_episode_steps = int(train_base_env.max_episode_steps)
+    resolved_episode_horizon_us = int(train_base_env.episode_horizon_us)
     eval_env = Monitor(eval_env)
 
     callback = EpisodeRewardCallback()
@@ -238,7 +239,11 @@ def train_servo_control_ppo(
             "env_id": SERVO_CONTROL_ENV_ID,
             "seed": seed,
             "use_compiled": use_compiled,
-            "max_episode_steps": max_episode_steps,
+            "mechanics_control_mode": mechanics_control_mode,
+            "environment_config": resolved_environment_config,
+            "control_interval_us": resolved_control_interval_us,
+            "episode_horizon_us": resolved_episode_horizon_us,
+            "max_episode_steps": resolved_max_episode_steps,
             "total_timesteps": total_timesteps,
             "eval_episodes": eval_episodes,
             "initial_mean_reward": float(initial_mean_reward),

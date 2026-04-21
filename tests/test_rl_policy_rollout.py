@@ -47,6 +47,9 @@ def test_policy_rollout_exports_dashboard_pack_if_sb3_installed(tmp_path):
     assert Path(summary["summary_path"]).exists()
     assert summary["public_steps_run"] >= 1
     assert summary["sim_time_us"] >= 1
+    assert summary["mechanics_control_mode"] == "position"
+    assert summary["environment_config"]["servo_interval"] == 1000
+    assert summary["resolved_max_episode_steps"] == 5
 
     with zipfile.ZipFile(output_path) as zf:
         header = json.loads(zf.read("header.json"))

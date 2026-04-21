@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 
@@ -36,6 +37,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Output path for the dashboard-compatible .npz recording.",
     )
     parser.add_argument(
+        "--summary",
+        help=(
+            "Optional training summary JSON to reuse saved env settings. If omitted, "
+            "the script looks for `servo_control_training_summary.json` next to --model."
+        ),
+    )
+    parser.add_argument(
         "--max-episode-steps",
         type=int,
         default=3_000,
@@ -53,13 +61,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-modular",
         action="store_true",
+        default=None,
         help="Use the modular simulator path instead of the compiled path.",
     )
     parser.add_argument(
         "--mechanics-control-mode",
-        default="position",
+        default=None,
         choices=["position", "velocity"],
-        help="Mechanics control mode passed to the env (default: position).",
+        help="Mechanics control mode passed to the env.",
     )
     parser.add_argument(
         "--stochastic",
@@ -99,9 +108,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_config(args: argparse.Namespace) -> EnvironmentConfig:
-    """Build an EnvironmentConfig from CLI overrides."""
-    kwargs: dict[str, object] = {}
+def load_summary(summary_path: pathlib.Path | None) -> dict[str, object] | None:
+    """Load a training summary JSON if one is available."""
+    if summary_path is None:
+        return None
+    return json.loads(summary_path.read_text())
+
+
+def resolve_summary_path(
+    args: argparse.Namespace,
+    model_path: pathlib.Path,
+) -> pathlib.Path | None:
+    """Find the training summary used to configure a saved policy rollout."""
+    if args.summary:
+        return pathlib.Path(args.summary).resolve()
+
+    candidate = model_path.with_name("servo_control_training_summary.json")
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def build_config(
+    args: argparse.Namespace,
+    summary: dict[str, object] | None,
+) -> EnvironmentConfig:
+    """Build an EnvironmentConfig from summary defaults and CLI overrides."""
+    kwargs = {}
+    if summary is not None and isinstance(summary.get("environment_config"), dict):
+        kwargs.update(summary["environment_config"])
     if args.workpiece_height is not None:
         kwargs["workpiece_height"] = args.workpiece_height
     if args.wire_diameter is not None:
@@ -117,30 +152,57 @@ def build_config(args: argparse.Namespace) -> EnvironmentConfig:
     return EnvironmentConfig(**kwargs)
 
 
+def resolve_mechanics_control_mode(
+    args: argparse.Namespace,
+    summary: dict[str, object] | None,
+) -> str:
+    """Choose the rollout mechanics mode from CLI overrides or saved metadata."""
+    if args.mechanics_control_mode is not None:
+        return args.mechanics_control_mode
+    if summary is not None and isinstance(summary.get("mechanics_control_mode"), str):
+        return summary["mechanics_control_mode"]
+    return "position"
+
+
+def resolve_use_compiled(
+    args: argparse.Namespace,
+    summary: dict[str, object] | None,
+) -> bool:
+    """Choose the simulator path from CLI overrides or saved metadata."""
+    if args.use_modular is not None:
+        return not args.use_modular
+    if summary is not None and "use_compiled" in summary:
+        return bool(summary["use_compiled"])
+    return True
+
+
 def main() -> int:
     """CLI entrypoint."""
     parser = build_arg_parser()
     args = parser.parse_args()
+    model_path = pathlib.Path(args.model).resolve()
+    summary_path = resolve_summary_path(args, model_path)
+    training_summary = load_summary(summary_path)
 
-    summary = rollout_servo_control_policy_to_npz(
-        model_path=args.model,
+    rollout_summary = rollout_servo_control_policy_to_npz(
+        model_path=model_path,
         output_path=args.output,
         max_episode_steps=args.max_episode_steps,
         seed=args.seed,
-        use_compiled=not args.use_modular,
-        mechanics_control_mode=args.mechanics_control_mode,
-        config=build_config(args),
+        use_compiled=resolve_use_compiled(args, training_summary),
+        mechanics_control_mode=resolve_mechanics_control_mode(args, training_summary),
+        config=build_config(args, training_summary),
         deterministic=not args.stochastic,
     )
 
-    for key, value in summary.items():
+    for key, value in rollout_summary.items():
         print(f"{key}: {value}")
 
     print()
     print("Next:")
     print("1. Open visualization/dashboard.html in the static dashboard server.")
     print("2. Click 'Load Data'.")
-    print(f"3. Select: {summary['output_path']}")
+    print(f"3. Select: {rollout_summary['output_path']}")
     return 0
 
 

@@ -8,7 +8,6 @@ import numpy as np
 from gymnasium.spaces.utils import flatten
 
 from ..core.env_config import EnvironmentConfig
-from ..envs.wire_edm import build_scalar_action
 from ..utils.logger import LoggerConfig, SimulationLogger
 from .envs import ServoControlEnv
 
@@ -42,7 +41,7 @@ def _import_sb3():
     except ImportError as exc:
         raise ImportError(
             "stable-baselines3 is required for policy rollout export. "
-            "Install it with `pip install -e \".[rl]\"` or "
+            'Install it with `pip install -e ".[rl]"` or '
             "`pip install stable-baselines3`."
         ) from exc
     return PPO
@@ -59,75 +58,6 @@ def build_policy_rollout_logger_config(output_path: str | Path) -> LoggerConfig:
             "compress": False,
         },
     }
-
-
-def _run_logged_control_interval(
-    env: ServoControlEnv,
-    action,
-    logger: SimulationLogger,
-) -> tuple[bool, bool]:
-    """Advance one public control interval and log every microstep state."""
-    servo_delta = env._coerce_action(action)
-    sim_action = build_scalar_action(
-        servo=servo_delta,
-        target_voltage=env._fixed_target_voltage,
-        current_mode=env._fixed_current_mode,
-        ON_time=env._fixed_on_time,
-        OFF_time=env._fixed_off_time,
-    )
-    env._last_action = servo_delta
-    env._prime_control_boundary()
-
-    interval_microsteps = 0
-    charge_c = 0.0
-    voltage_sum = 0.0
-    current_sum = 0.0
-    spark_count = 0
-    short_count = 0
-    dt_seconds = float(env.simulator.dt) * 1e-6
-
-    terminated = False
-    truncated = False
-
-    while True:
-        if env.use_compiled:
-            _, _, terminated, truncated, info = env.simulator.step_compiled(sim_action)
-        else:
-            _, _, terminated, truncated, info = env.simulator.step(sim_action)
-
-        state = env.simulator.state
-        logger.collect(state, info)
-
-        interval_microsteps += 1
-        charge_c += float(state.current) * dt_seconds
-        voltage_sum += float(state.voltage)
-        current_sum += float(state.current)
-
-        spark_state = int(state.spark_status[0])
-        spark_duration = int(state.spark_status[2])
-        if spark_state == 1 and spark_duration == 0:
-            spark_count += 1
-        if spark_state == -1 and spark_duration == 0:
-            short_count += 1
-
-        interval_complete = state.time_since_servo >= env.control_interval_us
-        if terminated or truncated or interval_complete:
-            break
-
-    env._last_interval_summary = {
-        "interval_charge": float(charge_c),
-        "interval_duration_us": int(interval_microsteps * env.simulator.dt),
-        "interval_mean_current": (
-            0.0 if interval_microsteps == 0 else float(current_sum / interval_microsteps)
-        ),
-        "interval_mean_voltage": (
-            0.0 if interval_microsteps == 0 else float(voltage_sum / interval_microsteps)
-        ),
-        "interval_spark_count": int(spark_count),
-        "interval_short_count": int(short_count),
-        "interval_microsteps": int(interval_microsteps),
-    }
-    return terminated, truncated
 
 
 def rollout_servo_control_policy_to_npz(
@@ -154,6 +84,7 @@ def rollout_servo_control_policy_to_npz(
         use_compiled=use_compiled,
         mechanics_control_mode=mechanics_control_mode,
         config=config,
+        max_episode_steps=max_episode_steps,
     )
     logger = SimulationLogger(
         build_policy_rollout_logger_config(output_path),
@@ -173,10 +104,12 @@ def rollout_servo_control_policy_to_npz(
         while public_steps_run < max_episode_steps:
             flat_obs = flatten(env.observation_space, obs).astype(np.float32)
             action, _ = model.predict(flat_obs, deterministic=deterministic)
-            terminated, truncated = _run_logged_control_interval(env, action, logger)
-            cumulative_reward += env._calc_reward()
+            obs, reward, terminated, truncated, _ = env.advance_interval(
+                action,
+                microstep_callback=logger.collect,
+            )
+            cumulative_reward += float(reward)
             public_steps_run += 1
-            obs = env._get_obs()
             if terminated or truncated:
                 break
 
@@ -191,7 +124,10 @@ def rollout_servo_control_policy_to_npz(
             "seed": seed,
             "use_compiled": use_compiled,
             "mechanics_control_mode": mechanics_control_mode,
+            "environment_config": env.config.to_dict(),
             "max_episode_steps": max_episode_steps,
+            "episode_horizon_us": int(env.episode_horizon_us),
+            "resolved_max_episode_steps": int(env.max_episode_steps),
             "public_steps_run": public_steps_run,
             "sim_time_us": int(env.simulator.state.time),
             "control_interval_us": int(env.control_interval_us),
@@ -201,7 +137,8 @@ def rollout_servo_control_policy_to_npz(
             "target_reached": bool(env.simulator.state.is_target_distance_reached),
             "cumulative_reward": float(cumulative_reward),
             "final_gap_um": float(
-                env.simulator.state.workpiece_position - env.simulator.state.wire_position
+                env.simulator.state.workpiece_position
+                - env.simulator.state.wire_position
             ),
         }
         summary_path.write_text(json.dumps(summary, indent=2))
