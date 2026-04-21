@@ -74,10 +74,8 @@ def build_scalar_action(
     )
 
 
-class WireEDMEnv(gym.Env):
-    """Main-cut Wire-EDM environment (1 us base step, 1 ms control step)."""
-
-    metadata = {"render_modes": ["human"], "render_fps": 300}
+class WireEDMSimulator:
+    """Low-level main-cut Wire-EDM simulator with 1 us base stepping."""
 
     def __init__(
         self,
@@ -92,7 +90,6 @@ class WireEDMEnv(gym.Env):
         dielectric_params: DielectricModuleParameters = None,
         mechanics_params: MechanicsModuleParameters = None,
     ):
-        super().__init__()
         self.render_mode = render_mode
 
         # Validate mechanics control mode
@@ -179,11 +176,9 @@ class WireEDMEnv(gym.Env):
         # observation space placeholder (define as needed)
         self.observation_space = spaces.Dict({})
 
-    # --------------------------------------------------------------------- #
-    # Gym API
-    # --------------------------------------------------------------------- #
     def reset(self, *, seed: int | None = None, options=None):
-        super().reset(seed=seed)
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
 
         # Reset state with proper initial conditions from config
         self.state = EDMState()
@@ -578,3 +573,41 @@ class WireEDMEnv(gym.Env):
     def wire_diameter(self) -> float:
         """Legacy property access for wire diameter."""
         return self.config.wire_diameter
+
+
+class WireEDMEnv(gym.Env, WireEDMSimulator):
+    """Gymnasium-facing compatibility shell over `WireEDMSimulator`."""
+
+    metadata = {"render_modes": ["human"], "render_fps": 300}
+
+    def __init__(
+        self,
+        *,
+        render_mode: str | None = None,
+        mechanics_control_mode: str = "position",
+        config: EnvironmentConfig | None = None,
+        ignition_params: IgnitionModuleParameters = None,
+        wire_params: WireModuleParameters = None,
+        material_params: MaterialModuleParameters = None,
+        dielectric_params: DielectricModuleParameters = None,
+        mechanics_params: MechanicsModuleParameters = None,
+    ):
+        gym.Env.__init__(self)
+        WireEDMSimulator.__init__(
+            self,
+            render_mode=render_mode,
+            mechanics_control_mode=mechanics_control_mode,
+            config=config,
+            ignition_params=ignition_params,
+            wire_params=wire_params,
+            material_params=material_params,
+            dielectric_params=dielectric_params,
+            mechanics_params=mechanics_params,
+        )
+
+    def reset(self, *, seed: int | None = None, options=None):
+        gym.Env.reset(self, seed=seed)
+        return WireEDMSimulator.reset(self, seed=None, options=options)
+
+    def step(self, action):
+        return WireEDMSimulator.step(self, action)

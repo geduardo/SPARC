@@ -387,8 +387,8 @@ class IgnitionModule(EDMModule):
 
         # ── Internal State ──
         self._ignition_prob_cache: dict[tuple[float, float], float] = {}  # (rounded_gap, dt) -> probability
-        self.random_short_remaining = 0  # Remaining microseconds of random short
-        self.debris_short_remaining = 0  # Remaining microseconds of debris short
+        self.random_short_remaining = 0
+        self.debris_short_remaining = 0
 
         # Precompute constants
         self._log2 = math.log(2)
@@ -427,6 +427,22 @@ class IgnitionModule(EDMModule):
             self.params.default_on_time,
             self.params.default_off_time,
         )
+
+    @property
+    def random_short_remaining(self) -> int:
+        return self.env.state.ignition_random_short_remaining_us
+
+    @random_short_remaining.setter
+    def random_short_remaining(self, value: int) -> None:
+        self.env.state.ignition_random_short_remaining_us = int(value)
+
+    @property
+    def debris_short_remaining(self) -> int:
+        return self.env.state.ignition_debris_short_remaining_us
+
+    @debris_short_remaining.setter
+    def debris_short_remaining(self, value: int) -> None:
+        self.env.state.ignition_debris_short_remaining_us = int(value)
 
     def reset(self, state: EDMState) -> None:
         """Clear episode-local discharge timers and caches."""

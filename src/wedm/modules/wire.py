@@ -616,6 +616,44 @@ class WireModule(EDMModule):
             self.n_segments - 1, max(self.contact_top_idx, self.zone_end)
         )
 
+    @property
+    def _position_offset_mm(self) -> float:
+        return self.env.state.wire_offset_mm
+
+    @_position_offset_mm.setter
+    def _position_offset_mm(self, value: float) -> None:
+        self.env.state.wire_offset_mm = float(value)
+
+    @property
+    def _last_flow_condition(self) -> float | None:
+        return self.env.state.wire_last_flow_condition
+
+    @_last_flow_condition.setter
+    def _last_flow_condition(self, value: float | None) -> None:
+        self.env.state.wire_last_flow_condition = (
+            None if value is None else float(value)
+        )
+
+    @property
+    def zone_mean_counter(self) -> int:
+        return self.env.state.wire_zone_mean_counter
+
+    @zone_mean_counter.setter
+    def zone_mean_counter(self, value: int) -> None:
+        self.env.state.wire_zone_mean_counter = int(value)
+
+    @property
+    def _last_zone_mean(self) -> float:
+        if self.env.state.wire_last_zone_mean is None:
+            return float(self.params.spool_T)
+        return float(self.env.state.wire_last_zone_mean)
+
+    @_last_zone_mean.setter
+    def _last_zone_mean(self, value: float | None) -> None:
+        self.env.state.wire_last_zone_mean = (
+            None if value is None else float(value)
+        )
+
     def _build_initial_positions(self) -> np.ndarray:
         """Return the default segment start positions for a fresh episode."""
         return np.arange(self.n_segments, dtype=np.float32) * np.float32(

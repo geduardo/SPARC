@@ -4,6 +4,7 @@ import pytest
 import numpy as np
 from wedm import (
     WireEDMEnv,
+    WireEDMSimulator,
     EnvironmentConfig,
     IgnitionModuleParameters,
     MaterialModuleParameters,
@@ -29,6 +30,22 @@ class TestWireEDMEnv:
         env = WireEDMEnv()
         assert env is not None
         assert env.config is not None
+        assert isinstance(env, WireEDMSimulator)
+
+    def test_simulator_creation_and_step(self):
+        """The extracted simulator should reset and advance without Gym inheritance."""
+        sim = WireEDMSimulator()
+        obs, info = sim.reset(seed=123)
+
+        assert obs == {}
+        assert isinstance(info, dict)
+        assert sim.state.time == 0
+
+        terminated, truncated = sim.step_fast(_valid_action(sim))
+
+        assert isinstance(terminated, bool)
+        assert truncated is False
+        assert sim.state.time == sim.dt
 
     def test_env_reset(self):
         """Test environment reset."""
@@ -46,6 +63,13 @@ class TestWireEDMEnv:
 
         assert state.voltage == 0.0
         assert state.current == 0.0
+        assert state.ignition_random_short_remaining_us == 0
+        assert state.ignition_debris_short_remaining_us == 0
+        assert state.mechanics_prev_accel == 0.0
+        assert state.dielectric_last_gap_um == -1.0
+        assert state.dielectric_last_debris_density == -1.0
+        assert state.wire_last_flow_condition is None
+        assert state.wire_zone_mean_counter == 0
 
     def test_env_reset_applies_explicit_episode_defaults(self):
         """Reset should populate generator, electrical, and thermal defaults."""
@@ -100,6 +124,8 @@ class TestWireEDMEnv:
         assert env.ignition.random_short_remaining == 0
         assert env.ignition.debris_short_remaining == 0
         assert env.ignition._cached_current_mode is None
+        assert env.state.ignition_random_short_remaining_us == 0
+        assert env.state.ignition_debris_short_remaining_us == 0
 
         assert env.material._cached_current_mode is None
         assert (
@@ -113,8 +139,11 @@ class TestWireEDMEnv:
         assert env.dielectric.cavity_volume == 0.0
         assert env.dielectric.flow_condition == 0.0
         assert env.dielectric.ion_channel is None
+        assert env.state.dielectric_last_gap_um == -1.0
+        assert env.state.dielectric_last_debris_density == -1.0
 
         assert env.mechanics.prev_accel == 0.0
+        assert env.state.mechanics_prev_accel == 0.0
 
         expected_positions = np.arange(
             env.wire.n_segments, dtype=np.float32
@@ -130,6 +159,31 @@ class TestWireEDMEnv:
         np.testing.assert_allclose(env.state.wire_temperature, env.wire._temperature)
         np.testing.assert_allclose(env.state.wire_damage, env.wire._damage)
         assert env.state.wire_max_damage == 0.0
+        assert env.state.wire_offset_mm == pytest.approx(0.0)
+        assert env.state.wire_zone_mean_counter == 0
+
+    def test_markov_runtime_state_is_canonical_in_edm_state(self):
+        """Module runtime memory should round-trip through EDMState, not hidden fields."""
+        env = WireEDMEnv()
+        env.reset()
+
+        env.ignition.random_short_remaining = 17
+        env.ignition.debris_short_remaining = 23
+        env.mechanics.prev_accel = 42.0
+        env.dielectric._last_gap_um = 12.5
+        env.dielectric._last_debris_density = 0.33
+        env.wire._position_offset_mm = 0.075
+        env.wire._last_flow_condition = 0.4
+        env.wire.zone_mean_counter = 9
+
+        assert env.state.ignition_random_short_remaining_us == 17
+        assert env.state.ignition_debris_short_remaining_us == 23
+        assert env.state.mechanics_prev_accel == pytest.approx(42.0)
+        assert env.state.dielectric_last_gap_um == pytest.approx(12.5)
+        assert env.state.dielectric_last_debris_density == pytest.approx(0.33)
+        assert env.state.wire_offset_mm == pytest.approx(0.075)
+        assert env.state.wire_last_flow_condition == pytest.approx(0.4)
+        assert env.state.wire_zone_mean_counter == 9
 
     def test_material_analysis_tracking_is_opt_in_and_reset_safe(self):
         """Crater-history tracking should be explicit and reset cleanly."""

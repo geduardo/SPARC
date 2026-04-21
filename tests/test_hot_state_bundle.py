@@ -73,7 +73,6 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     env.state.wire_max_damage = 0.12
     env.state.wire_average_temperature = 321.0
     env.state.wire_head_idx = 3
-    env.state.wire_offset_mm = 0.45
     env.state.spark_status = [-1, 12.5, 4]
     env.state.dielectric_conductivity = 0.75
     env.state.dielectric_temperature = 303.0
@@ -95,6 +94,7 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     env.ignition.debris_short_remaining = 17
     env.dielectric._last_gap_um = 9.0
     env.dielectric._last_debris_density = 0.31
+    # Cached dielectric flow condition is now canonicalized through state.flow_rate.
     env.dielectric._last_flow_condition = 0.8
     env.mechanics.prev_accel = -2.5
     env.wire._position_offset_mm = 0.22
@@ -129,8 +129,9 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     assert restored_env.state.wire_unwinding_velocity == pytest.approx(0.3)
     assert restored_env.state.wire_max_damage == pytest.approx(0.12)
     assert restored_env.state.wire_average_temperature == pytest.approx(321.0)
+    assert restored_env.state.wire_last_zone_mean == pytest.approx(318.0)
     assert restored_env.state.wire_head_idx == 3
-    assert restored_env.state.wire_offset_mm == pytest.approx(0.45)
+    assert restored_env.state.wire_offset_mm == pytest.approx(0.22)
     assert restored_env.state.spark_status == [-1, 12.5, 4]
     assert restored_env.state.dielectric_conductivity == pytest.approx(0.75)
     assert restored_env.state.dielectric_temperature == pytest.approx(303.0)
@@ -140,7 +141,9 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     assert restored_env.state.debris_volume == pytest.approx(0.012)
     assert restored_env.state.debris_density == pytest.approx(0.34)
     assert restored_env.state.cavity_volume == pytest.approx(0.056)
-    assert restored_env.state.flow_rate == pytest.approx(0.78)
+    assert restored_env.state.flow_rate == pytest.approx(0.8)
+    assert restored_env.state.dielectric_last_gap_um == pytest.approx(9.0)
+    assert restored_env.state.dielectric_last_debris_density == pytest.approx(0.31)
     assert restored_env.state.last_crater_volume == pytest.approx(1.2e-6)
     assert restored_env.state.is_short_circuit is True
     assert restored_env.state.is_wire_broken is True
@@ -148,6 +151,11 @@ def test_hot_state_bundle_round_trips_state_and_module_scalars():
     assert restored_env.state.is_target_distance_reached is True
     assert restored_env.state.target_delta == pytest.approx(-0.5)
     assert restored_env.state.target_position == pytest.approx(250.0)
+    assert restored_env.state.ignition_random_short_remaining_us == 13
+    assert restored_env.state.ignition_debris_short_remaining_us == 17
+    assert restored_env.state.mechanics_prev_accel == pytest.approx(-2.5)
+    assert restored_env.state.wire_last_flow_condition == pytest.approx(0.42)
+    assert restored_env.state.wire_zone_mean_counter == 7
     assert restored_env.ignition.random_short_remaining == 13
     assert restored_env.ignition.debris_short_remaining == 17
     assert restored_env.dielectric._last_gap_um == pytest.approx(9.0)
