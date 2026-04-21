@@ -548,6 +548,7 @@ def _run_compiled_microstep(
                 hs.wire_temperature, sc.zone_start, sc.zone_end,
             )
             hs.wire_zone_mean_counter = 0
+        hs.wire_average_temperature = hs.wire_last_zone_mean
 
     # Mechanics update.
     hs.wire_position_um, hs.wire_velocity_um_s, hs.mechanics_prev_accel = (

@@ -140,6 +140,70 @@ class DielectricModule(EDMModule):
         self._last_debris_density = -1.0
         self._last_flow_condition = 0.0
 
+    @property
+    def debris_volume(self) -> float:
+        return self.env.state.debris_volume
+
+    @debris_volume.setter
+    def debris_volume(self, value: float) -> None:
+        self.env.state.debris_volume = float(value)
+
+    @property
+    def cavity_volume(self) -> float:
+        return self.env.state.cavity_volume
+
+    @cavity_volume.setter
+    def cavity_volume(self, value: float) -> None:
+        self.env.state.cavity_volume = float(value)
+
+    @property
+    def debris_density(self) -> float:
+        return self.env.state.debris_density
+
+    @debris_density.setter
+    def debris_density(self, value: float) -> None:
+        self.env.state.debris_density = float(value)
+
+    @property
+    def flow_condition(self) -> float:
+        return self.env.state.flow_rate
+
+    @flow_condition.setter
+    def flow_condition(self, value: float) -> None:
+        self.env.state.flow_rate = float(value)
+
+    @property
+    def ion_channel(self):
+        return self.env.state.ionized_channel
+
+    @ion_channel.setter
+    def ion_channel(self, value) -> None:
+        self.env.state.ionized_channel = value
+
+    @property
+    def _last_gap_um(self) -> float:
+        return self.env.state.dielectric_last_gap_um
+
+    @_last_gap_um.setter
+    def _last_gap_um(self, value: float) -> None:
+        self.env.state.dielectric_last_gap_um = float(value)
+
+    @property
+    def _last_debris_density(self) -> float:
+        return self.env.state.dielectric_last_debris_density
+
+    @_last_debris_density.setter
+    def _last_debris_density(self, value: float) -> None:
+        self.env.state.dielectric_last_debris_density = float(value)
+
+    @property
+    def _last_flow_condition(self) -> float:
+        return self.env.state.flow_rate
+
+    @_last_flow_condition.setter
+    def _last_flow_condition(self, value: float) -> None:
+        self.env.state.flow_rate = float(value)
+
     def reset(self, state: EDMState) -> None:
         """Clear episode-local debris state and caches."""
         self.reset_debris()

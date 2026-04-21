@@ -84,6 +84,14 @@ class MechanicsModule(EDMModule):
         else:  # velocity
             self._compute_nominal_accel = self._compute_velocity_accel
 
+    @property
+    def prev_accel(self) -> float:
+        return self.env.state.mechanics_prev_accel
+
+    @prev_accel.setter
+    def prev_accel(self, value: float) -> None:
+        self.env.state.mechanics_prev_accel = float(value)
+
     def reset(self, state: EDMState) -> None:
         """Clear episode-local controller history."""
         self.prev_accel = 0.0

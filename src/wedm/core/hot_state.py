@@ -100,9 +100,6 @@ class HotStateBundle:
         will be applied to a *different* env to avoid shared-buffer hazards.
         """
         state = env.state
-        ignition = env.ignition
-        dielectric = env.dielectric
-        mechanics = env.mechanics
         wire = env.wire
 
         ionized_channel_location_mm = _FLOAT_SENTINEL
@@ -153,16 +150,24 @@ class HotStateBundle:
             is_target_distance_reached=int(state.is_target_distance_reached),
             target_delta=float(state.target_delta),
             target_position=float(state.target_position),
-            ignition_random_short_remaining=int(ignition.random_short_remaining),
-            ignition_debris_short_remaining=int(ignition.debris_short_remaining),
-            dielectric_cached_gap_um=float(dielectric._last_gap_um),
-            dielectric_cached_debris_density=float(dielectric._last_debris_density),
-            dielectric_cached_flow_condition=float(dielectric._last_flow_condition),
-            mechanics_prev_accel=float(mechanics.prev_accel),
-            wire_position_offset_mm=float(wire._position_offset_mm),
-            wire_last_flow_condition=_encode_optional_float(wire._last_flow_condition),
-            wire_zone_mean_counter=int(wire.zone_mean_counter),
-            wire_last_zone_mean=_encode_optional_float(wire._last_zone_mean),
+            ignition_random_short_remaining=int(
+                state.ignition_random_short_remaining_us
+            ),
+            ignition_debris_short_remaining=int(
+                state.ignition_debris_short_remaining_us
+            ),
+            dielectric_cached_gap_um=float(state.dielectric_last_gap_um),
+            dielectric_cached_debris_density=float(
+                state.dielectric_last_debris_density
+            ),
+            dielectric_cached_flow_condition=float(state.flow_rate),
+            mechanics_prev_accel=float(state.mechanics_prev_accel),
+            wire_position_offset_mm=float(state.wire_offset_mm),
+            wire_last_flow_condition=_encode_optional_float(
+                state.wire_last_flow_condition
+            ),
+            wire_zone_mean_counter=int(state.wire_zone_mean_counter),
+            wire_last_zone_mean=_encode_optional_float(state.wire_last_zone_mean),
             wire_material_positions_mm=(
                 wire._ensure_position_buffer().copy()
                 if copy_arrays
@@ -197,10 +202,6 @@ class HotStateBundle:
             raise ValueError("HotStateBundle wire_conv_loss_coeff shape is incompatible")
 
         state = env.state
-        ignition = env.ignition
-        dielectric = env.dielectric
-        mechanics = env.mechanics
-
         state.time = self.time
         state.time_since_servo = self.time_since_servo
         state.time_since_open_voltage = self.time_since_open_voltage
@@ -243,6 +244,8 @@ class HotStateBundle:
         state.debris_density = self.debris_density
         state.cavity_volume = self.cavity_volume
         state.flow_rate = self.flow_rate
+        state.dielectric_last_gap_um = self.dielectric_cached_gap_um
+        state.dielectric_last_debris_density = self.dielectric_cached_debris_density
         state.last_crater_volume = self.last_crater_volume
         state.is_short_circuit = bool(self.is_short_circuit)
         state.is_wire_broken = bool(self.is_wire_broken)
@@ -250,20 +253,9 @@ class HotStateBundle:
         state.is_target_distance_reached = bool(self.is_target_distance_reached)
         state.target_delta = self.target_delta
         state.target_position = self.target_position
-
-        ignition.random_short_remaining = self.ignition_random_short_remaining
-        ignition.debris_short_remaining = self.ignition_debris_short_remaining
-
-        dielectric.debris_volume = self.debris_volume
-        dielectric.debris_density = self.debris_density
-        dielectric.cavity_volume = self.cavity_volume
-        dielectric.flow_condition = self.flow_rate
-        dielectric.ion_channel = state.ionized_channel
-        dielectric._last_gap_um = self.dielectric_cached_gap_um
-        dielectric._last_debris_density = self.dielectric_cached_debris_density
-        dielectric._last_flow_condition = self.dielectric_cached_flow_condition
-
-        mechanics.prev_accel = self.mechanics_prev_accel
+        state.ignition_random_short_remaining_us = self.ignition_random_short_remaining
+        state.ignition_debris_short_remaining_us = self.ignition_debris_short_remaining
+        state.mechanics_prev_accel = self.mechanics_prev_accel
 
         wire._position_offset_mm = self.wire_position_offset_mm
         wire._positions_dirty = True
